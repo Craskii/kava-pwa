@@ -7,6 +7,21 @@ type InstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 };
 
+function isInstallPromptEvent(e: Event): e is InstallPromptEvent {
+  // Narrow by checking for the "prompt" function at runtime
+  return typeof (e as Record<string, unknown>).prompt === 'function';
+}
+
+function isStandalone(): boolean {
+  const mm = typeof window !== 'undefined' &&
+    window.matchMedia?.('(display-mode: standalone)').matches === true;
+
+  const legacy =
+    (navigator as Navigator & { standalone?: boolean }).standalone === true;
+
+  return Boolean(mm || legacy);
+}
+
 export default function InstallPWAButton() {
   const [deferredPrompt, setDeferredPrompt] =
     useState<InstallPromptEvent | null>(null);
@@ -14,14 +29,21 @@ export default function InstallPWAButton() {
 
   useEffect(() => {
     const handler = (e: Event) => {
-      // chromium fires beforeinstallprompt when installable
-      (e as any).preventDefault?.();
-      setDeferredPrompt(e as InstallPromptEvent);
-      setCanInstall(true);
+      // Chromium fires this when the app is installable
+      e.preventDefault?.();
+      if (isInstallPromptEvent(e)) {
+        setDeferredPrompt(e);
+        setCanInstall(true);
+      }
     };
+
     window.addEventListener('beforeinstallprompt', handler as EventListener);
     return () =>
       window.removeEventListener('beforeinstallprompt', handler as EventListener);
+  }, []);
+
+  useEffect(() => {
+    if (isStandalone()) setCanInstall(false);
   }, []);
 
   const onInstall = async () => {
@@ -31,17 +53,6 @@ export default function InstallPWAButton() {
     setDeferredPrompt(null);
     setCanInstall(false);
   };
-
-  // Hide button if already installed
-  useEffect(() => {
-    const isStandalone =
-      (window.matchMedia &&
-        window.matchMedia('(display-mode: standalone)').matches) ||
-      (typeof (window.navigator as any).standalone !== 'undefined' &&
-        (window.navigator as any).standalone === true);
-
-    if (isStandalone) setCanInstall(false);
-  }, []);
 
   if (!canInstall) return null;
 

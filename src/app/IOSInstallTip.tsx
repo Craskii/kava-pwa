@@ -2,21 +2,24 @@
 
 import { useEffect, useState } from 'react';
 
+function isStandalone(): boolean {
+  const mm = typeof window !== 'undefined' &&
+    window.matchMedia?.('(display-mode: standalone)').matches === true;
+
+  // legacy iOS Safari flag
+  const legacy =
+    (navigator as Navigator & { standalone?: boolean }).standalone === true;
+
+  return Boolean(mm || legacy);
+}
+
 export default function IOSInstallTip() {
   const [show, setShow] = useState(false);
 
   useEffect(() => {
-    const ua = window.navigator.userAgent.toLowerCase();
+    const ua = navigator.userAgent.toLowerCase();
     const isIOS = /iphone|ipad|ipod/.test(ua);
-
-    const isStandalone =
-      (window.matchMedia &&
-        window.matchMedia('(display-mode: standalone)').matches) ||
-      // legacy iOS flag; cast to any instead of ts-ignore
-      (typeof (window.navigator as any).standalone !== 'undefined' &&
-        (window.navigator as any).standalone === true);
-
-    if (isIOS && !isStandalone) setShow(true);
+    if (isIOS && !isStandalone()) setShow(true);
   }, []);
 
   if (!show) return null;
