@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from 'react';
 
-// Use a LOCAL type alias (no global declaration)
 type InstallPromptEvent = Event & {
   prompt: () => void;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
@@ -15,7 +14,8 @@ export default function InstallPWAButton() {
 
   useEffect(() => {
     const handler = (e: Event) => {
-      e.preventDefault?.();
+      // chromium fires beforeinstallprompt when installable
+      (e as any).preventDefault?.();
       setDeferredPrompt(e as InstallPromptEvent);
       setCanInstall(true);
     };
@@ -32,13 +32,14 @@ export default function InstallPWAButton() {
     setCanInstall(false);
   };
 
-  // Hide button if already installed (standalone)
+  // Hide button if already installed
   useEffect(() => {
     const isStandalone =
       (window.matchMedia &&
         window.matchMedia('(display-mode: standalone)').matches) ||
-      // @ts-ignore (iOS Safari legacy flag)
-      window.navigator.standalone === true;
+      (typeof (window.navigator as any).standalone !== 'undefined' &&
+        (window.navigator as any).standalone === true);
+
     if (isStandalone) setCanInstall(false);
   }, []);
 

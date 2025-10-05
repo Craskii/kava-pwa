@@ -8,11 +8,13 @@ export default function IOSInstallTip() {
   useEffect(() => {
     const ua = window.navigator.userAgent.toLowerCase();
     const isIOS = /iphone|ipad|ipod/.test(ua);
+
     const isStandalone =
       (window.matchMedia &&
         window.matchMedia('(display-mode: standalone)').matches) ||
-      // @ts-ignore
-      window.navigator.standalone === true;
+      // legacy iOS flag; cast to any instead of ts-ignore
+      (typeof (window.navigator as any).standalone !== 'undefined' &&
+        (window.navigator as any).standalone === true);
 
     if (isIOS && !isStandalone) setShow(true);
   }, []);
@@ -33,9 +35,10 @@ export default function IOSInstallTip() {
         boxShadow: '0 8px 24px rgba(0,0,0,.25)',
         fontSize: 14,
         lineHeight: 1.4,
+        zIndex: 50,
       }}
     >
-      <strong>Install on iPhone:</strong> Tap the <span aria-label="share">Share</span> icon, then
+      <strong>Install on iPhone:</strong> Tap the Share icon, then
       <strong> Add to Home Screen</strong>.
     </div>
   );
