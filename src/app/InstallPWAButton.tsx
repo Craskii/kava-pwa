@@ -7,13 +7,18 @@ type InstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 };
 
+// Narrower, type-safe check for `prompt` at runtime
+function hasPrompt(x: unknown): x is { prompt: () => void } {
+  return typeof (x as { prompt?: unknown }).prompt === 'function';
+}
+
 function isInstallPromptEvent(e: Event): e is InstallPromptEvent {
-  // Narrow by checking for the "prompt" function at runtime
-  return typeof (e as Record<string, unknown>).prompt === 'function';
+  return hasPrompt(e);
 }
 
 function isStandalone(): boolean {
-  const mm = typeof window !== 'undefined' &&
+  const mm =
+    typeof window !== 'undefined' &&
     window.matchMedia?.('(display-mode: standalone)').matches === true;
 
   const legacy =
@@ -29,8 +34,7 @@ export default function InstallPWAButton() {
 
   useEffect(() => {
     const handler = (e: Event) => {
-      // Chromium fires this when the app is installable
-      e.preventDefault?.();
+      e.preventDefault();
       if (isInstallPromptEvent(e)) {
         setDeferredPrompt(e);
         setCanInstall(true);
