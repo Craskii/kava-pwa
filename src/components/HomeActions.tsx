@@ -1,5 +1,6 @@
 "use client";
 import Link from "next/link";
+import YourTournaments from "@/components/YourTournaments"; // 👈 ADD THIS LINE
 
 export default function HomeActions() {
   return (
@@ -25,7 +26,7 @@ export default function HomeActions() {
           }}
         >
           <div style={{ fontWeight: 700, fontSize: 16 }}>Create Tournament</div>
-          <div style={{ opacity: .9, fontSize: 12 }}>Rules, brackets, invites</div>
+          <div style={{ opacity: 0.9, fontSize: 12 }}>Rules, brackets, invites</div>
         </Link>
 
         <Link
@@ -40,7 +41,7 @@ export default function HomeActions() {
           }}
         >
           <div style={{ fontWeight: 700, fontSize: 16 }}>Join Queue</div>
-          <div style={{ opacity: .9, fontSize: 12 }}>Get turn alerts</div>
+          <div style={{ opacity: 0.9, fontSize: 12 }}>Get turn alerts</div>
         </Link>
 
         <Link
@@ -56,9 +57,12 @@ export default function HomeActions() {
           }}
         >
           <div style={{ fontWeight: 700, fontSize: 16 }}>Kava Bar List</div>
-          <div style={{ opacity: .9, fontSize: 12 }}>Nearby venues & schedules</div>
+          <div style={{ opacity: 0.9, fontSize: 12 }}>Nearby venues & schedules</div>
         </Link>
       </div>
+
+      {/* 👇 ADD THIS BELOW THE GRID */}
+      <YourTournaments />
     </div>
   );
 }
