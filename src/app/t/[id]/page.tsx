@@ -9,7 +9,7 @@ import {
   getTournament, saveTournament,
   seedInitialRounds as seedInitial,
   submitReport, approvePending, declinePending, deleteTournament,
-  insertLatePlayer, Tournament, uid
+  insertLatePlayer, Tournament, uid, Match
 } from "../../../lib/storage";
 
 export default function Lobby() {
@@ -28,7 +28,7 @@ export default function Lobby() {
 
   const isHost = me?.id === t.hostId;
 
-  // ---------- safe updater ----------
+  // ---------- safe updater (no "any") ----------
   function update(mut: (x: Tournament) => void) {
     setT(prev => {
       if (!prev) return prev;
@@ -37,7 +37,12 @@ export default function Lobby() {
         players: [...prev.players],
         pending: [...(prev.pending || [])],
         queue: [...prev.queue],
-        rounds: prev.rounds.map(r => r.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
+        rounds: prev.rounds.map((r): Match[] =>
+          r.map((m): Match => ({
+            ...m,
+            reports: { ...(m.reports || {}) },
+          }))
+        ),
       };
       mut(copy);
       saveTournament(copy);
@@ -68,36 +73,41 @@ export default function Lobby() {
     update(x => {
       x.players = x.players.filter(p => p.id !== me.id);
       x.queue = x.queue.filter(pid => pid !== me.id);
-      x.rounds = x.rounds.map(round =>
-        round.map(m => ({
+      x.rounds = x.rounds.map((round): Match[] =>
+        round.map((m): Match => ({
           ...m,
           a: m.a === me.id ? undefined : m.a,
           b: m.b === me.id ? undefined : m.b,
           winner: m.winner === me.id ? undefined : m.winner,
-          reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== me.id)),
+          reports: Object.fromEntries(
+            Object.entries(m.reports || {}).filter(([k]) => k !== me.id)
+          ),
         }))
       );
     });
     r.push("/");
   }
 
-  // ---------- small local helper: advance to next round when current is done ----------
+  // ---------- advance to next round when current is done ----------
   function advanceFromRound(roundIdx: number) {
     update(x => {
       const cur = x.rounds[roundIdx];
       const winners = cur.map(m => m.winner);
-      if (winners.some(w => !w)) return; // not ready
+      if (winners.some(w => !w)) return;
 
+      // final done
       if (winners.length === 1 && winners[0]) {
         x.status = "completed";
         return;
       }
-      const next = [];
+
+      const next: Match[] = [];
       for (let i = 0; i < winners.length; i += 2) {
-        next.push({ a: winners[i], b: winners[i + 1], reports: {} as Record<string, "win"|"loss"|undefined> });
+        next.push({ a: winners[i], b: winners[i + 1], reports: {} });
       }
-      if (x.rounds[roundIdx + 1]) x.rounds[roundIdx + 1] = next as any;
-      else x.rounds.push(next as any);
+
+      if (x.rounds[roundIdx + 1]) x.rounds[roundIdx + 1] = next;
+      else x.rounds.push(next);
     });
   }
 
@@ -129,8 +139,7 @@ export default function Lobby() {
     if (!me) return;
     update(x => {
       submitReport(x, roundIdx, matchIdx, me.id, result);
-      // submitReport calls save; round advance handled inside; still fine to re-save
-      // after update, UI will reflect
+      // submitReport persists & may advance; update() re-saves safely
     });
   }
 
