@@ -3,14 +3,14 @@ import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import BackButton from "../../../components/BackButton";
 import {
-  getTournament, saveTournament, seedBracket,
-  removePlayer, Tournament
+  getTournament, saveTournament, seedBracket, Tournament
 } from "../../../lib/storage";
 
 export default function Lobby() {
   const { id } = useParams<{ id: string }>();
   const r = useRouter();
   const [t, setT] = useState<Tournament | null>(null);
+
   const me = useMemo(() => {
     if (typeof window === 'undefined') return null;
     try { return JSON.parse(localStorage.getItem("kava_me") || "null"); } catch { return null; }
@@ -23,29 +23,80 @@ export default function Lobby() {
   const isHost = me?.id === t.hostId;
   const myPos = me ? t.queue.findIndex(p => p === me.id) + 1 : -1;
 
-  function update(mut: (x: Tournament)=>void) {
-    const copy = { ...t, players: [...t.players], queue: [...t.queue], matches: [...(t.matches||[])] };
-    mut(copy); saveTournament(copy); setT(copy);
+  // ✅ safe updater that never reads a possibly-null outer `t`
+  function update(mut: (x: Tournament) => void) {
+    setT(prev => {
+      if (!prev) return prev; // still null on first render -> no-op
+      const copy: Tournament = {
+        ...prev,
+        players: [...prev.players],
+        queue: [...prev.queue],
+        matches: [...(prev.matches || [])],
+      };
+      mut(copy);
+      saveTournament(copy);
+      return copy;
+    });
   }
 
   function joinQueue() {
     if (!me) return;
-    if (!t.queue.includes(me.id)) update(x => x.queue.push(me.id));
+    update(x => {
+      if (!x.queue.includes(me.id)) x.queue.push(me.id);
+    });
   }
+
   function leaveQueue() {
     if (!me) return;
-    update(x => x.queue = x.queue.filter(id => id !== me.id));
+    update(x => {
+      x.queue = x.queue.filter(id => id !== me.id);
+    });
   }
+
   function leaveTournament() {
     if (!me) return;
-    update(x => removePlayer(x, me.id));
+    update(x => {
+      // inline remove of me (players, queue, bracket seats/winner)
+      x.players = x.players.filter(p => p.id !== me.id);
+      x.queue = x.queue.filter(id => id !== me.id);
+      x.matches = (x.matches || []).map(m => ({
+        ...m,
+        a: m.a === me.id ? undefined : m.a,
+        b: m.b === me.id ? undefined : m.b,
+        winner: m.winner === me.id ? undefined : m.winner,
+      }));
+    });
     r.push("/");
   }
-  function kick(pId: string){ update(x => removePlayer(x, pId)); }
-  function startBracket(){ update(seedBracket); }
-  function setWinner(i:number, id?:string){ update(x => x.matches[i].winner = id); }
 
-  function editName(newName: string){ update(x => x.name = newName || x.name); }
+  function kick(pId: string) {
+    update(x => {
+      x.players = x.players.filter(p => p.id !== pId);
+      x.queue = x.queue.filter(id => id !== pId);
+      x.matches = (x.matches || []).map(m => ({
+        ...m,
+        a: m.a === pId ? undefined : m.a,
+        b: m.b === pId ? undefined : m.b,
+        winner: m.winner === pId ? undefined : m.winner,
+      }));
+    });
+  }
+
+  function startBracket() {
+    update(seedBracket);
+  }
+
+  function setWinner(i: number, id?: string) {
+    update(x => {
+      x.matches[i].winner = id;
+    });
+  }
+
+  function editName(newName: string) {
+    update(x => {
+      if (newName.trim()) x.name = newName.trim();
+    });
+  }
 
   return (
     <main style={wrap}>
@@ -62,8 +113,8 @@ export default function Lobby() {
           <div style={{ textAlign:"right" }}>
             {me && myPos>0 && <div style={{ fontSize:14, opacity:.8 }}>Your queue position: <b>#{myPos}</b></div>}
             <div style={{ display:"flex", gap:8, marginTop:8, justifyContent:"flex-end" }}>
-              {!t.queue.includes(me?.id) && <button style={btn} onClick={joinQueue}>Join Queue</button>}
-              {t.queue.includes(me?.id) && <button style={btnGhost} onClick={leaveQueue}>Leave Queue</button>}
+              {!t.queue.includes(me?.id || "") && <button style={btn} onClick={joinQueue}>Join Queue</button>}
+              {t.queue.includes(me?.id || "") && <button style={btnGhost} onClick={leaveQueue}>Leave Queue</button>}
               <button style={btnGhost} onClick={leaveTournament}>Leave Tournament</button>
             </div>
           </div>
