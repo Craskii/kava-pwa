@@ -1,18 +1,12 @@
 "use client";
 
-import React, { useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import { getDeviceId } from "@/lib/device";
-import type {
-  Tournament,
-  Membership,
-  Queue,
-  QueueMembership,
-  Format,
-} from "@/types";
+import type { Tournament, Membership, Queue, QueueMembership, Format } from "@/types";
 
-/* ---------------- localStorage helpers ---------------- */
+// --- localStorage helpers ---
 function save<T>(key: string, value: T) {
   if (typeof localStorage === "undefined") return;
   localStorage.setItem(key, JSON.stringify(value));
@@ -27,66 +21,51 @@ function load<T>(key: string, fallback: T): T {
   }
 }
 
-/* ---------------- page ---------------- */
 export default function NewTournamentPage() {
   const router = useRouter();
 
-  const [name, setName] = useState("");
-  const [venue, setVenue] = useState("");
-  const [date, setDate] = useState("");
-  const [time, setTime] = useState("");
+  const [name, setName] = useState<string>("");
+  const [venue, setVenue] = useState<string>("");
+  const [date, setDate] = useState<string>("");
+  const [time, setTime] = useState<string>("");
   const [format, setFormat] = useState<Format>("Single Elim");
-  const [creatorName, setCreatorName] = useState("");
-
-  // fully typed handlers (no `any`)
-  const onNameChange = (e: React.ChangeEvent<HTMLInputElement>) =>
-    setName(e.target.value);
-  const onVenueChange = (e: React.ChangeEvent<HTMLInputElement>) =>
-    setVenue(e.target.value);
-  const onDateChange = (e: React.ChangeEvent<HTMLInputElement>) =>
-    setDate(e.target.value);
-  const onTimeChange = (e: React.ChangeEvent<HTMLInputElement>) =>
-    setTime(e.target.value);
-  const onFormatChange = (e: React.ChangeEvent<HTMLSelectElement>) =>
-    setFormat(e.target.value as Format);
-  const onCreatorChange = (e: React.ChangeEvent<HTMLInputElement>) =>
-    setCreatorName(e.target.value);
+  const [creatorName, setCreatorName] = useState<string>("");
 
   const onCreate = () => {
     const id = crypto.randomUUID();
     const startsAt = date && time ? `${date}T${time}` : undefined;
 
-    // 4-digit numeric code, e.g. "4832"
+    // 👇 4-digit numeric code (1000–9999)
     const code = Math.floor(1000 + Math.random() * 9000).toString();
 
     const tournaments = load<Tournament[]>("tournaments", []);
 
     const rec: Tournament = {
       id,
-      code,
+      code, // numeric string like "4832"
       name: name.trim() || "Untitled Tournament",
       venue: venue.trim() || "TBD",
       format,
       startsAt,
       players: [],
-      createdAt: Date.now(), // number (keep it that way)
+      createdAt: new Date().toISOString(), // <-- string (matches your type)
       hostName: creatorName.trim() || undefined,
       hostDeviceId: getDeviceId(),
     };
 
-    let nextTs = [rec, ...tournaments];
+    let nextTs: Tournament[] = [rec, ...tournaments];
 
-    // Auto-join host if they provided a name
+    // auto-join host if name provided
     const n = creatorName.trim();
     if (n) {
-      nextTs = nextTs.map((t) =>
+      nextTs = nextTs.map(t =>
         t.id === id
           ? { ...t, players: Array.from(new Set([...(t.players || []), n])) }
           : t
       );
       const memberships = load<Membership[]>("memberships", []);
       const nextMs: Membership[] = [
-        ...memberships.filter((m) => m.tournamentId !== id),
+        ...memberships.filter(m => m.tournamentId !== id),
         { tournamentId: id, playerName: n, joinedAt: new Date().toISOString() },
       ];
       save("memberships", nextMs);
@@ -94,19 +73,19 @@ export default function NewTournamentPage() {
 
     save("tournaments", nextTs);
 
-    // Create a local Queue entry so it appears under "Your Queues"
+    // create a Queue entry for local UI
     const queues = load<Queue[]>("queues", []);
     const queueName = `${rec.name} Queue`;
     const nextQueues: Queue[] = [
-      ...queues.filter((q) => q.id !== id),
+      ...queues.filter(q => q.id !== id),
       { id, name: queueName },
     ];
     save("queues", nextQueues);
 
-    // Auto-join the queue locally
+    // auto-join the queue locally
     const qms = load<QueueMembership[]>("queueMemberships", []);
     const nextQms: QueueMembership[] = [
-      ...qms.filter((m) => m.queueId !== id),
+      ...qms.filter(m => m.queueId !== id),
       { queueId: id, joinedAt: new Date().toISOString() },
     ];
     save("queueMemberships", nextQms);
@@ -124,7 +103,7 @@ export default function NewTournamentPage() {
           Name
           <input
             value={name}
-            onChange={onNameChange}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
             placeholder="Friday Night Ping Pong"
             style={input}
           />
@@ -134,7 +113,7 @@ export default function NewTournamentPage() {
           Venue
           <input
             value={venue}
-            onChange={onVenueChange}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setVenue(e.target.value)}
             placeholder="Kava Bar (Las Olas)"
             style={input}
           />
@@ -150,17 +129,33 @@ export default function NewTournamentPage() {
         >
           <label>
             Date
-            <input type="date" value={date} onChange={onDateChange} style={input} />
+            <input
+              type="date"
+              value={date}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDate(e.target.value)}
+              style={input}
+            />
           </label>
           <label>
             Time
-            <input type="time" value={time} onChange={onTimeChange} style={input} />
+            <input
+              type="time"
+              value={time}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTime(e.target.value)}
+              style={input}
+            />
           </label>
         </div>
 
         <label style={{ display: "block", marginBottom: 10 }}>
           Format
-          <select value={format} onChange={onFormatChange} style={input}>
+          <select
+            value={format}
+            onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+              setFormat(e.target.value as Format)
+            }
+            style={input}
+          >
             <option>Single Elim</option>
             <option>Double Elim</option>
             <option>Round Robin</option>
@@ -171,7 +166,7 @@ export default function NewTournamentPage() {
           Your name (host & auto-join)
           <input
             value={creatorName}
-            onChange={onCreatorChange}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCreatorName(e.target.value)}
             placeholder="e.g. Henry"
             style={input}
           />
@@ -185,7 +180,6 @@ export default function NewTournamentPage() {
   );
 }
 
-/* ---------------- styles ---------------- */
 const input: React.CSSProperties = {
   marginTop: 6,
   width: "100%",
