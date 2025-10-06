@@ -1,52 +1,123 @@
-'use client';
-import { useRouter } from "next/navigation";
+"use client";
+
 import { useState } from "react";
-import BackButton from "../../components/BackButton";
-import { findByCode, saveTournament, uid } from "../../lib/storage";
+import { useRouter } from "next/navigation";
+import AppHeader from "@/components/AppHeader";
+import {
+  findByCodeRemote,
+  saveTournamentRemote,
+  type Tournament,
+  type Player,
+} from "@/lib/storage";
+import { getDeviceId } from "@/lib/device";
 
-export default function JoinPage() {
+export default function JoinByCodePage() {
   const r = useRouter();
-  const [name, setName] = useState("");
   const [code, setCode] = useState("");
-  const [noSwitch, setNoSwitch] = useState(true);
+  const [name, setName] = useState("");
+  const [testing, setTesting] = useState(true); // keep identity when testing on one phone
+  const [busy, setBusy] = useState(false);
 
-  function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const t = findByCode(code);
-    if (!t) { alert("No tournament with that code"); return; }
+  const submit = async () => {
+    const trimmed = code.trim().toUpperCase();
+    if (!trimmed) return alert("Enter a code.");
 
-    const player = { id: uid(), name: name || "Player" };
-    t.pending = t.pending || [];
-    t.pending.push(player);
-    saveTournament(t);
+    setBusy(true);
+    try {
+      const t = await findByCodeRemote(trimmed);
+      if (!t) {
+        alert("No tournament with that code");
+        return;
+      }
 
-    if (!noSwitch) {
-      localStorage.setItem("kava_me", JSON.stringify(player));
+      // identity
+      const deviceId = getDeviceId();
+      const display = (name || "Guest").trim();
+      const me: Player = { id: deviceId, name: display };
+
+      // optionally switch identity OFF for testing on a single phone
+      if (!testing) {
+        localStorage.setItem("kava_me", JSON.stringify(me));
+      }
+
+      // add to pending (if not already a player/pending)
+      const already =
+        t.players.some(p => p.id === me.id) ||
+        (t.pending || []).some(p => p.id === me.id);
+
+      if (!already) {
+        t.pending ||= [];
+        t.pending.push(me);
+        await saveTournamentRemote(t);
+      }
+
+      r.push(`/t/${t.id}`);
+    } catch (err: any) {
+      alert(err?.message || "Failed to join.");
+    } finally {
+      setBusy(false);
     }
-    r.push(`/t/${t.id}`);
-  }
+  };
 
   return (
-    <main style={wrap}>
-      <BackButton />
-      <div style={{ width:"100%", maxWidth:420 }}>
-        <h1 style={h1}>Join with Code</h1>
-        <form onSubmit={onSubmit} style={{ display:"grid", gap:12 }}>
-          <input style={input} placeholder="Your name" value={name} onChange={e=>setName(e.target.value)} />
-          <input style={input} placeholder="4-digit code" inputMode="numeric" maxLength={4}
-                 value={code} onChange={e=>setCode(e.target.value.replace(/\D/g,''))}/>
-          <label style={{ display:"flex", alignItems:"center", gap:8, fontSize:14, opacity:.9 }}>
-            <input type="checkbox" checked={noSwitch} onChange={e=>setNoSwitch(e.target.checked)} />
-            Join without switching my identity (testing mode)
-          </label>
-          <button type="submit" style={btn}>Request to Join</button>
-        </form>
+    <main style={{ minHeight: "100vh", background: "#0b1220", color: "white" }}>
+      <AppHeader title="Join with Code" />
+      <div style={{ padding: 16, maxWidth: 560, margin: "0 auto" }}>
+        <label style={{ display: "block", marginBottom: 12 }}>
+          Code
+          <input
+            autoCapitalize="characters"
+            value={code}
+            onChange={e => setCode(e.target.value)}
+            placeholder="ABCD"
+            style={input}
+          />
+        </label>
+
+        <label style={{ display: "block", marginBottom: 12 }}>
+          Your name
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            placeholder="e.g. Sarah"
+            style={input}
+          />
+        </label>
+
+        <label style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
+          <input
+            type="checkbox"
+            checked={testing}
+            onChange={e => setTesting(e.target.checked)}
+          />
+          <span>Join without switching my identity (testing mode)</span>
+        </label>
+
+        <button onClick={submit} disabled={busy} style={primary}>
+          {busy ? "Requesting…" : "Request to Join"}
+        </button>
       </div>
     </main>
   );
 }
 
-const wrap: React.CSSProperties = { minHeight:"100vh", display:"grid", placeItems:"center", padding:24, color:"#fff", background:"#0b0b0b", fontFamily:"system-ui" };
-const h1: React.CSSProperties = { margin:"48px 0 16px" };
-const input: React.CSSProperties = { width:"100%", padding:"12px 14px", borderRadius:10, border:"1px solid #333", background:"#111", color:"#fff" };
-const btn: React.CSSProperties = { padding:"12px 16px", borderRadius:12, border:"none", background:"#0ea5e9", color:"#fff", fontWeight:700 };
+const input: React.CSSProperties = {
+  marginTop: 6,
+  width: "100%",
+  padding: "10px 12px",
+  borderRadius: 12,
+  border: "1px solid rgba(255,255,255,.15)",
+  background: "rgba(255,255,255,.06)",
+  color: "white",
+  outline: "none",
+};
+const primary: React.CSSProperties = {
+  marginTop: 8,
+  padding: "12px 16px",
+  borderRadius: 12,
+  border: "none",
+  background: "#0ea5e9",
+  color: "white",
+  fontWeight: 700,
+  cursor: "pointer",
+};

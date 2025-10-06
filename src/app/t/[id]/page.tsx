@@ -6,51 +6,73 @@ import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import BackButton from "../../../components/BackButton";
 import {
-  getTournament, saveTournament,
+  // types
+  type Tournament,
+  type Match,
+  type Player,
+  // local+remote helpers
+  getTournamentRemote,
+  saveTournamentRemote,
+  deleteTournamentRemote,
   seedInitialRounds as seedInitial,
-  submitReport, approvePending, declinePending, deleteTournament,
-  insertLatePlayer, Tournament, uid, Match
+  submitReport,
+  approvePending,
+  declinePending,
+  insertLatePlayer,
 } from "../../../lib/storage";
 
 export default function Lobby() {
   const { id } = useParams<{ id: string }>();
   const r = useRouter();
   const [t, setT] = useState<Tournament | null>(null);
+  const [loading, setLoading] = useState(true);
 
   const me = useMemo(() => {
     if (typeof window === 'undefined') return null;
-    try { return JSON.parse(localStorage.getItem("kava_me") || "null"); } catch { return null; }
+    try { return JSON.parse(localStorage.getItem("kava_me") || "null") as Player | null; } catch { return null; }
   }, []);
 
-  useEffect(() => { setT(getTournament(id)); }, [id]);
+  // ---- load from KV (shared across devices) ----
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true);
+      const remote = await getTournamentRemote(id);
+      if (alive) setT(remote);
+      setLoading(false);
+    })();
+    return () => { alive = false; }
+  }, [id]);
 
-  if (!t) return <main style={wrap}><BackButton /><p>Loading…</p></main>;
+  if (loading || !t) {
+    return <main style={wrap}><BackButton /><p>Loading…</p></main>;
+  }
 
   const isHost = me?.id === t.hostId;
+  const myPos = me ? t.queue.findIndex(p => p === me.id) + 1 : -1;
 
-  // ---------- safe updater (no "any") ----------
-  function update(mut: (x: Tournament) => void) {
+  // ---- safe updater: clone → mutate → save to KV → set state ----
+  async function update(mut: (x: Tournament) => void) {
     setT(prev => {
       if (!prev) return prev;
+      // deep-ish clone
       const copy: Tournament = {
         ...prev,
         players: [...prev.players],
         pending: [...(prev.pending || [])],
         queue: [...prev.queue],
-        rounds: prev.rounds.map((r): Match[] =>
-          r.map((m): Match => ({
-            ...m,
-            reports: { ...(m.reports || {}) },
-          }))
+        rounds: prev.rounds.map((round): Match[] =>
+          round.map((m): Match => ({ ...m, reports: { ...(m.reports || {}) } }))
         ),
       };
       mut(copy);
-      saveTournament(copy);
+      // fire-and-forget save; UI updates immediately
+      saveTournamentRemote(copy).catch(console.error);
       return copy;
     });
   }
 
-  // ---------- queue helpers (optional) ----------
+  // ---- queue helpers ----
   function joinQueue() {
     if (!me) return;
     update(x => { if (!x.queue.includes(me.id)) x.queue.push(me.id); });
@@ -60,45 +82,44 @@ export default function Lobby() {
     update(x => { x.queue = x.queue.filter(pid => pid !== me.id); });
   }
 
-  // ---------- host leave = delete; player leave = remove everywhere ----------
-  function leaveTournament() {
+  // ---- leave/delete ----
+  async function leaveTournament() {
     if (!me) return;
 
-    // Use optional chaining for t and fall back to route `id` when deleting
-    if (me.id === t?.hostId) {
+    // host leaving = delete
+    if (me.id === t.hostId) {
       if (confirm("You're the host. Leave & delete this tournament?")) {
-        deleteTournament(id); // use the route id; safe even if `t` is momentarily null
+        await deleteTournamentRemote(t.id);
         r.push("/");
       }
       return;
     }
 
+    // player leaving: remove everywhere
     update(x => {
       x.players = x.players.filter(p => p.id !== me.id);
       x.queue = x.queue.filter(pid => pid !== me.id);
-      x.rounds = x.rounds.map((round): Match[] =>
-        round.map((m): Match => ({
+      x.rounds = x.rounds.map(round =>
+        round.map(m => ({
           ...m,
           a: m.a === me.id ? undefined : m.a,
           b: m.b === me.id ? undefined : m.b,
           winner: m.winner === me.id ? undefined : m.winner,
-          reports: Object.fromEntries(
-            Object.entries(m.reports || {}).filter(([k]) => k !== me.id)
-          ),
+          reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== me.id)),
         }))
       );
     });
     r.push("/");
   }
 
-  // ---------- advance to next round when current is done ----------
+  // ---- round advance helper ----
   function advanceFromRound(roundIdx: number) {
     update(x => {
       const cur = x.rounds[roundIdx];
       const winners = cur.map(m => m.winner);
       if (winners.some(w => !w)) return;
 
-      // final done
+      // final
       if (winners.length === 1 && winners[0]) {
         x.status = "completed";
         return;
@@ -114,40 +135,49 @@ export default function Lobby() {
     });
   }
 
-  // ---------- host override winner ----------
+  // ---- host override winner ----
   function hostSetWinner(roundIdx: number, matchIdx: number, winnerId?: string) {
     update(x => {
       const m = x.rounds?.[roundIdx]?.[matchIdx];
       if (!m) return;
       m.winner = winnerId;
-      if (winnerId) advanceFromRound(roundIdx);
+      if (winnerId) {
+        // advance after we set the winner
+        const done = x.rounds[roundIdx].every(mm => !!mm.winner);
+        if (done) {
+          // slight delay to ensure state is applied before computing
+          setTimeout(() => advanceFromRound(roundIdx), 0);
+        }
+      }
     });
   }
 
-  // ---------- start / approvals / test add ----------
+  // ---- start / approvals / add test ----
   function startTournament() { update(seedInitial); }
   function approve(pId: string) { update(x => approvePending(x, pId)); }
   function decline(pId: string) { update(x => declinePending(x, pId)); }
   function addTestPlayer() {
-    const pid = uid();
-    const labelCount = (t?.players.length ?? 0) + (t?.pending?.length ?? 0) + 1;
-    const p = { id: pid, name: `Guest ${labelCount}` };
+    const p: Player = { id: crypto.randomUUID(), name: `Guest ${t.players.length + (t.pending?.length || 0) + 1}` };
     update(x => {
       if (x.status === "active") insertLatePlayer(x, p);
       else x.players.push(p);
     });
   }
 
-  // ---------- self-report (player) ----------
+  // ---- player self-report ----
   function report(roundIdx: number, matchIdx: number, result: "win" | "loss") {
     if (!me) return;
     update(x => {
       submitReport(x, roundIdx, matchIdx, me.id, result);
-      // submitReport persists & may advance; update() re-saves safely
+      const cur = x.rounds[roundIdx];
+      if (cur.every(m => !!m.winner)) {
+        // advance on agreement
+        setTimeout(() => advanceFromRound(roundIdx), 0);
+      }
     });
   }
 
-  // header mini-info
+  // header final winner
   const lastRound = t.rounds.at(-1);
   const finalWinnerId = lastRound?.[0]?.winner;
   const iAmChampion = t.status === "completed" && finalWinnerId === me?.id;
@@ -184,7 +214,6 @@ export default function Lobby() {
           <div style={card}>
             <h3 style={{ marginTop:0 }}>Host Controls</h3>
 
-            {/* Start / Delete */}
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
               <input
                 defaultValue={t.name}
@@ -198,10 +227,9 @@ export default function Lobby() {
               {t.status !== "completed" && (
                 <button
                   style={btnGhost}
-                  onClick={()=>{
+                  onClick={async ()=>{
                     if (confirm("Delete tournament? This cannot be undone.")) {
-                      deleteTournament(id);
-                      r.push("/");
+                      await deleteTournamentRemote(t.id); r.push("/");
                     }
                   }}
                 >Delete</button>
@@ -236,7 +264,7 @@ export default function Lobby() {
           </div>
         )}
 
-        {/* Bracket: all rounds in columns */}
+        {/* Bracket: rounds grid */}
         {t.rounds.length > 0 && (
           <div style={card}>
             <h3 style={{ marginTop:0 }}>Bracket</h3>
