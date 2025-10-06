@@ -6,120 +6,46 @@ import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import BackButton from "../../../components/BackButton";
 import {
-  // types
-  type Tournament,
-  type Match,
-  // bracket & helpers (mutate object; we persist remotely)
+  getTournament, saveTournament,
   seedInitialRounds as seedInitial,
-  submitReport,
-  approvePending,
-  declinePending,
-  insertLatePlayer,
-  uid,
-  // remote I/O
-  getTournamentRemote,
-  saveTournamentRemote,
-  deleteTournamentRemote,
+  submitReport, approvePending, declinePending,
+  insertLatePlayer, Tournament, uid, Match
 } from "../../../lib/storage";
-
-/* ---------- tiny local helpers (no imports needed) ---------- */
-function readLocal(id: string): Tournament | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = localStorage.getItem("tournaments");
-    if (!raw) return null;
-    const arr = JSON.parse(raw) as Tournament[];
-    return arr.find(t => t.id === id) || null;
-  } catch { return null; }
-}
-function writeLocal(t: Tournament) {
-  if (typeof window === "undefined") return;
-  try {
-    const raw = localStorage.getItem("tournaments");
-    const arr = raw ? (JSON.parse(raw) as Tournament[]) : [];
-    const next = [t, ...arr.filter(x => x.id !== t.id)];
-    localStorage.setItem("tournaments", JSON.stringify(next));
-  } catch {}
-}
+// If you have remote helpers, keep this import; otherwise remove it.
+// import { deleteTournamentRemote } from "../../../lib/remote";
+import { deleteTournament as deleteTournamentRemote } from "../../../lib/storage"; // fallback
 
 export default function Lobby() {
   const { id } = useParams<{ id: string }>();
   const r = useRouter();
-
   const [t, setT] = useState<Tournament | null>(null);
-  const [notFound, setNotFound] = useState(false);
-  const [loading, setLoading] = useState(true);
 
   const me = useMemo(() => {
     if (typeof window === 'undefined') return null;
     try { return JSON.parse(localStorage.getItem("kava_me") || "null"); } catch { return null; }
   }, []);
 
-  /* ---------- 1) hydrate from local first (fast) ---------- */
-  useEffect(() => {
-    setLoading(true);
-    setNotFound(false);
+  useEffect(() => { setT(getTournament(id)); }, [id]);
 
-    const local = readLocal(id);
-    if (local) setT(sanitizeTournament(local));
-
-    /* ---------- 2) then fetch remote and replace if found ---------- */
-    (async () => {
-      try {
-        const remote = await getTournamentRemote(id);
-        if (remote) {
-          const clean = sanitizeTournament(remote);
-          setT(clean);
-          writeLocal(clean);              // keep offline mirror fresh
-          setNotFound(false);
-        } else if (!local) {
-          // neither remote nor local — show not found
-          setT(null);
-          setNotFound(true);
-        }
-      } catch {
-        // network error: keep whatever we had locally, but stop the spinner
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [id]);
-
-  if (loading) {
-    return (
-      <main style={wrap}>
-        <BackButton />
-        <p>Loading…</p>
-      </main>
-    );
-  }
-
-  if (notFound || !t) {
-    return (
-      <main style={wrap}>
-        <BackButton />
-        <div style={{maxWidth:700}}>
-          <h2 style={{marginTop:12}}>Tournament not found</h2>
-          <p style={{opacity:.8}}>
-            We couldn’t find a tournament with this link. Ask the host for the 4-digit code
-            and try joining again from the <b>Join with Code</b> screen.
-          </p>
-        </div>
-      </main>
-    );
-  }
+  if (!t) return <main style={wrap}><BackButton /><p>Loading…</p></main>;
 
   const isHost = me?.id === t.hostId;
 
-  /** Safe updater: copy -> mutate -> persist (remote) -> set + mirror local */
+  // ---------- safe updater ----------
   function update(mut: (x: Tournament) => void) {
     setT(prev => {
       if (!prev) return prev;
-      const copy: Tournament = deepCloneTournament(prev);
+      const copy: Tournament = {
+        ...prev,
+        players: [...prev.players],
+        pending: [...(prev.pending || [])],
+        queue: [...prev.queue],
+        rounds: prev.rounds.map((rr): Match[] =>
+          rr.map((m): Match => ({ ...m, reports: { ...(m.reports || {}) } }))
+        ),
+      };
       mut(copy);
-      // save remotely and mirror locally
-      void saveTournamentRemote(copy);
-      writeLocal(copy);
+      saveTournament(copy);
       return copy;
     });
   }
@@ -134,29 +60,30 @@ export default function Lobby() {
     update(x => { x.queue = x.queue.filter(pid => pid !== me.id); });
   }
 
-  // ---------- leave / delete ----------
+  // ---------- host leave = delete; player leave = remove everywhere ----------
   async function leaveTournament() {
     if (!me) return;
+    const cur = t;           // capture current state
+    if (!cur) return;        // guard for TS
 
-    if (me.id === t.hostId) {
+    if (me.id === cur.hostId) {
       if (confirm("You're the host. Leave & delete this tournament?")) {
-        await deleteTournamentRemote(t.id);
+        await deleteTournamentRemote(cur.id);
         r.push("/");
       }
       return;
     }
-
     update(x => {
       x.players = x.players.filter(p => p.id !== me.id);
       x.queue = x.queue.filter(pid => pid !== me.id);
-      x.rounds = (x.rounds || []).map(round =>
-        (round || []).map(m => ({
+      x.rounds = x.rounds.map(round =>
+        round.map(m => ({
           ...m,
           a: m.a === me.id ? undefined : m.a,
           b: m.b === me.id ? undefined : m.b,
           winner: m.winner === me.id ? undefined : m.winner,
           reports: Object.fromEntries(
-            Object.entries(m.reports || {}).filter(([pid]) => pid !== me.id)
+            Object.entries(m.reports || {}).filter(([k]) => k !== me.id)
           ),
         }))
       );
@@ -164,11 +91,11 @@ export default function Lobby() {
     r.push("/");
   }
 
-  // ---------- advance rounds when a round completes ----------
+  // ---------- small local helper: advance to next round when current is done ----------
   function advanceFromRound(roundIdx: number) {
     update(x => {
-      const cur = x.rounds[roundIdx] || [];
-      const winners = cur.map(m => m.winner);
+      const curRound = x.rounds[roundIdx];
+      const winners = curRound.map(m => m.winner);
       if (winners.some(w => !w)) return;
 
       // final
@@ -187,7 +114,7 @@ export default function Lobby() {
     });
   }
 
-  // Host override winner
+  // ---------- host override winner ----------
   function hostSetWinner(roundIdx: number, matchIdx: number, winnerId?: string) {
     update(x => {
       const m = x.rounds?.[roundIdx]?.[matchIdx];
@@ -197,33 +124,30 @@ export default function Lobby() {
     });
   }
 
-  // Start / approvals / test-add
+  // ---------- start / approvals / test add ----------
   function startTournament() { update(seedInitial); }
   function approve(pId: string) { update(x => approvePending(x, pId)); }
   function decline(pId: string) { update(x => declinePending(x, pId)); }
 
   function addTestPlayer() {
-    const count = (t?.players?.length ?? 0) + (t?.pending?.length ?? 0) + 1;
+    const cur = t;                 // guard for TS
+    if (!cur) return;
     const pid = uid();
-    const p = { id: pid, name: `Guest ${count}` };
-
+    const p = { id: pid, name: `Guest ${cur.players.length + (cur.pending?.length || 0) + 1}` };
     update(x => {
       if (x.status === "active") insertLatePlayer(x, p);
       else x.players.push(p);
     });
   }
 
-  // Self-report (player)
+  // ---------- self-report (player) ----------
   function report(roundIdx: number, matchIdx: number, result: "win" | "loss") {
     if (!me) return;
-    update(x => {
-      submitReport(x, roundIdx, matchIdx, me.id, result);
-    });
+    update(x => { submitReport(x, roundIdx, matchIdx, me.id, result); });
   }
 
-  // Header info
-  const rounds = t.rounds || [];
-  const lastRound = rounds.at(-1);
+  // header mini-info
+  const lastRound = t.rounds.at(-1);
   const finalWinnerId = lastRound?.[0]?.winner;
   const iAmChampion = t.status === "completed" && finalWinnerId === me?.id;
 
@@ -259,6 +183,7 @@ export default function Lobby() {
           <div style={card}>
             <h3 style={{ marginTop:0 }}>Host Controls</h3>
 
+            {/* Start / Delete */}
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
               <input
                 defaultValue={t.name}
@@ -310,15 +235,15 @@ export default function Lobby() {
           </div>
         )}
 
-        {/* Bracket */}
-        {(rounds.length > 0) && (
+        {/* Bracket: all rounds in columns */}
+        {t.rounds.length > 0 && (
           <div style={card}>
             <h3 style={{ marginTop:0 }}>Bracket</h3>
-            <div style={{ display:"grid", gridTemplateColumns: `repeat(${rounds.length}, minmax(220px, 1fr))`, gap:12, overflowX:"auto" }}>
-              {rounds.map((round, rIdx) => (
+            <div style={{ display:"grid", gridTemplateColumns: `repeat(${t.rounds.length}, minmax(220px, 1fr))`, gap:12, overflowX:"auto" }}>
+              {t.rounds.map((round, rIdx) => (
                 <div key={rIdx} style={{ display:"grid", gap:8 }}>
                   <div style={{ opacity:.8, fontSize:13 }}>Round {rIdx + 1}</div>
-                  {(round || []).map((m, i) => {
+                  {round.map((m, i) => {
                     const aName = t.players.find(p=>p.id===m.a)?.name || (m.a ? "??" : "BYE");
                     const bName = t.players.find(p=>p.id===m.b)?.name || (m.b ? "??" : "BYE");
                     const w = m.winner;
@@ -363,28 +288,6 @@ export default function Lobby() {
       </div>
     </main>
   );
-}
-
-/* --------- utilities --------- */
-function sanitizeTournament(t: Tournament): Tournament {
-  return {
-    ...t,
-    players: t.players || [],
-    pending: t.pending || [],
-    queue: t.queue || [],
-    rounds: (t.rounds || []).map(r => (r || []).map(m => ({ ...m, reports: m.reports || {} }))),
-  };
-}
-function deepCloneTournament(prev: Tournament): Tournament {
-  return {
-    ...prev,
-    players: [...(prev.players || [])],
-    pending: [...(prev.pending || [])],
-    queue: [...(prev.queue || [])],
-    rounds: (prev.rounds || []).map((round): Match[] =>
-      (round || []).map((m): Match => ({ ...m, reports: { ...(m.reports || {}) } }))
-    ),
-  };
 }
 
 /* --------- styles --------- */
