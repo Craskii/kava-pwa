@@ -9,7 +9,7 @@ import {
   // types
   type Tournament,
   type Match,
-  // local bracket utilities (mutate the object, then we persist remotely)
+  // bracket & helpers (mutate object; we persist remotely)
   seedInitialRounds as seedInitial,
   submitReport,
   approvePending,
@@ -32,7 +32,7 @@ export default function Lobby() {
     try { return JSON.parse(localStorage.getItem("kava_me") || "null"); } catch { return null; }
   }, []);
 
-  // load from server
+  // Load from server
   useEffect(() => {
     (async () => {
       const data = await getTournamentRemote(id);
@@ -44,7 +44,7 @@ export default function Lobby() {
 
   const isHost = me?.id === t.hostId;
 
-  /** Safe updater that copies state, applies a mutation, and persists remotely. */
+  /** Safe updater: copy -> mutate -> persist (remote) -> set */
   function update(mut: (x: Tournament) => void) {
     setT(prev => {
       if (!prev) return prev;
@@ -79,7 +79,7 @@ export default function Lobby() {
   // ---------- leave / delete ----------
   async function leaveTournament() {
     if (!me) return;
-    if (!t) return; // ✅ guard against possible null at call time
+    if (!t) return; // extra guard
 
     if (me.id === t.hostId) {
       if (confirm("You're the host. Leave & delete this tournament?")) {
@@ -98,7 +98,9 @@ export default function Lobby() {
           a: m.a === me.id ? undefined : m.a,
           b: m.b === me.id ? undefined : m.b,
           winner: m.winner === me.id ? undefined : m.winner,
-          reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([pid]) => pid !== me.id)),
+          reports: Object.fromEntries(
+            Object.entries(m.reports || {}).filter(([pid]) => pid !== me.id)
+          ),
         }))
       );
     });
@@ -128,7 +130,7 @@ export default function Lobby() {
     });
   }
 
-  // host override winner
+  // Host override winner
   function hostSetWinner(roundIdx: number, matchIdx: number, winnerId?: string) {
     update(x => {
       const m = x.rounds?.[roundIdx]?.[matchIdx];
@@ -138,29 +140,32 @@ export default function Lobby() {
     });
   }
 
-  // start / approvals / test-add
+  // Start / approvals / test-add
   function startTournament() { update(seedInitial); }
   function approve(pId: string) { update(x => approvePending(x, pId)); }
   function decline(pId: string) { update(x => declinePending(x, pId)); }
+
   function addTestPlayer() {
+    // ✅ compute counts with optional chaining to avoid null issues
+    const count = (t?.players?.length ?? 0) + (t?.pending?.length ?? 0) + 1;
     const pid = uid();
-    const p = { id: pid, name: `Guest ${t.players.length + (t.pending?.length || 0) + 1}` };
+    const p = { id: pid, name: `Guest ${count}` };
+
     update(x => {
       if (x.status === "active") insertLatePlayer(x, p);
       else x.players.push(p);
     });
   }
 
-  // self-report (player)
+  // Self-report (player)
   function report(roundIdx: number, matchIdx: number, result: "win" | "loss") {
     if (!me) return;
     update(x => {
       submitReport(x, roundIdx, matchIdx, me.id, result);
-      // submitReport mutates x; advance handled inside helpers or by UI next render
     });
   }
 
-  // mini header info
+  // Header info
   const lastRound = t.rounds.at(-1);
   const finalWinnerId = lastRound?.[0]?.winner;
   const iAmChampion = t.status === "completed" && finalWinnerId === me?.id;
