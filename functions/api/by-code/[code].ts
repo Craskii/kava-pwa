@@ -1,22 +1,25 @@
 // functions/api/by-code/[code].ts
-import { ok, error, handleOptions } from "../../_utils/cors";
+import { ok, notFound, handleOptions, error } from "../../utils/cors";
 
-type Ctx = {
-  env: { KAVA_TOURNAMENTS: { get: (k: string) => Promise<string | null> } };
-  params: { code: string };
+type KV = {
+  get: (key: string) => Promise<string | null>;
 };
 
-export async function onRequestOptions() {
+type Env = { KAVA_TOURNAMENTS: KV };
+type Params = { code?: string };
+
+export async function onRequestOptions(): Promise<Response> {
   return handleOptions();
 }
 
-export async function onRequestGet({ env, params }: Ctx) {
-  const code = String(params.code || "").toUpperCase();
-  if (!code) return error("Missing code", 400);
+export async function onRequestGet(context: { env: Env; params: Params }): Promise<Response> {
+  const { env, params } = context;
+  const code = String(params.code ?? "").trim().toUpperCase();
+  if (!/^\d{4}$/.test(code)) return error("Invalid code format. Expect 4 digits.", 400);
 
+  // code:<CODE> -> id
   const id = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
-  if (!id) return ok(null); // client treats null as "not found"
+  if (!id) return notFound("No tournament with that code");
 
-  const json = await env.KAVA_TOURNAMENTS.get(`t:${id}`);
-  return ok(json ? JSON.parse(json) : null);
+  return ok({ id });
 }

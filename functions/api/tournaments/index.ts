@@ -1,35 +1,56 @@
 // functions/api/tournaments/index.ts
-import { ok, error, handleOptions } from "../../_utils/cors";
+import { ok, error, handleOptions } from "../../utils/cors";
 
 type KV = {
-  get: (k: string) => Promise<string | null>;
-  put: (k: string, v: string) => Promise<void>;
+  get: (key: string) => Promise<string | null>;
+  put: (key: string, value: string, options?: unknown) => Promise<void>;
 };
 
-type PostCtx = { env: { KAVA_TOURNAMENTS: KV }; request: Request };
+type Env = { KAVA_TOURNAMENTS: KV };
 
-export async function onRequestOptions() {
+type CreateBody = {
+  id: string;
+  code: string; // 4-digit numeric string
+  data: unknown; // full tournament object as stringified JSON on store
+};
+
+export async function onRequestOptions(): Promise<Response> {
   return handleOptions();
 }
 
-// POST body should contain at least { id, code, ...tournament }
-export async function onRequestPost({ env, request }: PostCtx) {
-  const body = (await request.json()) as { id?: string; code?: string } & Record<
-    string,
-    unknown
-  >;
+/**
+ * POST /api/tournaments
+ * Body: { id, code, data }
+ * - Ensures code uniqueness (code:<code> -> id)
+ * - Stores tournament JSON under id:<id>
+ */
+export async function onRequestPost(context: { env: Env; request: Request }): Promise<Response> {
+  const { env, request } = context;
 
-  const id = String(body.id || "");
-  const code = String(body.code || "").toUpperCase();
+  let body: CreateBody;
+  try {
+    body = (await request.json()) as CreateBody;
+  } catch {
+    return error("Invalid JSON body", 400);
+  }
 
-  if (!id || !code) return error("Missing id or code", 400);
+  const id = String(body?.id ?? "").trim();
+  const code = String(body?.code ?? "").trim().toUpperCase();
+  const data = body?.data;
 
-  // enforce uniqueness
-  const existing = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
-  if (existing && existing !== id) return error("Code already in use", 409);
+  if (!id) return error("Missing id", 400);
+  if (!/^\d{4}$/.test(code)) return error("Invalid code format (expect 4 digits)", 400);
+  if (data == null) return error("Missing data", 400);
 
+  // Check if code already taken
+  const existingId = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
+  if (existingId && existingId !== id) {
+    return error("Code already in use", 409);
+  }
+
+  // Save data and code mapping
+  await env.KAVA_TOURNAMENTS.put(`id:${id}`, JSON.stringify(data));
   await env.KAVA_TOURNAMENTS.put(`code:${code}`, id);
-  await env.KAVA_TOURNAMENTS.put(`t:${id}`, JSON.stringify(body));
 
-  return ok({ ok: true });
+  return ok({ id, code });
 }
