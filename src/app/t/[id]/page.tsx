@@ -1,10 +1,13 @@
+// src/app/t/[id]/page.tsx
 'use client';
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import BackButton from "../../../components/BackButton";
-import {
-  getTournament, saveTournament, seedBracket, Tournament
-} from "../../../lib/storage";
+import { getTournament, saveTournament, seedBracket, Tournament } from "../../../lib/storage";
+
+// ✅ required by Cloudflare next-on-pages for dynamic routes
+export const runtime = 'edge';
+
 
 export default function Lobby() {
   const { id } = useParams<{ id: string }>();
