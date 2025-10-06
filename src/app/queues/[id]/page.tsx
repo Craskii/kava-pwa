@@ -1,5 +1,7 @@
 "use client";
 
+export const runtime = "edge";
+
 import { useRouter, useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -15,6 +17,7 @@ function load<T>(key: string, fallback: T): T {
     return fallback;
   }
 }
+
 function save<T>(key: string, value: T) {
   if (typeof localStorage === "undefined") return;
   localStorage.setItem(key, JSON.stringify(value));
@@ -34,20 +37,18 @@ export default function QueueDetailsPage() {
     const foundQueue = queues.find((q) => q.id === id);
     setQueue(foundQueue || null);
 
-    // compute position (joined order)
-    const joined = memberships
-      .filter((m) => m.queueId === id)
-      .sort((a, b) => new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime());
-    const myJoin = joined.findIndex((m) => m.queueId === id);
-    setPosition(myJoin >= 0 ? myJoin + 1 : null);
+    // Determine order among joined queues (for fun, we'll just simulate)
+    const joined = memberships.filter((m) => m.queueId === id);
+    const myIndex = joined.findIndex((m) => m.queueId === id);
+    setPosition(myIndex >= 0 ? myIndex + 1 : 1);
   }, [id]);
 
   const leaveQueue = () => {
     const memberships = load<QueueMembership[]>("queueMemberships", []);
     const next = memberships.filter((m) => m.queueId !== id);
     save("queueMemberships", next);
-    alert("You left the queue!");
-    router.push("/"); // go back home
+    alert("You left the queue.");
+    router.push("/"); // back to home
   };
 
   if (!queue) {
@@ -79,9 +80,9 @@ export default function QueueDetailsPage() {
       }}
     >
       <div style={{ width: "100%", maxWidth: 720 }}>
-        {/* Back button */}
+        {/* ← Back button */}
         <button
-          onClick={() => router.back()}
+          onClick={() => router.push("/")}
           style={{
             background: "transparent",
             border: "none",
@@ -89,6 +90,7 @@ export default function QueueDetailsPage() {
             fontWeight: 600,
             marginBottom: 12,
             cursor: "pointer",
+            fontSize: 16,
           }}
         >
           ← Back
@@ -104,36 +106,44 @@ export default function QueueDetailsPage() {
             marginTop: 24,
             background: "rgba(255,255,255,.04)",
             borderRadius: 12,
-            padding: 16,
+            padding: 24,
             border: "1px solid rgba(255,255,255,.12)",
+            textAlign: "center",
           }}
         >
-          {position ? (
-            <>
-              <div style={{ fontSize: 18 }}>
-                You are <b>#{position}</b> in line
-              </div>
-              <div style={{ opacity: 0.7, fontSize: 12, marginTop: 8 }}>
-                Stay on this page to keep your spot
-              </div>
-            </>
-          ) : (
-            <div>You are not currently joined in this queue.</div>
-          )}
+          <div style={{ fontSize: 18, marginBottom: 8 }}>
+            Your Position in Line:
+          </div>
+          <div
+            style={{
+              fontSize: 40,
+              fontWeight: 800,
+              color: "#0ea5e9",
+              marginBottom: 4,
+            }}
+          >
+            #{position ?? 1}
+          </div>
+          <div style={{ opacity: 0.7, fontSize: 13 }}>
+            Stay on this page to keep your spot active.
+          </div>
         </div>
 
+        {/* Leave Queue Button */}
         <button
           onClick={leaveQueue}
           style={{
-            marginTop: 24,
-            padding: "12px 18px",
+            marginTop: 32,
+            padding: "14px 20px",
             borderRadius: 12,
             border: "none",
             background: "#dc2626",
             color: "white",
             fontWeight: 700,
+            fontSize: 16,
             cursor: "pointer",
             width: "100%",
+            boxShadow: "0 6px 20px rgba(0,0,0,.25)",
           }}
         >
           Leave Queue
