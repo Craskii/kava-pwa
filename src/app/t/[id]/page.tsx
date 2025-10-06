@@ -22,46 +22,104 @@ import {
   deleteTournamentRemote,
 } from "../../../lib/storage";
 
+/* ---------- tiny local helpers (no imports needed) ---------- */
+function readLocal(id: string): Tournament | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem("tournaments");
+    if (!raw) return null;
+    const arr = JSON.parse(raw) as Tournament[];
+    return arr.find(t => t.id === id) || null;
+  } catch { return null; }
+}
+function writeLocal(t: Tournament) {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = localStorage.getItem("tournaments");
+    const arr = raw ? (JSON.parse(raw) as Tournament[]) : [];
+    const next = [t, ...arr.filter(x => x.id !== t.id)];
+    localStorage.setItem("tournaments", JSON.stringify(next));
+  } catch {}
+}
+
 export default function Lobby() {
   const { id } = useParams<{ id: string }>();
   const r = useRouter();
+
   const [t, setT] = useState<Tournament | null>(null);
+  const [notFound, setNotFound] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   const me = useMemo(() => {
     if (typeof window === 'undefined') return null;
     try { return JSON.parse(localStorage.getItem("kava_me") || "null"); } catch { return null; }
   }, []);
 
-  // Load from server
+  /* ---------- 1) hydrate from local first (fast) ---------- */
   useEffect(() => {
+    setLoading(true);
+    setNotFound(false);
+
+    const local = readLocal(id);
+    if (local) setT(sanitizeTournament(local));
+
+    /* ---------- 2) then fetch remote and replace if found ---------- */
     (async () => {
-      const data = await getTournamentRemote(id);
-      setT(data);
+      try {
+        const remote = await getTournamentRemote(id);
+        if (remote) {
+          const clean = sanitizeTournament(remote);
+          setT(clean);
+          writeLocal(clean);              // keep offline mirror fresh
+          setNotFound(false);
+        } else if (!local) {
+          // neither remote nor local — show not found
+          setT(null);
+          setNotFound(true);
+        }
+      } catch {
+        // network error: keep whatever we had locally, but stop the spinner
+      } finally {
+        setLoading(false);
+      }
     })();
   }, [id]);
 
-  if (!t) return <main style={wrap}><BackButton /><p>Loading…</p></main>;
+  if (loading) {
+    return (
+      <main style={wrap}>
+        <BackButton />
+        <p>Loading…</p>
+      </main>
+    );
+  }
+
+  if (notFound || !t) {
+    return (
+      <main style={wrap}>
+        <BackButton />
+        <div style={{maxWidth:700}}>
+          <h2 style={{marginTop:12}}>Tournament not found</h2>
+          <p style={{opacity:.8}}>
+            We couldn’t find a tournament with this link. Ask the host for the 4-digit code
+            and try joining again from the <b>Join with Code</b> screen.
+          </p>
+        </div>
+      </main>
+    );
+  }
 
   const isHost = me?.id === t.hostId;
 
-  /** Safe updater: copy -> mutate -> persist (remote) -> set */
+  /** Safe updater: copy -> mutate -> persist (remote) -> set + mirror local */
   function update(mut: (x: Tournament) => void) {
     setT(prev => {
       if (!prev) return prev;
-      const copy: Tournament = {
-        ...prev,
-        players: [...prev.players],
-        pending: [...(prev.pending || [])],
-        queue: [...prev.queue],
-        rounds: (prev.rounds || []).map((round): Match[] =>
-          (round || []).map((m): Match => ({
-            ...m,
-            reports: { ...(m.reports || {}) },
-          }))
-        ),
-      };
+      const copy: Tournament = deepCloneTournament(prev);
       mut(copy);
+      // save remotely and mirror locally
       void saveTournamentRemote(copy);
+      writeLocal(copy);
       return copy;
     });
   }
@@ -79,7 +137,6 @@ export default function Lobby() {
   // ---------- leave / delete ----------
   async function leaveTournament() {
     if (!me) return;
-    if (!t) return; // extra guard
 
     if (me.id === t.hostId) {
       if (confirm("You're the host. Leave & delete this tournament?")) {
@@ -146,7 +203,6 @@ export default function Lobby() {
   function decline(pId: string) { update(x => declinePending(x, pId)); }
 
   function addTestPlayer() {
-    // ✅ compute counts with optional chaining to avoid null issues
     const count = (t?.players?.length ?? 0) + (t?.pending?.length ?? 0) + 1;
     const pid = uid();
     const p = { id: pid, name: `Guest ${count}` };
@@ -166,7 +222,8 @@ export default function Lobby() {
   }
 
   // Header info
-  const lastRound = t.rounds.at(-1);
+  const rounds = t.rounds || [];
+  const lastRound = rounds.at(-1);
   const finalWinnerId = lastRound?.[0]?.winner;
   const iAmChampion = t.status === "completed" && finalWinnerId === me?.id;
 
@@ -217,7 +274,8 @@ export default function Lobby() {
                   style={btnGhost}
                   onClick={async ()=>{
                     if (confirm("Delete tournament? This cannot be undone.")) {
-                      await deleteTournamentRemote(t.id); r.push("/");
+                      await deleteTournamentRemote(t.id);
+                      r.push("/");
                     }
                   }}
                 >Delete</button>
@@ -253,14 +311,14 @@ export default function Lobby() {
         )}
 
         {/* Bracket */}
-        {t.rounds.length > 0 && (
+        {(rounds.length > 0) && (
           <div style={card}>
             <h3 style={{ marginTop:0 }}>Bracket</h3>
-            <div style={{ display:"grid", gridTemplateColumns: `repeat(${t.rounds.length}, minmax(220px, 1fr))`, gap:12, overflowX:"auto" }}>
-              {t.rounds.map((round, rIdx) => (
+            <div style={{ display:"grid", gridTemplateColumns: `repeat(${rounds.length}, minmax(220px, 1fr))`, gap:12, overflowX:"auto" }}>
+              {rounds.map((round, rIdx) => (
                 <div key={rIdx} style={{ display:"grid", gap:8 }}>
                   <div style={{ opacity:.8, fontSize:13 }}>Round {rIdx + 1}</div>
-                  {round.map((m, i) => {
+                  {(round || []).map((m, i) => {
                     const aName = t.players.find(p=>p.id===m.a)?.name || (m.a ? "??" : "BYE");
                     const bName = t.players.find(p=>p.id===m.b)?.name || (m.b ? "??" : "BYE");
                     const w = m.winner;
@@ -305,6 +363,28 @@ export default function Lobby() {
       </div>
     </main>
   );
+}
+
+/* --------- utilities --------- */
+function sanitizeTournament(t: Tournament): Tournament {
+  return {
+    ...t,
+    players: t.players || [],
+    pending: t.pending || [],
+    queue: t.queue || [],
+    rounds: (t.rounds || []).map(r => (r || []).map(m => ({ ...m, reports: m.reports || {} }))),
+  };
+}
+function deepCloneTournament(prev: Tournament): Tournament {
+  return {
+    ...prev,
+    players: [...(prev.players || [])],
+    pending: [...(prev.pending || [])],
+    queue: [...(prev.queue || [])],
+    rounds: (prev.rounds || []).map((round): Match[] =>
+      (round || []).map((m): Match => ({ ...m, reports: { ...(m.reports || {}) } }))
+    ),
+  };
 }
 
 /* --------- styles --------- */

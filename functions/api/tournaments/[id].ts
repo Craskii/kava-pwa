@@ -1,49 +1,40 @@
 // functions/api/tournaments/[id].ts
+import { ok, bad, noContent, handleOptions } from "../../_utils/cors";
 
-function json(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "access-control-allow-origin": "*",
-      "access-control-allow-methods": "GET, PUT, OPTIONS",
-      "access-control-allow-headers": "content-type",
-    },
-  });
-}
+export async function onRequestOptions() { return handleOptions(); }
 
-export const onRequestOptions = async () => json(null, 204);
+// GET/PUT/DELETE a tournament by id
+export async function onRequest(ctx: {
+  env: { KAVA_TOURNAMENTS: KVNamespace };
+  request: Request;
+  params: { id: string };
+}) {
+  const { KAVA_TOURNAMENTS: kv } = ctx.env;
+  const id = ctx.params.id;
 
-// GET /api/tournaments/:id  -> returns the tournament or null
-export const onRequestGet = async (context: any) => {
-  const { env, params } = context;
-  const id = String(params.id || "");
-  if (!id) return json({ error: "Missing id" }, 400);
-
-  const raw = await env.KAVA_TOURNAMENTS.get(`t:${id}`);
-  return json(raw ? JSON.parse(raw) : null);
-};
-
-// PUT /api/tournaments/:id  -> upsert tournament JSON
-// body: Tournament (must include { id, code? })
-export const onRequestPut = async (context: any) => {
-  const { env, params, request } = context;
-  const id = String(params.id || "");
-  if (!id) return json({ error: "Missing id" }, 400);
-
-  const body = await request.json().catch(() => null);
-  if (!body || body.id !== id) return json({ error: "Invalid body" }, 400);
-
-  // If a code is present, enforce uniqueness across tournaments
-  const code = (body.code || "").toString().toUpperCase();
-  if (code) {
-    const existingId = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
-    if (existingId && existingId !== id) {
-      return json({ error: "Code already in use" }, 409);
-    }
-    await env.KAVA_TOURNAMENTS.put(`code:${code}`, id);
+  if (ctx.request.method === "GET") {
+    const raw = await kv.get(`t:${id}`);
+    return raw ? ok(JSON.parse(raw)) : ok(null);
   }
 
-  await env.KAVA_TOURNAMENTS.put(`t:${id}`, JSON.stringify(body));
-  return json({ ok: true });
-};
+  if (ctx.request.method === "PUT") {
+    const currentRaw = await kv.get(`t:${id}`);
+    if (!currentRaw) return bad("Not found", 404);
+    const incoming = await ctx.request.json();
+    const merged = { ...JSON.parse(currentRaw), ...incoming };
+    await kv.put(`t:${id}`, JSON.stringify(merged));
+    return ok(merged);
+  }
+
+  if (ctx.request.method === "DELETE") {
+    const raw = await kv.get(`t:${id}`);
+    if (raw) {
+      const t = JSON.parse(raw) as { code?: string };
+      if (t.code) await kv.delete(`code:${t.code}`);
+      await kv.delete(`t:${id}`);
+    }
+    return noContent();
+  }
+
+  return bad("Method not allowed", 405);
+}
