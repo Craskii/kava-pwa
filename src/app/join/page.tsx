@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from "react";
+import BackButton from "../../components/BackButton"; // ✅ relative path
 
 export default function JoinPage() {
   const [code, setCode] = useState("");

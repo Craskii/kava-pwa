@@ -1,3 +1,5 @@
+import BackButton from "../../components/BackButton"; // ✅ relative path
+
 export default function NearbyPage() {
   return (
     <main style={wrap}>
