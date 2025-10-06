@@ -7,12 +7,10 @@ type InstallPromptEvent = Event & {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 };
 
-function isStandalone(): boolean {
+function getStandalone(): boolean {
   if (typeof window === 'undefined') return false;
   const mm = window.matchMedia?.('(display-mode: standalone)').matches === true;
-  const legacy =
-    (typeof navigator !== 'undefined' &&
-      (navigator as Navigator & { standalone?: boolean }).standalone === true);
+  const legacy = (navigator as Navigator & { standalone?: boolean }).standalone === true; // iOS
   return Boolean(mm || legacy);
 }
 
@@ -21,30 +19,45 @@ export default function InstallPWAButton() {
   const [installed, setInstalled] = useState(false);
   const [android, setAndroid] = useState(false);
 
-  // Detect Android after mount
+  // Detect platform
   useEffect(() => {
     if (typeof navigator !== 'undefined') {
       setAndroid(/android/.test(navigator.userAgent.toLowerCase()));
     }
   }, []);
 
+  // Track standalone state (and react to changes)
+  useEffect(() => {
+    setInstalled(getStandalone());
+    const mq = window.matchMedia?.('(display-mode: standalone)');
+    const onChange = () => setInstalled(getStandalone());
+    mq?.addEventListener?.('change', onChange);
+    return () => mq?.removeEventListener?.('change', onChange);
+  }, []);
+
   // Capture install prompt when eligible
   useEffect(() => {
-    const handler = (e: Event) => {
+    const onBeforeInstall = (e: Event) => {
+      // Some browsers may fire this more than once on SPA navigations
       e.preventDefault?.();
       const maybe = e as Partial<InstallPromptEvent>;
       if (typeof maybe.prompt === 'function') {
         setDeferred(e as InstallPromptEvent);
       }
     };
-    window.addEventListener('beforeinstallprompt', handler as EventListener);
+    window.addEventListener('beforeinstallprompt', onBeforeInstall as EventListener);
     return () =>
-      window.removeEventListener('beforeinstallprompt', handler as EventListener);
+      window.removeEventListener('beforeinstallprompt', onBeforeInstall as EventListener);
   }, []);
 
-  // Hide if already installed
+  // Hide when installed from any path (menu, prompt, etc.)
   useEffect(() => {
-    if (isStandalone()) setInstalled(true);
+    const onInstalled = () => {
+      setDeferred(null);
+      setInstalled(true);
+    };
+    window.addEventListener('appinstalled', onInstalled);
+    return () => window.removeEventListener('appinstalled', onInstalled);
   }, []);
 
   if (installed) return null;
@@ -54,8 +67,12 @@ export default function InstallPWAButton() {
       <button
         onClick={async () => {
           deferred.prompt();
-          await deferred.userChoice;
-          setDeferred(null);
+          try {
+            await deferred.userChoice;
+          } finally {
+            // Chrome recommends clearing our saved event after use
+            setDeferred(null);
+          }
         }}
         style={{
           padding: '12px 18px',
@@ -72,7 +89,7 @@ export default function InstallPWAButton() {
     );
   }
 
-  // Android fallback instructions
+  // Android fallback instructions (when prompt isn't available yet)
   if (android) {
     return (
       <div
