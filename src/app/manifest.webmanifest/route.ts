@@ -12,10 +12,11 @@ export function GET() {
     background_color: "#0b1220",
     theme_color: "#0ea5e9",
     icons: [
-      { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
-      { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
-      // add more sizes if you have them
-    ],
+  { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
+  { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
+  // iOS sometimes uses this maskable style too:
+  { src: "/icons/apple-touch-icon.png", sizes: "180x180", type: "image/png", purpose: "any maskable" },
+],
     shortcuts: [
       { name: "Create Tournament", short_name: "Create", url: "/tournaments/new" },
       { name: "Join Queue", short_name: "Join", url: "/queues/join" },

@@ -6,14 +6,18 @@ import "./globals.css";
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
-export const metadata: Metadata = {
+export const metadata = {
   title: "🏓 Kava Tournaments",
   description: "Create tournaments, queues & get turn alerts.",
-  manifest: "/manifest.webmanifest", // ← fix path & extension
-  appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Kava Tournaments" },
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Kava Tournaments",
+  },
   icons: {
-    icon: "/icons/icon-192.png",              // keep these filenames consistent with your /public/icons/*
-    apple: "/icons/icon-192.png",
+    icon: "/icons/icon-192.png",
+    apple: "/icons/apple-touch-icon.png",
     shortcut: "/icons/icon-512.png",
   },
 };
