@@ -1,6 +1,7 @@
 // src/app/t/new/page.tsx
 "use client";
 
+import React from "react";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
@@ -22,37 +23,6 @@ function load<T>(key: string, fallback: T): T {
   }
 }
 
-// generate numeric 4-digit code
-function genCode(): string {
-  return Math.floor(1000 + Math.random() * 9000).toString();
-}
-
-// Try to register tournament code on the server (Cloudflare Pages Functions).
-// Returns the (possibly updated) { id, code } or throws on fatal error.
-// If the endpoint doesn't exist yet, we swallow the error upstream and keep local.
-async function registerRemote(id: string, code: string, name: string) {
-  const res = await fetch("/api/tournaments", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id, code, name }),
-  });
-
-  if (res.status === 409) {
-    // code already taken
-    const data = await res.json().catch(() => ({}));
-    const newCode = data?.suggestion || genCode();
-    throw Object.assign(new Error("conflict"), { code: "CONFLICT", suggestion: newCode });
-  }
-
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`server error ${res.status}: ${txt}`);
-  }
-
-  const data = (await res.json()) as { ok: true; id: string; code: string };
-  return data;
-}
-
 // --- main component ---
 export default function NewTournamentPage() {
   const router = useRouter();
@@ -63,65 +33,38 @@ export default function NewTournamentPage() {
   const [time, setTime] = useState("");
   const [format, setFormat] = useState<Format>("Single Elim");
   const [creatorName, setCreatorName] = useState("");
-  const [saving, setSaving] = useState(false);
 
-  const onCreate = async () => {
-    if (saving) return;
-    setSaving(true);
-
+  const onCreate = () => {
     const id = crypto.randomUUID();
     const startsAt = date && time ? `${date}T${time}` : undefined;
 
-    let code = genCode();
+    // 4-digit numeric code (1000–9999)
+    const code = Math.floor(1000 + Math.random() * 9000).toString();
+
     const tournaments = load<Tournament[]>("tournaments", []);
 
-    // base record for local storage
     const rec: Tournament = {
       id,
-      code,
+      code, // numeric string like "4832"
       name: name.trim() || "Untitled Tournament",
       venue: venue.trim() || "TBD",
       format,
       startsAt,
       players: [],
-      createdAt: Date.now(),
+      createdAt: Date.now(), // keep as number
       hostName: creatorName.trim() || undefined,
       hostDeviceId: getDeviceId(),
     };
 
-    // Try to register the code remotely (if your Cloudflare function is set up)
-    // Loop a few times to dodge rare collisions.
-    try {
-      for (let tries = 0; tries < 4; tries++) {
-        try {
-          const r = await registerRemote(rec.id, code, rec.name);
-          // success – server now owns the mapping code -> id
-          code = r.code; // keep whatever the server returned
-          rec.code = r.code;
-          break;
-        } catch (e: any) {
-          if (e?.code === "CONFLICT") {
-            code = e.suggestion || genCode();
-            rec.code = code;
-            continue; // try again with the suggestion
-          }
-          throw e;
-        }
-      }
-    } catch {
-      // If server is missing or failed, we silently continue with local-only create.
-      // Users on the same device can still see it; cross-device will work once the
-      // Cloudflare function is bound/deployed.
-    }
-
-    // Save locally (so the creator always sees it instantly)
     let nextTs = [rec, ...tournaments];
 
     // auto-join host if name provided
     const n = creatorName.trim();
     if (n) {
       nextTs = nextTs.map(t =>
-        t.id === id ? { ...t, players: Array.from(new Set([...(t.players || []), n])) } : t
+        t.id === id
+          ? { ...t, players: Array.from(new Set([...(t.players || []), n])) }
+          : t
       );
       const memberships = load<Membership[]>("memberships", []);
       const nextMs: Membership[] = [
@@ -151,9 +94,18 @@ export default function NewTournamentPage() {
     save("queueMemberships", nextQms);
 
     alert(`✅ Tournament Created!\nShare this 4-digit code:\n\n${code}`);
-    setSaving(false);
+
     router.push(`/t/${id}`);
   };
+
+  // typed change handlers (no any)
+  const onName = (e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value);
+  const onVenue = (e: React.ChangeEvent<HTMLInputElement>) => setVenue(e.target.value);
+  const onDate = (e: React.ChangeEvent<HTMLInputElement>) => setDate(e.target.value);
+  const onTime = (e: React.ChangeEvent<HTMLInputElement>) => setTime(e.target.value);
+  const onCreator = (e: React.ChangeEvent<HTMLInputElement>) => setCreatorName(e.target.value);
+  const onFormat = (e: React.ChangeEvent<HTMLSelectElement>) =>
+    setFormat(e.target.value as Format);
 
   return (
     <main style={{ minHeight: "100vh", background: "#0b1220", color: "white" }}>
@@ -163,7 +115,7 @@ export default function NewTournamentPage() {
           Name
           <input
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={onName}
             placeholder="Friday Night Ping Pong"
             style={input}
           />
@@ -173,7 +125,7 @@ export default function NewTournamentPage() {
           Venue
           <input
             value={venue}
-            onChange={(e) => setVenue(e.target.value)}
+            onChange={onVenue}
             placeholder="Kava Bar (Las Olas)"
             style={input}
           />
@@ -189,31 +141,17 @@ export default function NewTournamentPage() {
         >
           <label>
             Date
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              style={input}
-            />
+            <input type="date" value={date} onChange={onDate} style={input} />
           </label>
           <label>
             Time
-            <input
-              type="time"
-              value={time}
-              onChange={(e) => setTime(e.target.value)}
-              style={input}
-            />
+            <input type="time" value={time} onChange={onTime} style={input} />
           </label>
         </div>
 
         <label style={{ display: "block", marginBottom: 10 }}>
           Format
-          <select
-            value={format}
-            onChange={(e) => setFormat(e.target.value as Format)}
-            style={input}
-          >
+          <select value={format} onChange={onFormat} style={input}>
             <option>Single Elim</option>
             <option>Double Elim</option>
             <option>Round Robin</option>
@@ -224,14 +162,14 @@ export default function NewTournamentPage() {
           Your name (host & auto-join)
           <input
             value={creatorName}
-            onChange={(e) => setCreatorName(e.target.value)}
+            onChange={onCreator}
             placeholder="e.g. Henry"
             style={input}
           />
         </label>
 
-        <button onClick={onCreate} style={primary} disabled={saving}>
-          {saving ? "Creating…" : "Create & View Bracket"}
+        <button onClick={onCreate} style={primary}>
+          Create & View Bracket
         </button>
       </div>
     </main>
