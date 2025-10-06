@@ -5,26 +5,9 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import { getDeviceId } from "@/lib/device";
-import type { Format } from "@/types";
+import type { Tournament, Membership, Queue, QueueMembership, Format } from "@/types";
 
-/** Local cache shape just for client-side lists */
-type LocalTournament = {
-  id: string;
-  code: string;
-  name: string;
-  venue?: string;
-  format: Format;
-  startsAt?: string; // ISO or undefined
-  players: string[]; // names only for local overview
-  createdAt: number; // <-- keep as number
-  hostName?: string;
-  hostDeviceId?: string;
-};
-
-type Membership = { tournamentId: string; playerName: string; joinedAt: string };
-type Queue = { id: string; name: string };
-type QueueMembership = { queueId: string; joinedAt: string };
-
+// --- localStorage helpers ---
 function save<T>(key: string, value: T) {
   if (typeof localStorage === "undefined") return;
   localStorage.setItem(key, JSON.stringify(value));
@@ -39,6 +22,38 @@ function load<T>(key: string, fallback: T): T {
   }
 }
 
+// generate numeric 4-digit code
+function genCode(): string {
+  return Math.floor(1000 + Math.random() * 9000).toString();
+}
+
+// Try to register tournament code on the server (Cloudflare Pages Functions).
+// Returns the (possibly updated) { id, code } or throws on fatal error.
+// If the endpoint doesn't exist yet, we swallow the error upstream and keep local.
+async function registerRemote(id: string, code: string, name: string) {
+  const res = await fetch("/api/tournaments", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id, code, name }),
+  });
+
+  if (res.status === 409) {
+    // code already taken
+    const data = await res.json().catch(() => ({}));
+    const newCode = data?.suggestion || genCode();
+    throw Object.assign(new Error("conflict"), { code: "CONFLICT", suggestion: newCode });
+  }
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`server error ${res.status}: ${txt}`);
+  }
+
+  const data = (await res.json()) as { ok: true; id: string; code: string };
+  return data;
+}
+
+// --- main component ---
 export default function NewTournamentPage() {
   const router = useRouter();
 
@@ -48,101 +63,97 @@ export default function NewTournamentPage() {
   const [time, setTime] = useState("");
   const [format, setFormat] = useState<Format>("Single Elim");
   const [creatorName, setCreatorName] = useState("");
+  const [saving, setSaving] = useState(false);
 
-  async function onCreate() {
+  const onCreate = async () => {
+    if (saving) return;
+    setSaving(true);
+
     const id = crypto.randomUUID();
     const startsAt = date && time ? `${date}T${time}` : undefined;
 
-    // random 4-char code (server will enforce uniqueness; may replace this if conflict)
-    const proposedCode = Math.random().toString(36).substring(2, 6).toUpperCase();
+    let code = genCode();
+    const tournaments = load<Tournament[]>("tournaments", []);
 
-    const createdAt = Date.now();
-
-    // Build the payload to your CF function
-    const payload = {
+    // base record for local storage
+    const rec: Tournament = {
       id,
+      code,
       name: name.trim() || "Untitled Tournament",
-      code: proposedCode,
-      hostId: getDeviceId(), // we use deviceId as "user id" for now
-      hostName: creatorName.trim() || undefined,
-      createdAt, // number
       venue: venue.trim() || "TBD",
       format,
-      startsAt, // ISO or undefined
+      startsAt,
+      players: [],
+      createdAt: Date.now(),
+      hostName: creatorName.trim() || undefined,
+      hostDeviceId: getDeviceId(),
     };
 
-    // Create on server (functions/api/tournaments/index.ts)
-    const res = await fetch("/api/tournaments", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      alert(`Failed to create tournament.\n${text || res.status}`);
-      return;
+    // Try to register the code remotely (if your Cloudflare function is set up)
+    // Loop a few times to dodge rare collisions.
+    try {
+      for (let tries = 0; tries < 4; tries++) {
+        try {
+          const r = await registerRemote(rec.id, code, rec.name);
+          // success – server now owns the mapping code -> id
+          code = r.code; // keep whatever the server returned
+          rec.code = r.code;
+          break;
+        } catch (e: any) {
+          if (e?.code === "CONFLICT") {
+            code = e.suggestion || genCode();
+            rec.code = code;
+            continue; // try again with the suggestion
+          }
+          throw e;
+        }
+      }
+    } catch {
+      // If server is missing or failed, we silently continue with local-only create.
+      // Users on the same device can still see it; cross-device will work once the
+      // Cloudflare function is bound/deployed.
     }
 
-    // Server may adjust code (to ensure global uniqueness)
-    const data: { id: string; code: string } = await res.json();
-    const finalId = data.id || id;
-    const finalCode = data.code || proposedCode;
+    // Save locally (so the creator always sees it instantly)
+    let nextTs = [rec, ...tournaments];
 
-    // ---- Local caches (optional UX niceties) ----
-    // 1) stash in "tournaments" list locally as well (createdAt kept as number)
-    const tournaments = load<LocalTournament[]>("tournaments", []);
-    const localRec: LocalTournament = {
-      id: finalId,
-      code: finalCode,
-      name: payload.name,
-      venue: payload.venue,
-      format: payload.format as Format,
-      startsAt: payload.startsAt,
-      players: [], // start empty; we’ll add host below if provided
-      createdAt, // number
-      hostName: payload.hostName,
-      hostDeviceId: payload.hostId,
-    };
-    save<LocalTournament[]>("tournaments", [localRec, ...tournaments]);
-
-    // 2) if creator provided a name, auto-join as player locally
+    // auto-join host if name provided
     const n = creatorName.trim();
     if (n) {
-      // memberships
+      nextTs = nextTs.map(t =>
+        t.id === id ? { ...t, players: Array.from(new Set([...(t.players || []), n])) } : t
+      );
       const memberships = load<Membership[]>("memberships", []);
       const nextMs: Membership[] = [
-        ...memberships.filter((m) => m.tournamentId !== finalId),
-        { tournamentId: finalId, playerName: n, joinedAt: new Date().toISOString() },
+        ...memberships.filter(m => m.tournamentId !== id),
+        { tournamentId: id, playerName: n, joinedAt: new Date().toISOString() },
       ];
       save("memberships", nextMs);
-
-      // reflect host name in local tournaments list
-      const updatedTs = load<LocalTournament[]>("tournaments", []).map((t) =>
-        t.id === finalId ? { ...t, players: Array.from(new Set([...(t.players || []), n])) } : t
-      );
-      save("tournaments", updatedTs);
     }
 
-    // 3) create a Queue entry locally (so it shows under “Your Queues”)
+    save("tournaments", nextTs);
+
+    // create a Queue entry for local UI
     const queues = load<Queue[]>("queues", []);
-    const queueName = `${localRec.name} Queue`;
-    const nextQueues: Queue[] = [...queues.filter((q) => q.id !== finalId), { id: finalId, name: queueName }];
+    const queueName = `${rec.name} Queue`;
+    const nextQueues: Queue[] = [
+      ...queues.filter(q => q.id !== id),
+      { id, name: queueName },
+    ];
     save("queues", nextQueues);
 
-    // 4) auto-join that queue locally
+    // auto-join the queue locally
     const qms = load<QueueMembership[]>("queueMemberships", []);
     const nextQms: QueueMembership[] = [
-      ...qms.filter((m) => m.queueId !== finalId),
-      { queueId: finalId, joinedAt: new Date().toISOString() },
+      ...qms.filter(m => m.queueId !== id),
+      { queueId: id, joinedAt: new Date().toISOString() },
     ];
     save("queueMemberships", nextQms);
 
-    alert(`Tournament Created!\nShare this code with players:\n\n${finalCode}`);
-
-    // 5) go to bracket page (new route is /t/[id])
-    router.push(`/t/${finalId}`);
-  }
+    alert(`✅ Tournament Created!\nShare this 4-digit code:\n\n${code}`);
+    setSaving(false);
+    router.push(`/t/${id}`);
+  };
 
   return (
     <main style={{ minHeight: "100vh", background: "#0b1220", color: "white" }}>
@@ -152,7 +163,7 @@ export default function NewTournamentPage() {
           Name
           <input
             value={name}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
+            onChange={(e) => setName(e.target.value)}
             placeholder="Friday Night Ping Pong"
             style={input}
           />
@@ -162,19 +173,26 @@ export default function NewTournamentPage() {
           Venue
           <input
             value={venue}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setVenue(e.target.value)}
+            onChange={(e) => setVenue(e.target.value)}
             placeholder="Kava Bar (Las Olas)"
             style={input}
           />
         </label>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 }}>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 12,
+            marginBottom: 10,
+          }}
+        >
           <label>
             Date
             <input
               type="date"
               value={date}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDate(e.target.value)}
+              onChange={(e) => setDate(e.target.value)}
               style={input}
             />
           </label>
@@ -183,7 +201,7 @@ export default function NewTournamentPage() {
             <input
               type="time"
               value={time}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTime(e.target.value)}
+              onChange={(e) => setTime(e.target.value)}
               style={input}
             />
           </label>
@@ -193,7 +211,7 @@ export default function NewTournamentPage() {
           Format
           <select
             value={format}
-            onChange={(e: React.ChangeEvent<HTMLSelectElement>) => setFormat(e.target.value as Format)}
+            onChange={(e) => setFormat(e.target.value as Format)}
             style={input}
           >
             <option>Single Elim</option>
@@ -206,14 +224,14 @@ export default function NewTournamentPage() {
           Your name (host & auto-join)
           <input
             value={creatorName}
-            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setCreatorName(e.target.value)}
+            onChange={(e) => setCreatorName(e.target.value)}
             placeholder="e.g. Henry"
             style={input}
           />
         </label>
 
-        <button onClick={onCreate} style={primary}>
-          Create & View Bracket
+        <button onClick={onCreate} style={primary} disabled={saving}>
+          {saving ? "Creating…" : "Create & View Bracket"}
         </button>
       </div>
     </main>
