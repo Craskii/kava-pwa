@@ -6,7 +6,13 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import { getDeviceId } from "@/lib/device";
-import type { Tournament, Membership, Queue, QueueMembership, Format } from "@/types";
+import type {
+  Tournament,
+  Membership,
+  Queue,
+  QueueMembership,
+  Format,
+} from "@/types";
 
 // --- localStorage helpers ---
 function save<T>(key: string, value: T) {
@@ -38,37 +44,37 @@ export default function NewTournamentPage() {
     const id = crypto.randomUUID();
     const startsAt = date && time ? `${date}T${time}` : undefined;
 
-    // 4-digit numeric code (1000–9999)
+    // 4-digit numeric join code
     const code = Math.floor(1000 + Math.random() * 9000).toString();
 
     const tournaments = load<Tournament[]>("tournaments", []);
 
     const rec: Tournament = {
       id,
-      code, // numeric string like "4832"
+      code,
       name: name.trim() || "Untitled Tournament",
       venue: venue.trim() || "TBD",
       format,
       startsAt,
       players: [],
-      createdAt: Date.now(), // keep as number
+      createdAt: new Date().toISOString(), // <- string, matches your type
       hostName: creatorName.trim() || undefined,
       hostDeviceId: getDeviceId(),
     };
 
     let nextTs = [rec, ...tournaments];
 
-    // auto-join host if name provided
+    // auto-join host if they provided a name
     const n = creatorName.trim();
     if (n) {
-      nextTs = nextTs.map(t =>
+      nextTs = nextTs.map((t) =>
         t.id === id
           ? { ...t, players: Array.from(new Set([...(t.players || []), n])) }
           : t
       );
       const memberships = load<Membership[]>("memberships", []);
       const nextMs: Membership[] = [
-        ...memberships.filter(m => m.tournamentId !== id),
+        ...memberships.filter((m) => m.tournamentId !== id),
         { tournamentId: id, playerName: n, joinedAt: new Date().toISOString() },
       ];
       save("memberships", nextMs);
@@ -80,7 +86,7 @@ export default function NewTournamentPage() {
     const queues = load<Queue[]>("queues", []);
     const queueName = `${rec.name} Queue`;
     const nextQueues: Queue[] = [
-      ...queues.filter(q => q.id !== id),
+      ...queues.filter((q) => q.id !== id),
       { id, name: queueName },
     ];
     save("queues", nextQueues);
@@ -88,22 +94,26 @@ export default function NewTournamentPage() {
     // auto-join the queue locally
     const qms = load<QueueMembership[]>("queueMemberships", []);
     const nextQms: QueueMembership[] = [
-      ...qms.filter(m => m.queueId !== id),
+      ...qms.filter((m) => m.queueId !== id),
       { queueId: id, joinedAt: new Date().toISOString() },
     ];
     save("queueMemberships", nextQms);
 
     alert(`✅ Tournament Created!\nShare this 4-digit code:\n\n${code}`);
-
     router.push(`/t/${id}`);
   };
 
-  // typed change handlers (no any)
-  const onName = (e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value);
-  const onVenue = (e: React.ChangeEvent<HTMLInputElement>) => setVenue(e.target.value);
-  const onDate = (e: React.ChangeEvent<HTMLInputElement>) => setDate(e.target.value);
-  const onTime = (e: React.ChangeEvent<HTMLInputElement>) => setTime(e.target.value);
-  const onCreator = (e: React.ChangeEvent<HTMLInputElement>) => setCreatorName(e.target.value);
+  // typed handlers (no 'any')
+  const onName = (e: React.ChangeEvent<HTMLInputElement>) =>
+    setName(e.target.value);
+  const onVenue = (e: React.ChangeEvent<HTMLInputElement>) =>
+    setVenue(e.target.value);
+  const onDate = (e: React.ChangeEvent<HTMLInputElement>) =>
+    setDate(e.target.value);
+  const onTime = (e: React.ChangeEvent<HTMLInputElement>) =>
+    setTime(e.target.value);
+  const onCreator = (e: React.ChangeEvent<HTMLInputElement>) =>
+    setCreatorName(e.target.value);
   const onFormat = (e: React.ChangeEvent<HTMLSelectElement>) =>
     setFormat(e.target.value as Format);
 
@@ -188,7 +198,7 @@ const input: React.CSSProperties = {
 };
 const primary: React.CSSProperties = {
   marginTop: 8,
-  padding: "12px 16px",
+  padding: "12px 16",
   borderRadius: 12,
   border: "none",
   background: "#0ea5e9",
