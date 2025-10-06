@@ -1,18 +1,73 @@
-import ClientHome from "@/components/ClientHome";
+import Link from "next/link";
 
 export default function Home() {
   return (
     <main
       style={{
-        display: "grid",
-        placeItems: "center",
         minHeight: "100vh",
-        gap: 16,
-        fontFamily: "system-ui, sans-serif",
-        padding: 16,
+        display: "grid",
+        gridTemplateRows: "auto 1fr auto",
+        padding: "24px",
+        background: "linear-gradient(180deg,#0b0b0b, #111, #0b0b0b)",
+        color: "white",
+        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
       }}
     >
-      <ClientHome />
+      {/* Header */}
+      <header style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{
+          width: 36, height: 36, borderRadius: 12, display: "grid", placeItems: "center",
+          background: "#0ea5e9"
+        }}>🏓</div>
+        <h1 style={{ fontSize: 24, margin: 0 }}>Kava Tournaments</h1>
+      </header>
+
+      {/* Buttons */}
+      <section
+        style={{
+          display: "grid",
+          gap: 16,
+          alignContent: "center",
+          maxWidth: 560,
+          width: "100%",
+          justifySelf: "center",
+        }}
+      >
+        <Link href="/create" style={btnPrimary}>➕ Create tournament</Link>
+        <Link href="/join" style={btnGhost}>🔐 Join with code</Link>
+        <Link href="/nearby" style={btnGhost}>📍 Find nearby</Link>
+
+        <p style={{ opacity: 0.8, textAlign: "center", marginTop: 8 }}>
+          Create brackets, manage queues, and send “you’re up next” alerts.
+        </p>
+      </section>
+
+      {/* Footer */}
+      <footer style={{ opacity: 0.6, textAlign: "center", fontSize: 12 }}>
+        v0 • PWA ready • Works offline
+      </footer>
     </main>
   );
 }
+
+const btnBase: React.CSSProperties = {
+  padding: "16px 18px",
+  borderRadius: 14,
+  textDecoration: "none",
+  fontWeight: 600,
+  textAlign: "center",
+  display: "block",
+};
+
+const btnPrimary: React.CSSProperties = {
+  ...btnBase,
+  background: "#0ea5e9",
+  color: "white",
+};
+
+const btnGhost: React.CSSProperties = {
+  ...btnBase,
+  background: "rgba(255,255,255,0.06)",
+  color: "white",
+  border: "1px solid rgba(255,255,255,0.12)",
+};
