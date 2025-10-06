@@ -1,4 +1,4 @@
-const CACHE = 'kava-v2'; // bump this version if you change things
+const CACHE = 'kava-v3'; // bump this version if you change things
 
 self.addEventListener('install', e => {
   e.waitUntil(
