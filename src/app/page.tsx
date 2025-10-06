@@ -1,4 +1,6 @@
 import Link from "next/link";
+import InstallPWAButton from "./InstallPWAButton";
+import IOSInstallTip from "./IOSInstallTip";
 
 export default function Home() {
   return (
@@ -15,14 +17,22 @@ export default function Home() {
     >
       {/* Header */}
       <header style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <div style={{
-          width: 36, height: 36, borderRadius: 12, display: "grid", placeItems: "center",
-          background: "#0ea5e9"
-        }}>🏓</div>
+        <div
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 12,
+            display: "grid",
+            placeItems: "center",
+            background: "#0ea5e9",
+          }}
+        >
+          🏓
+        </div>
         <h1 style={{ fontSize: 24, margin: 0 }}>Kava Tournaments</h1>
       </header>
 
-      {/* Buttons */}
+      {/* Main actions */}
       <section
         style={{
           display: "grid",
@@ -33,11 +43,23 @@ export default function Home() {
           justifySelf: "center",
         }}
       >
-        <Link href="/create" style={btnPrimary}>➕ Create tournament</Link>
-        <Link href="/join" style={btnGhost}>🔐 Join with code</Link>
-        <Link href="/nearby" style={btnGhost}>📍 Find nearby</Link>
+        <Link href="/create" style={btnPrimary}>
+          ➕ Create tournament
+        </Link>
+        <Link href="/join" style={btnGhost}>
+          🔐 Join with code
+        </Link>
+        <Link href="/nearby" style={btnGhost}>
+          📍 Find nearby
+        </Link>
 
-        <p style={{ opacity: 0.8, textAlign: "center", marginTop: 8 }}>
+        {/* PWA install helpers */}
+        <div style={{ justifySelf: "center", marginTop: 6 }}>
+          <InstallPWAButton />
+        </div>
+        <IOSInstallTip />
+
+        <p style={{ opacity: 0.8, textAlign: "center", marginTop: 4 }}>
           Create brackets, manage queues, and send “you’re up next” alerts.
         </p>
       </section>

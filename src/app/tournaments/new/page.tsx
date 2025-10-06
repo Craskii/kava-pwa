@@ -1,187 +1,138 @@
 "use client";
+
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
-import { save, load } from "@/lib/storage";
+import { getDeviceId } from "@/lib/device";
+import type { Tournament, Membership, Queue, QueueMembership, Format } from "@/types";
 
-type Format = "Single Elim" | "Double Elim" | "Round Robin";
-
-export type NewTournamentDraft = {
-  name: string;
-  venue: string;
-  date: string; // YYYY-MM-DD
-  time: string; // HH:mm
-  format: Format;
-};
-
-export type Tournament = {
-  id: string;
-  name: string;
-  venue: string;
-  format: Format;
-  /** ISO string like 2025-10-06T19:00 */
-  startsAt?: string;
-};
+function save<T>(key: string, value: T) {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(key, JSON.stringify(value));
+}
+function load<T>(key: string, fallback: T): T {
+  if (typeof localStorage === "undefined") return fallback;
+  try { const raw = localStorage.getItem(key); return raw ? (JSON.parse(raw) as T) : fallback; }
+  catch { return fallback; }
+}
 
 export default function NewTournamentPage() {
-  const [form, setForm] = useState<NewTournamentDraft>(
-    load<NewTournamentDraft>("draft_tournament", {
-      name: "",
-      venue: "",
-      date: "",
-      time: "",
-      format: "Single Elim",
-    })
-  );
-  const [saved, setSaved] = useState(false);
+  const router = useRouter();
+  const [name, setName] = useState("");
+  const [venue, setVenue] = useState("");
+  const [date, setDate] = useState("");
+  const [time, setTime] = useState("");
+  const [format, setFormat] = useState<Format>("Single Elim");
+  const [creatorName, setCreatorName] = useState(""); // host player name (optional)
 
-  const update = <K extends keyof NewTournamentDraft>(k: K, v: NewTournamentDraft[K]) => {
-    const next = { ...form, [k]: v };
-    setForm(next);
-    save<NewTournamentDraft>("draft_tournament", next);
-    setSaved(false);
+  const onCreate = () => {
+  const id = crypto.randomUUID();
+  const startsAt = date && time ? `${date}T${time}` : undefined;
+
+  // 👇 generate a random 4-character code
+  const code = Math.random().toString(36).substring(2, 6).toUpperCase();
+
+  const tournaments = load<Tournament[]>("tournaments", []);
+  const rec: Tournament = {
+    id,
+    code, // 👈 add code here
+    name: name.trim() || "Untitled Tournament",
+    venue: venue.trim() || "TBD",
+    format,
+    startsAt,
+    players: [],
+    createdAt: new Date().toISOString(),
+    hostName: creatorName.trim() || undefined,
+    hostDeviceId: getDeviceId(),
   };
 
-  const submit = () => {
-    const created = load<Tournament[]>("tournaments", []);
-    const id = crypto.randomUUID();
-    const startsAt =
-      form.date && form.time ? `${form.date}T${form.time}` : undefined;
-    const rec: Tournament = {
-      id,
-      name: form.name,
-      venue: form.venue,
-      format: form.format,
-      startsAt,
-    };
-    const next = [rec, ...created];
-    save<Tournament[]>("tournaments", next);
-    setSaved(true);
+    let nextTs = [rec, ...tournaments];
+
+    // 2) if creator provided a name, auto-join as player
+    const n = creatorName.trim();
+    if (n) {
+      nextTs = nextTs.map(t => t.id === id ? { ...t, players: Array.from(new Set([...(t.players || []), n])) } : t);
+      const memberships = load<Membership[]>("memberships", []);
+      const nextMs: Membership[] = [
+        ...memberships.filter(m => m.tournamentId !== id),
+        { tournamentId: id, playerName: n, joinedAt: new Date().toISOString() },
+      ];
+      save("memberships", nextMs);
+    }
+    save("tournaments", nextTs);
+
+    // 3) create a Queue entry for this tournament (so it shows under Your Queues)
+    const queues = load<Queue[]>("queues", []);
+    const queueName = `${rec.name} Queue`;
+    const nextQueues: Queue[] = [...queues.filter(q => q.id !== id), { id, name: queueName }];
+    save("queues", nextQueues);
+
+    // 4) auto-join its queue as well
+    const qms = load<QueueMembership[]>("queueMemberships", []);
+    const nextQms: QueueMembership[] = [
+      ...qms.filter(m => m.queueId !== id),
+      { queueId: id, joinedAt: new Date().toISOString() },
+    ];
+    save("queueMemberships", nextQms);
+
+    alert(`Tournament Created!\nShare this code with players:\n\n${code}`);
+
+    // 5) go to bracket page
+    router.push(`/tournaments/${id}`);
   };
 
   return (
     <main style={{ minHeight: "100vh", background: "#0b1220", color: "white" }}>
       <AppHeader title="Create Tournament" />
-
       <div style={{ padding: 16, maxWidth: 720, margin: "0 auto" }}>
-        <div style={{ marginBottom: 12, opacity: 0.85 }}>
-          Quick setup (name, venue, date/time, format). This saves offline.
-        </div>
-
         <label style={{ display: "block", marginBottom: 10 }}>
           Name
-          <input
-            value={form.name}
-            onChange={(e) => update("name", e.target.value)}
-            placeholder="Friday Night Ping Pong"
-            style={inputStyle}
-          />
+          <input value={name} onChange={e => setName(e.target.value)}
+                 placeholder="Friday Night Ping Pong" style={input} />
         </label>
 
         <label style={{ display: "block", marginBottom: 10 }}>
           Venue
-          <input
-            value={form.venue}
-            onChange={(e) => update("venue", e.target.value)}
-            placeholder="Kava Bar (Las Olas)"
-            style={inputStyle}
-          />
+          <input value={venue} onChange={e => setVenue(e.target.value)}
+                 placeholder="Kava Bar (Las Olas)" style={input} />
         </label>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <label>
-            Date
-            <input
-              type="date"
-              value={form.date}
-              onChange={(e) => update("date", e.target.value)}
-              style={inputStyle}
-            />
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 }}>
+          <label> Date
+            <input type="date" value={date} onChange={e => setDate(e.target.value)} style={input}/>
           </label>
-          <label>
-            Time
-            <input
-              type="time"
-              value={form.time}
-              onChange={(e) => update("time", e.target.value)}
-              style={inputStyle}
-            />
+          <label> Time
+            <input type="time" value={time} onChange={e => setTime(e.target.value)} style={input}/>
           </label>
         </div>
 
-        <label style={{ display: "block", margin: "12px 0" }}>
+        <label style={{ display: "block", marginBottom: 10 }}>
           Format
-          <select
-            value={form.format}
-            onChange={(e) => update("format", e.target.value as Format)}
-            style={inputStyle}
-          >
+          <select value={format} onChange={e => setFormat(e.target.value as Format)} style={input}>
             <option>Single Elim</option>
             <option>Double Elim</option>
             <option>Round Robin</option>
           </select>
         </label>
 
-        <button onClick={submit} style={primaryBtn}>
-          Create
-        </button>
+        <label style={{ display: "block", margin: "12px 0" }}>
+          Your name (host & auto-join)
+          <input value={creatorName} onChange={e => setCreatorName(e.target.value)}
+                 placeholder="e.g. Henry" style={input}/>
+        </label>
 
-        {saved && (
-          <div style={{ marginTop: 12, color: "#34d399" }}>
-            ✅ Saved locally. (Next: wire a backend or KV.)
-          </div>
-        )}
-
-        <RecentTournaments />
+        <button onClick={onCreate} style={primary}>Create & View Bracket</button>
       </div>
     </main>
   );
 }
 
-function RecentTournaments() {
-  const items = load<Tournament[]>("tournaments", []);
-  if (!items.length) return null;
-  return (
-    <div style={{ marginTop: 24 }}>
-      <div style={{ fontWeight: 700, marginBottom: 8 }}>Recent (local):</div>
-      <div style={{ display: "grid", gap: 8 }}>
-        {items.map((t) => (
-          <div
-            key={t.id}
-            style={{
-              padding: 12,
-              borderRadius: 12,
-              background: "rgba(255,255,255,.06)",
-            }}
-          >
-            <div style={{ fontWeight: 700 }}>{t.name}</div>
-            <div style={{ opacity: 0.8, fontSize: 12 }}>
-              {t.venue} • {t.format} • {t.startsAt ?? "No date"}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-const inputStyle: React.CSSProperties = {
-  marginTop: 6,
-  width: "100%",
-  padding: "10px 12px",
-  borderRadius: 12,
-  border: "1px solid rgba(255,255,255,.15)",
-  background: "rgba(255,255,255,.06)",
-  color: "white",
-  outline: "none",
+const input: React.CSSProperties = {
+  marginTop: 6, width: "100%", padding: "10px 12px",
+  borderRadius: 12, border: "1px solid rgba(255,255,255,.15)",
+  background: "rgba(255,255,255,.06)", color: "white", outline: "none",
 };
-
-const primaryBtn: React.CSSProperties = {
-  marginTop: 8,
-  padding: "12px 16px",
-  borderRadius: 12,
-  border: "none",
-  background: "#0ea5e9",
-  color: "white",
-  fontWeight: 700,
-  cursor: "pointer",
+const primary: React.CSSProperties = {
+  marginTop: 8, padding: "12px 16px", borderRadius: 12, border: "none",
+  background: "#0ea5e9", color: "white", fontWeight: 700, cursor: "pointer",
 };
