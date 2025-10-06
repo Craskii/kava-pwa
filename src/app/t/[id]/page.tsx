@@ -63,13 +63,16 @@ export default function Lobby() {
   // ---------- host leave = delete; player leave = remove everywhere ----------
   function leaveTournament() {
     if (!me) return;
-    if (me.id === t.hostId) {
+
+    // Use optional chaining for t and fall back to route `id` when deleting
+    if (me.id === t?.hostId) {
       if (confirm("You're the host. Leave & delete this tournament?")) {
-        deleteTournament(t.id);
+        deleteTournament(id); // use the route id; safe even if `t` is momentarily null
         r.push("/");
       }
       return;
     }
+
     update(x => {
       x.players = x.players.filter(p => p.id !== me.id);
       x.queue = x.queue.filter(pid => pid !== me.id);
@@ -127,7 +130,8 @@ export default function Lobby() {
   function decline(pId: string) { update(x => declinePending(x, pId)); }
   function addTestPlayer() {
     const pid = uid();
-    const p = { id: pid, name: `Guest ${t.players.length + (t.pending?.length || 0) + 1}` };
+    const labelCount = (t?.players.length ?? 0) + (t?.pending?.length ?? 0) + 1;
+    const p = { id: pid, name: `Guest ${labelCount}` };
     update(x => {
       if (x.status === "active") insertLatePlayer(x, p);
       else x.players.push(p);
@@ -196,7 +200,8 @@ export default function Lobby() {
                   style={btnGhost}
                   onClick={()=>{
                     if (confirm("Delete tournament? This cannot be undone.")) {
-                      deleteTournament(t.id); r.push("/");
+                      deleteTournament(id);
+                      r.push("/");
                     }
                   }}
                 >Delete</button>
