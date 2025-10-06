@@ -1,40 +1,30 @@
 // functions/api/tournaments/[id].ts
-import { ok, bad, noContent, handleOptions } from "../../_utils/cors";
+import { ok, handleOptions } from "../../_utils/cors";
 
-export async function onRequestOptions() { return handleOptions(); }
+type KV = {
+  get: (k: string) => Promise<string | null>;
+  put: (k: string, v: string) => Promise<void>;
+  delete: (k: string) => Promise<void>;
+};
 
-// GET/PUT/DELETE a tournament by id
-export async function onRequest(ctx: {
-  env: { KAVA_TOURNAMENTS: KVNamespace };
-  request: Request;
-  params: { id: string };
-}) {
-  const { KAVA_TOURNAMENTS: kv } = ctx.env;
-  const id = ctx.params.id;
+type Ctx = { env: { KAVA_TOURNAMENTS: KV }; params: { id: string }; request: Request };
 
-  if (ctx.request.method === "GET") {
-    const raw = await kv.get(`t:${id}`);
-    return raw ? ok(JSON.parse(raw)) : ok(null);
-  }
+export async function onRequestOptions() {
+  return handleOptions();
+}
 
-  if (ctx.request.method === "PUT") {
-    const currentRaw = await kv.get(`t:${id}`);
-    if (!currentRaw) return bad("Not found", 404);
-    const incoming = await ctx.request.json();
-    const merged = { ...JSON.parse(currentRaw), ...incoming };
-    await kv.put(`t:${id}`, JSON.stringify(merged));
-    return ok(merged);
-  }
+export async function onRequestGet({ env, params }: Ctx) {
+  const json = await env.KAVA_TOURNAMENTS.get(`t:${params.id}`);
+  return ok(json ? JSON.parse(json) : null);
+}
 
-  if (ctx.request.method === "DELETE") {
-    const raw = await kv.get(`t:${id}`);
-    if (raw) {
-      const t = JSON.parse(raw) as { code?: string };
-      if (t.code) await kv.delete(`code:${t.code}`);
-      await kv.delete(`t:${id}`);
-    }
-    return noContent();
-  }
+export async function onRequestPut({ env, params, request }: Ctx) {
+  const body = await request.json();
+  await env.KAVA_TOURNAMENTS.put(`t:${params.id}`, JSON.stringify(body));
+  return ok({ ok: true });
+}
 
-  return bad("Method not allowed", 405);
+export async function onRequestDelete({ env, params }: Ctx) {
+  await env.KAVA_TOURNAMENTS.delete(`t:${params.id}`);
+  return ok({ ok: true });
 }

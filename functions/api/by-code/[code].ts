@@ -1,17 +1,22 @@
 // functions/api/by-code/[code].ts
-import { ok, handleOptions } from "../../_utils/cors";
+import { ok, error, handleOptions } from "../../_utils/cors";
 
-export async function onRequestOptions() { return handleOptions(); }
-
-// GET /api/by-code/1234  -> tournament or null
-export async function onRequestGet(ctx: {
-  env: { KAVA_TOURNAMENTS: KVNamespace };
+type Ctx = {
+  env: { KAVA_TOURNAMENTS: { get: (k: string) => Promise<string | null> } };
   params: { code: string };
-}) {
-  const kv = ctx.env.KAVA_TOURNAMENTS;
-  const code = String(ctx.params.code || "").trim();
-  const id = await kv.get(`code:${code}`);
-  if (!id) return ok(null);
-  const raw = await kv.get(`t:${id}`);
-  return ok(raw ? JSON.parse(raw) : null);
+};
+
+export async function onRequestOptions() {
+  return handleOptions();
+}
+
+export async function onRequestGet({ env, params }: Ctx) {
+  const code = String(params.code || "").toUpperCase();
+  if (!code) return error("Missing code", 400);
+
+  const id = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
+  if (!id) return ok(null); // client treats null as "not found"
+
+  const json = await env.KAVA_TOURNAMENTS.get(`t:${id}`);
+  return ok(json ? JSON.parse(json) : null);
 }

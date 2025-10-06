@@ -1,24 +1,24 @@
 // functions/_utils/cors.ts
-export const corsHeaders = {
-  "access-control-allow-origin": "*",
+const corsHeaders = {
+  "access-control-allow-origin": "*", // change to your domain when you want to lock it down
   "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
-  "access-control-allow-headers": "content-type",
-  "content-type": "application/json",
+  "access-control-allow-headers": "Content-Type, Authorization",
 };
 
-export function ok(body: unknown, init: ResponseInit = {}) {
-  return new Response(JSON.stringify(body), {
-    ...init,
-    headers: { ...corsHeaders, ...(init.headers || {}) },
-  });
-}
-export function bad(msg: string, status = 400) {
-  return ok({ error: msg }, { status });
-}
-export function noContent(status = 204) {
-  return new Response(null, { status, headers: corsHeaders });
+export function handleOptions(): Response {
+  return new Response(null, { status: 204, headers: corsHeaders });
 }
 
-export function handleOptions() {
-  return new Response(null, { status: 204, headers: corsHeaders });
+export function ok(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json", ...corsHeaders },
+  });
+}
+
+export function error(message: string, status = 400): Response {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { "content-type": "application/json", ...corsHeaders },
+  });
 }
