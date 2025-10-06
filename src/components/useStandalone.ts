@@ -1,21 +1,33 @@
-"use client";
-import { useEffect, useState } from "react";
+'use client';
 
-export function useStandalone() {
-  const [isStandalone, set] = useState(false);
+import { useEffect, useState } from 'react';
+
+function getIOSStandalone(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const nav = navigator as Navigator & { standalone?: boolean };
+  return nav.standalone === true;
+}
+
+export function useStandalone(): boolean {
+  const [isStandalone, setIsStandalone] = useState(false);
 
   useEffect(() => {
-    const check = () =>
-      (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) ||
-      // iOS Safari (PWA)
-      (navigator as any).standalone === true;
+    const mql: MediaQueryList | null =
+      typeof window !== 'undefined' && 'matchMedia' in window
+        ? window.matchMedia('(display-mode: standalone)')
+        : null;
 
-    set(check());
+    const compute = () => Boolean((mql?.matches ?? false) || getIOSStandalone());
+    setIsStandalone(compute());
 
-    const mq = window.matchMedia?.("(display-mode: standalone)");
-    const onChange = () => set(check());
-    mq?.addEventListener?.("change", onChange);
-    return () => mq?.removeEventListener?.("change", onChange);
+    const onChange = (e: MediaQueryListEvent) => {
+      setIsStandalone(e.matches || getIOSStandalone());
+    };
+
+    mql?.addEventListener('change', onChange);
+    return () => {
+      mql?.removeEventListener('change', onChange);
+    };
   }, []);
 
   return isStandalone;
