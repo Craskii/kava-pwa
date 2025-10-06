@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import AppHeader from "@/components/AppHeader";
+import type { Tournament } from "@/types"; // 👈 make sure you have the Tournament type
 
 type Queue = { id: string; name: string; distance?: string };
 type QueueMembership = { queueId: string; joinedAt: string };
@@ -43,14 +44,31 @@ export default function JoinQueuePage() {
     save("queueMemberships", next);
   };
 
+  // 👇 UPDATED joinByCode()
   const joinByCode = () => {
-    const id = code.trim();
-    if (!id) return;
-    const queue = { id, name: `Queue ${id.toUpperCase()}` };
+    const entered = code.trim().toUpperCase();
+    if (!entered) return;
+
+    // Try to find a tournament with that code
+    const tournaments = load<Tournament[]>("tournaments", []);
+    const found = tournaments.find((t) => t.code === entered);
+
+    if (found) {
+      // Join the queue linked to this tournament
+      const queue: Queue = { id: found.id, name: `${found.name} Queue` };
+      addQueue(queue);
+      addMembership(found.id);
+      alert(`Joined tournament queue: ${found.name}!`);
+      setCode("");
+      return;
+    }
+
+    // Fallback: just make a normal queue
+    const queue = { id: entered, name: `Queue ${entered}` };
     addQueue(queue);
-    addMembership(id);
-    setCode("");
+    addMembership(entered);
     alert(`Joined ${queue.name}!`);
+    setCode("");
   };
 
   const joinQuick = (queue: Queue) => {
@@ -73,7 +91,7 @@ export default function JoinQueuePage() {
             <input
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              placeholder="e.g. ABC123"
+              placeholder="e.g. AB12"
               style={input}
             />
             <button onClick={joinByCode} style={button}>
