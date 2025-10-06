@@ -1,61 +1,60 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 type InstallPromptEvent = Event & {
   prompt: () => void;
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 };
 
-function hasPrompt(x: unknown): x is { prompt: () => void } {
-  return typeof (x as { prompt?: unknown }).prompt === 'function';
-}
-function isInstallPromptEvent(e: Event): e is InstallPromptEvent {
-  return hasPrompt(e);
-}
 function isStandalone(): boolean {
-  const mm =
-    typeof window !== 'undefined' &&
-    window.matchMedia?.('(display-mode: standalone)').matches === true;
+  if (typeof window === 'undefined') return false;
+  const mm = window.matchMedia?.('(display-mode: standalone)').matches === true;
   const legacy =
-    (navigator as Navigator & { standalone?: boolean }).standalone === true;
+    (typeof navigator !== 'undefined' &&
+      (navigator as Navigator & { standalone?: boolean }).standalone === true);
   return Boolean(mm || legacy);
-}
-function isAndroid(): boolean {
-  return /android/.test(navigator.userAgent.toLowerCase());
 }
 
 export default function InstallPWAButton() {
   const [deferred, setDeferred] = useState<InstallPromptEvent | null>(null);
   const [installed, setInstalled] = useState(false);
+  const [android, setAndroid] = useState(false);
 
-  const android = useMemo(isAndroid, []);
+  // Detect Android after mount
+  useEffect(() => {
+    if (typeof navigator !== 'undefined') {
+      setAndroid(/android/.test(navigator.userAgent.toLowerCase()));
+    }
+  }, []);
 
   // Capture install prompt when eligible
   useEffect(() => {
     const handler = (e: Event) => {
-      e.preventDefault();
-      if (isInstallPromptEvent(e)) setDeferred(e);
+      e.preventDefault?.();
+      const maybe = e as Partial<InstallPromptEvent>;
+      if (typeof maybe.prompt === 'function') {
+        setDeferred(e as InstallPromptEvent);
+      }
     };
     window.addEventListener('beforeinstallprompt', handler as EventListener);
     return () =>
       window.removeEventListener('beforeinstallprompt', handler as EventListener);
   }, []);
 
-  // Hide UI if already installed
+  // Hide if already installed
   useEffect(() => {
     if (isStandalone()) setInstalled(true);
   }, []);
 
   if (installed) return null;
 
-  // If install prompt is available, show the button
   if (deferred) {
     return (
       <button
         onClick={async () => {
           deferred.prompt();
-          await deferred.userChoice; // accepted/dismissed
+          await deferred.userChoice;
           setDeferred(null);
         }}
         style={{
@@ -73,8 +72,7 @@ export default function InstallPWAButton() {
     );
   }
 
-  // Fallback: Android Chrome sometimes won’t fire the prompt yet.
-  // Show friendly instructions.
+  // Android fallback instructions
   if (android) {
     return (
       <div
@@ -88,17 +86,16 @@ export default function InstallPWAButton() {
       >
         <strong>Install on Android</strong>
         <ol style={{ margin: '8px 0 0 18px', lineHeight: 1.6 }}>
-          <li>Tap the <b>⋮</b> menu in the top-right corner.</li>
+          <li>Tap the <b>⋮</b> menu (top-right).</li>
           <li>Choose <b>Install app</b> (or <b>Add to Home screen</b>).</li>
           <li>Tap <b>Install</b>.</li>
         </ol>
         <div style={{ opacity: 0.8, marginTop: 8, fontSize: 12 }}>
-          Tip: If you don’t see it yet, browse the site a bit and come back.
+          Tip: If you don’t see it yet, browse around and come back.
         </div>
       </div>
     );
   }
 
-  // Non-Android and not installable yet → show nothing (iOS gets its own banner)
   return null;
 }

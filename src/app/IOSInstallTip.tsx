@@ -2,17 +2,17 @@
 import { useEffect, useState } from 'react';
 
 function isStandalone(): boolean {
-  const mm =
-    typeof window !== 'undefined' &&
-    window.matchMedia?.('(display-mode: standalone)').matches === true;
+  if (typeof window === 'undefined') return false;
+  const mm = window.matchMedia?.('(display-mode: standalone)').matches === true;
   const legacy =
-    (navigator as Navigator & { standalone?: boolean }).standalone === true;
+    (typeof navigator !== 'undefined' &&
+      (navigator as Navigator & { standalone?: boolean }).standalone === true);
   return Boolean(mm || legacy);
 }
 
 function isInAppBrowser(): boolean {
+  if (typeof navigator === 'undefined') return false;
   const ua = navigator.userAgent.toLowerCase();
-  // Matches popular in-app browsers (Instagram, Facebook, TikTok, etc.)
   return (
     /instagram|fbav|fban|fbios|fb_iab|messenger|tiktok|snapchat/.test(ua) &&
     !/safari/.test(ua)
@@ -25,18 +25,15 @@ export default function IOSInstallTip() {
   const [openModal, setOpenModal] = useState(false);
 
   useEffect(() => {
+    if (typeof navigator === 'undefined') return;
     const ua = navigator.userAgent.toLowerCase();
     const isIOS = /iphone|ipad|ipod/.test(ua);
     if (!isIOS) return;
 
-    if (isInAppBrowser()) {
-      setShowSafariTip(true);
-    } else if (!isStandalone()) {
-      setShowInstallTip(true);
-    }
+    if (isInAppBrowser()) setShowSafariTip(true);
+    else if (!isStandalone()) setShowInstallTip(true);
   }, []);
 
-  // “Open in Safari” banner for in-app browsers
   if (showSafariTip) {
     return (
       <div
@@ -59,6 +56,7 @@ export default function IOSInstallTip() {
         <br />
         <button
           onClick={() => {
+            if (typeof window === 'undefined') return;
             const url = window.location.href.replace(/^https?:\/\//, '');
             window.location.href = `https://${url}`;
           }}
@@ -77,7 +75,6 @@ export default function IOSInstallTip() {
     );
   }
 
-  // “Add to Home Screen” prompt for Safari
   if (!showInstallTip) return null;
 
   return (
@@ -100,9 +97,7 @@ export default function IOSInstallTip() {
           zIndex: 50,
         }}
       >
-        <span>
-          <strong>Install on iPhone:</strong> Tap Share → Add to Home Screen.
-        </span>
+        <span><strong>Install on iPhone:</strong> Tap Share → Add to Home Screen.</span>
         <button
           onClick={() => setOpenModal(true)}
           style={{
@@ -142,15 +137,9 @@ export default function IOSInstallTip() {
           >
             <h3 style={{ marginTop: 0 }}>Add to Home Screen</h3>
             <ol style={{ lineHeight: 1.6, paddingLeft: 18 }}>
-              <li>
-                Tap the <span role="img" aria-label="share">🔗</span> <b>Share</b> button in Safari.
-              </li>
-              <li>
-                Scroll down and choose <b>Add to Home Screen</b>.
-              </li>
-              <li>
-                Tap <b>Add</b> — that’s it!
-              </li>
+              <li>Tap the Share button in Safari.</li>
+              <li>Choose <b>Add to Home Screen</b>.</li>
+              <li>Tap <b>Add</b>.</li>
             </ol>
             <button
               onClick={() => setOpenModal(false)}
