@@ -1,5 +1,6 @@
 "use client";
 
+import type React from "react";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
@@ -12,7 +13,7 @@ import {
 } from "@/lib/storage";
 import { getDeviceId } from "@/lib/device";
 
-/* (optional) local-only “Your Queues” artifacts so your home widgets keep working */
+/* Local-only “Your Queues” artifacts to keep your existing widgets happy */
 type Membership = { tournamentId: string; playerName: string; joinedAt: string };
 type Queue = { id: string; name: string };
 type QueueMembership = { queueId: string; joinedAt: string };
@@ -31,27 +32,33 @@ function load<T>(key: string, fallback: T): T {
   }
 }
 
+type Format = "Single Elim" | "Double Elim" | "Round Robin";
+
 async function generateUniqueCode(): Promise<string> {
-  // Try a few times to avoid rare collisions.
   for (let i = 0; i < 10; i++) {
     const code = Math.random().toString(36).substring(2, 6).toUpperCase();
     const taken = await isCodeInUseRemote(code);
     if (!taken) return code;
   }
-  // Extremely unlikely to reach here
   throw new Error("Could not generate a unique code. Please try again.");
 }
 
 export default function NewTournamentPage() {
   const router = useRouter();
-
   const [name, setName] = useState("");
   const [venue, setVenue] = useState("");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
-  const [format, setFormat] = useState<"Single Elim" | "Double Elim" | "Round Robin">("Single Elim");
-  const [creatorName, setCreatorName] = useState("");
+  const [format, setFormat] = useState<Format>("Single Elim");
+  const [creatorName, setCreatorName] = useState(""); // host player name (optional)
   const [busy, setBusy] = useState(false);
+
+  const onNameChange = (e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value);
+  const onVenueChange = (e: React.ChangeEvent<HTMLInputElement>) => setVenue(e.target.value);
+  const onDateChange = (e: React.ChangeEvent<HTMLInputElement>) => setDate(e.target.value);
+  const onTimeChange = (e: React.ChangeEvent<HTMLInputElement>) => setTime(e.target.value);
+  const onFormatChange = (e: React.ChangeEvent<HTMLSelectElement>) => setFormat(e.target.value as Format);
+  const onCreatorNameChange = (e: React.ChangeEvent<HTMLInputElement>) => setCreatorName(e.target.value);
 
   const onCreate = async () => {
     try {
@@ -62,59 +69,60 @@ export default function NewTournamentPage() {
       const hostName = (creatorName || "Host").trim();
       const me: Player = { id: deviceId, name: hostName };
 
-      // server-enforced unique code
+      // Unique code on server
       const code = await generateUniqueCode();
 
       const id = uid();
       const createdAt = Date.now();
+      const startsAt = date && time ? `${date}T${time}` : undefined;
 
-      // We keep extra UI fields under a meta object so they don’t conflict with server schema
       const rec: Tournament = {
         id,
-        name: name.trim() || "Untitled Tournament",
         code,
+        name: name.trim() || "Untitled Tournament",
         hostId: deviceId,
         status: "setup",
         createdAt,
-        players: [me],     // host is an approved player
+        players: [me],     // host is approved
         pending: [],
         queue: [],
         rounds: [],
-        // @ts-expect-error – optional UI-only metadata (safe to store/ignore)
-        meta: {
-          venue: venue.trim() || "TBD",
-          startsAt: date && time ? `${date}T${time}` : undefined,
-          format,
-        },
+        // @ts-expect-error optional UI-only metadata (not used by server)
+        meta: { venue: venue.trim() || "TBD", startsAt, format },
       };
 
-      // Create on the server (KV) so other phones can see it instantly.
+      // Create on server (KV) so other phones see it
       await createTournamentRemote(rec);
 
-      // Keep your local “Your Queues” widgets working (optional)
-      const tournaments = load<any[]>("tournaments", []);
-      save("tournaments", [{ ...rec, createdAt: new Date(createdAt).toISOString() }, ...tournaments]);
+      // Keep your local “Your Queues” features working
+      type LocalTournament = Tournament & { createdAt: number | string };
+      const tournaments = load<LocalTournament[]>("tournaments", []);
+      save<LocalTournament[]>("tournaments", [
+        { ...rec, createdAt: new Date(createdAt).toISOString() },
+        ...tournaments,
+      ]);
 
       const memberships = load<Membership[]>("memberships", []);
-      save("memberships", [
+      save<Membership[]>("memberships", [
         ...memberships.filter(m => m.tournamentId !== id),
         { tournamentId: id, playerName: me.name, joinedAt: new Date().toISOString() },
       ]);
 
       const queues = load<Queue[]>("queues", []);
       const queueName = `${rec.name} Queue`;
-      save("queues", [...queues.filter(q => q.id !== id), { id, name: queueName }]);
+      save<Queue[]>("queues", [...queues.filter(q => q.id !== id), { id, name: queueName }]);
 
       const qms = load<QueueMembership[]>("queueMemberships", []);
-      save("queueMemberships", [
+      save<QueueMembership[]>("queueMemberships", [
         ...qms.filter(m => m.queueId !== id),
         { queueId: id, joinedAt: new Date().toISOString() },
       ]);
 
       alert(`Tournament Created!\nShare this code with players:\n\n${code}`);
       router.push(`/t/${id}`);
-    } catch (err: any) {
-      alert(err?.message || "Failed to create tournament.");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to create tournament.";
+      alert(msg);
     } finally {
       setBusy(false);
     }
@@ -128,7 +136,7 @@ export default function NewTournamentPage() {
           Name
           <input
             value={name}
-            onChange={e => setName(e.target.value)}
+            onChange={onNameChange}
             placeholder="Friday Night Ping Pong"
             style={input}
           />
@@ -138,7 +146,7 @@ export default function NewTournamentPage() {
           Venue
           <input
             value={venue}
-            onChange={e => setVenue(e.target.value)}
+            onChange={onVenueChange}
             placeholder="Kava Bar (Las Olas)"
             style={input}
           />
@@ -147,17 +155,17 @@ export default function NewTournamentPage() {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 10 }}>
           <label>
             Date
-            <input type="date" value={date} onChange={e => setDate(e.target.value)} style={input} />
+            <input type="date" value={date} onChange={onDateChange} style={input} />
           </label>
           <label>
             Time
-            <input type="time" value={time} onChange={e => setTime(e.target.value)} style={input} />
+            <input type="time" value={time} onChange={onTimeChange} style={input} />
           </label>
         </div>
 
         <label style={{ display: "block", marginBottom: 10 }}>
           Format
-          <select value={format} onChange={e => setFormat(e.target.value as any)} style={input}>
+          <select value={format} onChange={onFormatChange} style={input}>
             <option>Single Elim</option>
             <option>Double Elim</option>
             <option>Round Robin</option>
@@ -168,7 +176,7 @@ export default function NewTournamentPage() {
           Your name (host & auto-join)
           <input
             value={creatorName}
-            onChange={e => setCreatorName(e.target.value)}
+            onChange={onCreatorNameChange}
             placeholder="e.g. Henry"
             style={input}
           />

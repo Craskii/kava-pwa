@@ -1,14 +1,10 @@
 "use client";
 
+import type React from "react";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
-import {
-  findByCodeRemote,
-  saveTournamentRemote,
-  type Tournament,
-  type Player,
-} from "@/lib/storage";
+import { findByCodeRemote, saveTournamentRemote, type Player, type Tournament } from "@/lib/storage";
 import { getDeviceId } from "@/lib/device";
 
 export default function JoinByCodePage() {
@@ -18,9 +14,16 @@ export default function JoinByCodePage() {
   const [testing, setTesting] = useState(true); // keep identity when testing on one phone
   const [busy, setBusy] = useState(false);
 
+  const onCodeChange = (e: React.ChangeEvent<HTMLInputElement>) => setCode(e.target.value);
+  const onNameChange = (e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value);
+  const onTestingChange = (e: React.ChangeEvent<HTMLInputElement>) => setTesting(e.target.checked);
+
   const submit = async () => {
     const trimmed = code.trim().toUpperCase();
-    if (!trimmed) return alert("Enter a code.");
+    if (!trimmed) {
+      alert("Enter a code.");
+      return;
+    }
 
     setBusy(true);
     try {
@@ -30,30 +33,30 @@ export default function JoinByCodePage() {
         return;
       }
 
-      // identity
       const deviceId = getDeviceId();
       const display = (name || "Guest").trim();
       const me: Player = { id: deviceId, name: display };
 
-      // optionally switch identity OFF for testing on a single phone
       if (!testing) {
         localStorage.setItem("kava_me", JSON.stringify(me));
       }
 
-      // add to pending (if not already a player/pending)
       const already =
         t.players.some(p => p.id === me.id) ||
         (t.pending || []).some(p => p.id === me.id);
 
       if (!already) {
-        t.pending ||= [];
-        t.pending.push(me);
-        await saveTournamentRemote(t);
+        const updated: Tournament = {
+          ...t,
+          pending: [...(t.pending || []), me],
+        };
+        await saveTournamentRemote(updated);
       }
 
       r.push(`/t/${t.id}`);
-    } catch (err: any) {
-      alert(err?.message || "Failed to join.");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to join.";
+      alert(msg);
     } finally {
       setBusy(false);
     }
@@ -68,7 +71,7 @@ export default function JoinByCodePage() {
           <input
             autoCapitalize="characters"
             value={code}
-            onChange={e => setCode(e.target.value)}
+            onChange={onCodeChange}
             placeholder="ABCD"
             style={input}
           />
@@ -78,7 +81,7 @@ export default function JoinByCodePage() {
           Your name
           <input
             value={name}
-            onChange={e => setName(e.target.value)}
+            onChange={onNameChange}
             placeholder="e.g. Sarah"
             style={input}
           />
@@ -88,7 +91,7 @@ export default function JoinByCodePage() {
           <input
             type="checkbox"
             checked={testing}
-            onChange={e => setTesting(e.target.checked)}
+            onChange={onTestingChange}
           />
           <span>Join without switching my identity (testing mode)</span>
         </label>
