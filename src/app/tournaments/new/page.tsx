@@ -3,17 +3,28 @@ import { useState } from "react";
 import AppHeader from "@/components/AppHeader";
 import { save, load } from "@/lib/storage";
 
-type NewTournament = {
+type Format = "Single Elim" | "Double Elim" | "Round Robin";
+
+export type NewTournamentDraft = {
   name: string;
   venue: string;
-  date: string; // ISO date
+  date: string; // YYYY-MM-DD
   time: string; // HH:mm
-  format: "Single Elim" | "Double Elim" | "Round Robin";
+  format: Format;
+};
+
+export type Tournament = {
+  id: string;
+  name: string;
+  venue: string;
+  format: Format;
+  /** ISO string like 2025-10-06T19:00 */
+  startsAt?: string;
 };
 
 export default function NewTournamentPage() {
-  const [form, setForm] = useState<NewTournament>(
-    load<NewTournament>("draft_tournament", {
+  const [form, setForm] = useState<NewTournamentDraft>(
+    load<NewTournamentDraft>("draft_tournament", {
       name: "",
       venue: "",
       date: "",
@@ -23,21 +34,27 @@ export default function NewTournamentPage() {
   );
   const [saved, setSaved] = useState(false);
 
-  const update = <K extends keyof NewTournament>(k: K, v: NewTournament[K]) => {
+  const update = <K extends keyof NewTournamentDraft>(k: K, v: NewTournamentDraft[K]) => {
     const next = { ...form, [k]: v };
     setForm(next);
-    save("draft_tournament", next);
+    save<NewTournamentDraft>("draft_tournament", next);
     setSaved(false);
   };
 
   const submit = () => {
-    // For now, just save locally and show a “created” state.
-    const created = load<any[]>("tournaments", []);
+    const created = load<Tournament[]>("tournaments", []);
     const id = crypto.randomUUID();
-    const startsAt = form.date && form.time ? `${form.date}T${form.time}` : "";
-    const rec = { id, ...form, startsAt };
+    const startsAt =
+      form.date && form.time ? `${form.date}T${form.time}` : undefined;
+    const rec: Tournament = {
+      id,
+      name: form.name,
+      venue: form.venue,
+      format: form.format,
+      startsAt,
+    };
     const next = [rec, ...created];
-    save("tournaments", next);
+    save<Tournament[]>("tournaments", next);
     setSaved(true);
   };
 
@@ -46,7 +63,7 @@ export default function NewTournamentPage() {
       <AppHeader title="Create Tournament" />
 
       <div style={{ padding: 16, maxWidth: 720, margin: "0 auto" }}>
-        <div style={{ marginBottom: 12, opacity: .85 }}>
+        <div style={{ marginBottom: 12, opacity: 0.85 }}>
           Quick setup (name, venue, date/time, format). This saves offline.
         </div>
 
@@ -95,7 +112,7 @@ export default function NewTournamentPage() {
           Format
           <select
             value={form.format}
-            onChange={(e) => update("format", e.target.value as NewTournament["format"])}
+            onChange={(e) => update("format", e.target.value as Format)}
             style={inputStyle}
           >
             <option>Single Elim</option>
@@ -110,7 +127,7 @@ export default function NewTournamentPage() {
 
         {saved && (
           <div style={{ marginTop: 12, color: "#34d399" }}>
-            ✅ Saved locally. (Next step: wire a backend or KV.)
+            ✅ Saved locally. (Next: wire a backend or KV.)
           </div>
         )}
 
@@ -121,17 +138,24 @@ export default function NewTournamentPage() {
 }
 
 function RecentTournaments() {
-  const items = load<any[]>("tournaments", []);
+  const items = load<Tournament[]>("tournaments", []);
   if (!items.length) return null;
   return (
     <div style={{ marginTop: 24 }}>
       <div style={{ fontWeight: 700, marginBottom: 8 }}>Recent (local):</div>
       <div style={{ display: "grid", gap: 8 }}>
         {items.map((t) => (
-          <div key={t.id} style={{ padding: 12, borderRadius: 12, background: "rgba(255,255,255,.06)" }}>
+          <div
+            key={t.id}
+            style={{
+              padding: 12,
+              borderRadius: 12,
+              background: "rgba(255,255,255,.06)",
+            }}
+          >
             <div style={{ fontWeight: 700 }}>{t.name}</div>
-            <div style={{ opacity: .8, fontSize: 12 }}>
-              {t.venue} • {t.format} • {t.startsAt || "No date"}
+            <div style={{ opacity: 0.8, fontSize: 12 }}>
+              {t.venue} • {t.format} • {t.startsAt ?? "No date"}
             </div>
           </div>
         ))}
