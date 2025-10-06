@@ -23,10 +23,10 @@ export default function Lobby() {
   const isHost = me?.id === t.hostId;
   const myPos = me ? t.queue.findIndex(p => p === me.id) + 1 : -1;
 
-  // ✅ safe updater that never reads a possibly-null outer `t`
+  // safe updater
   function update(mut: (x: Tournament) => void) {
     setT(prev => {
-      if (!prev) return prev; // still null on first render -> no-op
+      if (!prev) return prev;
       const copy: Tournament = {
         ...prev,
         players: [...prev.players],
@@ -41,22 +41,15 @@ export default function Lobby() {
 
   function joinQueue() {
     if (!me) return;
-    update(x => {
-      if (!x.queue.includes(me.id)) x.queue.push(me.id);
-    });
+    update(x => { if (!x.queue.includes(me.id)) x.queue.push(me.id); });
   }
-
   function leaveQueue() {
     if (!me) return;
-    update(x => {
-      x.queue = x.queue.filter(id => id !== me.id);
-    });
+    update(x => { x.queue = x.queue.filter(id => id !== me.id); });
   }
-
   function leaveTournament() {
     if (!me) return;
     update(x => {
-      // inline remove of me (players, queue, bracket seats/winner)
       x.players = x.players.filter(p => p.id !== me.id);
       x.queue = x.queue.filter(id => id !== me.id);
       x.matches = (x.matches || []).map(m => ({
@@ -68,7 +61,6 @@ export default function Lobby() {
     });
     r.push("/");
   }
-
   function kick(pId: string) {
     update(x => {
       x.players = x.players.filter(p => p.id !== pId);
@@ -81,22 +73,9 @@ export default function Lobby() {
       }));
     });
   }
-
-  function startBracket() {
-    update(seedBracket);
-  }
-
-  function setWinner(i: number, id?: string) {
-    update(x => {
-      x.matches[i].winner = id;
-    });
-  }
-
-  function editName(newName: string) {
-    update(x => {
-      if (newName.trim()) x.name = newName.trim();
-    });
-  }
+  function startBracket() { update(seedBracket); }
+  function setWinner(i: number, id?: string) { update(x => { x.matches[i].winner = id; }); }
+  function editName(newName: string) { update(x => { if (newName.trim()) x.name = newName.trim(); }); }
 
   return (
     <main style={wrap}>
@@ -157,7 +136,7 @@ export default function Lobby() {
           </ul>
         </div>
 
-        {/* Bracket (very simple) */}
+        {/* Bracket */}
         {t.matches?.length>0 && (
           <div style={card}>
             <h3 style={{ marginTop:0 }}>Bracket</h3>
@@ -195,3 +174,13 @@ const btnGhost: React.CSSProperties = { padding:"10px 14px", borderRadius:10, bo
 const btnDanger: React.CSSProperties = { ...btnGhost, borderColor:"#ff6b6b", color:"#ff6b6b" };
 const btnMini: React.CSSProperties = { padding:"6px 10px", borderRadius:8, border:"1px solid rgba(255,255,255,0.25)", background:"transparent", color:"#fff", cursor:"pointer", fontSize:12 };
 const btnActive: React.CSSProperties = { ...btnMini, background:"#0ea5e9", border:"none" };
+
+// ✅ missing style that caused the error
+const input: React.CSSProperties = {
+  width: "100%",
+  padding: "12px 14px",
+  borderRadius: 10,
+  border: "1px solid #333",
+  background: "#111",
+  color: "#fff",
+};
