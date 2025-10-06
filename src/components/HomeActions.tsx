@@ -1,6 +1,7 @@
 "use client";
 import Link from "next/link";
-import YourTournaments from "@/components/YourTournaments"; // 👈 ADD THIS LINE
+import YourTournaments from "@/components/YourTournaments";
+import YourQueues from "@/components/YourQueues"; // 👈 add this
 
 export default function HomeActions() {
   return (
@@ -43,26 +44,11 @@ export default function HomeActions() {
           <div style={{ fontWeight: 700, fontSize: 16 }}>Join Queue</div>
           <div style={{ opacity: 0.9, fontSize: 12 }}>Get turn alerts</div>
         </Link>
-
-        <Link
-          href="/bars"
-          style={{
-            gridColumn: "1 / -1",
-            padding: 16,
-            borderRadius: 16,
-            background: "#7c3aed",
-            color: "white",
-            textDecoration: "none",
-            boxShadow: "0 6px 20px rgba(0,0,0,.25)",
-          }}
-        >
-          <div style={{ fontWeight: 700, fontSize: 16 }}>Kava Bar List</div>
-          <div style={{ opacity: 0.9, fontSize: 12 }}>Nearby venues & schedules</div>
-        </Link>
       </div>
 
-      {/* 👇 ADD THIS BELOW THE GRID */}
+      {/* Lists of items */}
       <YourTournaments />
+      <YourQueues />
     </div>
   );
 }
