@@ -43,15 +43,10 @@ export default function Home() {
           justifySelf: "center",
         }}
       >
-        <Link href="/create" style={btnPrimary}>
-          ➕ Create tournament
-        </Link>
-        <Link href="/join" style={btnGhost}>
-          🔐 Join with code
-        </Link>
-        <Link href="/nearby" style={btnGhost}>
-          📍 Find nearby
-        </Link>
+        <Link href="/create" style={btnPrimary}>➕ Create tournament</Link>
+        <Link href="/join" style={btnGhost}>🔐 Join with code</Link>
+        <Link href="/nearby" style={btnGhost}>📍 Find nearby</Link>
+        <Link href="/me" style={btnGhost}>🧑‍💼 My tournaments</Link> {/* 👈 NEW */}
 
         {/* PWA install helpers */}
         <div style={{ justifySelf: "center", marginTop: 6 }}>
