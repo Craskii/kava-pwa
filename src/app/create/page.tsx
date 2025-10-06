@@ -14,13 +14,18 @@ export default function CreatePage() {
     const id = uid();
     const hostId = uid();
     const t: Tournament = {
-      id, name: name || "Untitled Tournament",
-      code: code || undefined,
-      hostId,
-      players: [{ id: hostId, name: "Host" }],
-      queue: [hostId],
-      matches: []
-    };
+  id,
+  name: name || "Untitled Tournament",
+  code: code || undefined,
+  hostId,
+  status: "setup",
+  createdAt: Date.now(),
+  players: [{ id: hostId, name: "Host" }],
+  pending: [],
+  queue: [hostId],
+  rounds: [],
+};
+
     saveTournament(t);
     // store "me" for this browser
     localStorage.setItem("kava_me", JSON.stringify({ id: hostId, name: "Host" }));

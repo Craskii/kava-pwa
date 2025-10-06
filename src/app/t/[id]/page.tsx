@@ -1,13 +1,16 @@
 // src/app/t/[id]/page.tsx
 'use client';
+export const runtime = 'edge';
+
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import BackButton from "../../../components/BackButton";
-import { getTournament, saveTournament, seedBracket, Tournament } from "../../../lib/storage";
-
-// ✅ required by Cloudflare next-on-pages for dynamic routes
-export const runtime = 'edge';
-
+import {
+  getTournament, saveTournament,
+  seedInitialRounds as seedInitial,
+  submitReport, approvePending, declinePending, deleteTournament,
+  insertLatePlayer, Tournament, uid
+} from "../../../lib/storage";
 
 export default function Lobby() {
   const { id } = useParams<{ id: string }>();
@@ -24,17 +27,17 @@ export default function Lobby() {
   if (!t) return <main style={wrap}><BackButton /><p>Loading…</p></main>;
 
   const isHost = me?.id === t.hostId;
-  const myPos = me ? t.queue.findIndex(p => p === me.id) + 1 : -1;
 
-  // safe updater
+  // ---------- safe updater ----------
   function update(mut: (x: Tournament) => void) {
     setT(prev => {
       if (!prev) return prev;
       const copy: Tournament = {
         ...prev,
         players: [...prev.players],
+        pending: [...(prev.pending || [])],
         queue: [...prev.queue],
-        matches: [...(prev.matches || [])],
+        rounds: prev.rounds.map(r => r.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
       };
       mut(copy);
       saveTournament(copy);
@@ -42,58 +45,119 @@ export default function Lobby() {
     });
   }
 
+  // ---------- queue helpers (optional) ----------
   function joinQueue() {
     if (!me) return;
     update(x => { if (!x.queue.includes(me.id)) x.queue.push(me.id); });
   }
   function leaveQueue() {
     if (!me) return;
-    update(x => { x.queue = x.queue.filter(id => id !== me.id); });
+    update(x => { x.queue = x.queue.filter(pid => pid !== me.id); });
   }
+
+  // ---------- host leave = delete; player leave = remove everywhere ----------
   function leaveTournament() {
     if (!me) return;
+    if (me.id === t.hostId) {
+      if (confirm("You're the host. Leave & delete this tournament?")) {
+        deleteTournament(t.id);
+        r.push("/");
+      }
+      return;
+    }
     update(x => {
       x.players = x.players.filter(p => p.id !== me.id);
-      x.queue = x.queue.filter(id => id !== me.id);
-      x.matches = (x.matches || []).map(m => ({
-        ...m,
-        a: m.a === me.id ? undefined : m.a,
-        b: m.b === me.id ? undefined : m.b,
-        winner: m.winner === me.id ? undefined : m.winner,
-      }));
+      x.queue = x.queue.filter(pid => pid !== me.id);
+      x.rounds = x.rounds.map(round =>
+        round.map(m => ({
+          ...m,
+          a: m.a === me.id ? undefined : m.a,
+          b: m.b === me.id ? undefined : m.b,
+          winner: m.winner === me.id ? undefined : m.winner,
+          reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== me.id)),
+        }))
+      );
     });
     r.push("/");
   }
-  function kick(pId: string) {
+
+  // ---------- small local helper: advance to next round when current is done ----------
+  function advanceFromRound(roundIdx: number) {
     update(x => {
-      x.players = x.players.filter(p => p.id !== pId);
-      x.queue = x.queue.filter(id => id !== pId);
-      x.matches = (x.matches || []).map(m => ({
-        ...m,
-        a: m.a === pId ? undefined : m.a,
-        b: m.b === pId ? undefined : m.b,
-        winner: m.winner === pId ? undefined : m.winner,
-      }));
+      const cur = x.rounds[roundIdx];
+      const winners = cur.map(m => m.winner);
+      if (winners.some(w => !w)) return; // not ready
+
+      if (winners.length === 1 && winners[0]) {
+        x.status = "completed";
+        return;
+      }
+      const next = [];
+      for (let i = 0; i < winners.length; i += 2) {
+        next.push({ a: winners[i], b: winners[i + 1], reports: {} as Record<string, "win"|"loss"|undefined> });
+      }
+      if (x.rounds[roundIdx + 1]) x.rounds[roundIdx + 1] = next as any;
+      else x.rounds.push(next as any);
     });
   }
-  function startBracket() { update(seedBracket); }
-  function setWinner(i: number, id?: string) { update(x => { x.matches[i].winner = id; }); }
-  function editName(newName: string) { update(x => { if (newName.trim()) x.name = newName.trim(); }); }
+
+  // ---------- host override winner ----------
+  function hostSetWinner(roundIdx: number, matchIdx: number, winnerId?: string) {
+    update(x => {
+      const m = x.rounds?.[roundIdx]?.[matchIdx];
+      if (!m) return;
+      m.winner = winnerId;
+      if (winnerId) advanceFromRound(roundIdx);
+    });
+  }
+
+  // ---------- start / approvals / test add ----------
+  function startTournament() { update(seedInitial); }
+  function approve(pId: string) { update(x => approvePending(x, pId)); }
+  function decline(pId: string) { update(x => declinePending(x, pId)); }
+  function addTestPlayer() {
+    const pid = uid();
+    const p = { id: pid, name: `Guest ${t.players.length + (t.pending?.length || 0) + 1}` };
+    update(x => {
+      if (x.status === "active") insertLatePlayer(x, p);
+      else x.players.push(p);
+    });
+  }
+
+  // ---------- self-report (player) ----------
+  function report(roundIdx: number, matchIdx: number, result: "win" | "loss") {
+    if (!me) return;
+    update(x => {
+      submitReport(x, roundIdx, matchIdx, me.id, result);
+      // submitReport calls save; round advance handled inside; still fine to re-save
+      // after update, UI will reflect
+    });
+  }
+
+  // header mini-info
+  const lastRound = t.rounds.at(-1);
+  const finalWinnerId = lastRound?.[0]?.winner;
+  const iAmChampion = t.status === "completed" && finalWinnerId === me?.id;
 
   return (
     <main style={wrap}>
       <BackButton />
-      <div style={{ width:"100%", maxWidth:900, display:"grid", gap:18 }}>
+      <div style={{ width:"100%", maxWidth:1100, display:"grid", gap:18 }}>
         {/* Header */}
         <div style={{ display:"flex", justifyContent:"space-between", gap:12, alignItems:"center" }}>
           <div>
             <h1 style={{ margin:"8px 0 4px" }}>{t.name}</h1>
             <div style={{ opacity:.75, fontSize:14 }}>
-              {t.code ? <>Private code: <b>{t.code}</b></> : "Public tournament"}
+              {t.code ? <>Private code: <b>{t.code}</b></> : "Public tournament"} • {t.players.length} players
             </div>
+            {iAmChampion && (
+              <div style={{ marginTop:8, padding:"10px 12px", borderRadius:10, background:"#14532d", border:"1px solid #166534" }}>
+                🎉 <b>Congratulations!</b> You won the tournament!
+              </div>
+            )}
           </div>
+
           <div style={{ textAlign:"right" }}>
-            {me && myPos>0 && <div style={{ fontSize:14, opacity:.8 }}>Your queue position: <b>#{myPos}</b></div>}
             <div style={{ display:"flex", gap:8, marginTop:8, justifyContent:"flex-end" }}>
               {!t.queue.includes(me?.id || "") && <button style={btn} onClick={joinQueue}>Join Queue</button>}
               {t.queue.includes(me?.id || "") && <button style={btnGhost} onClick={leaveQueue}>Leave Queue</button>}
@@ -106,62 +170,105 @@ export default function Lobby() {
         {isHost && (
           <div style={card}>
             <h3 style={{ marginTop:0 }}>Host Controls</h3>
-            <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+
+            {/* Start / Delete */}
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
               <input
                 defaultValue={t.name}
-                onBlur={(e)=>editName(e.target.value)}
+                onBlur={(e)=>update(x => { const v = e.target.value.trim(); if (v) x.name = v; })}
                 placeholder="Rename tournament"
                 style={input}
               />
-              <button style={btn} onClick={startBracket}>Generate Bracket</button>
+              {t.status === "setup" && (
+                <button style={btn} onClick={startTournament}>Start (randomize bracket)</button>
+              )}
+              {t.status !== "completed" && (
+                <button
+                  style={btnGhost}
+                  onClick={()=>{
+                    if (confirm("Delete tournament? This cannot be undone.")) {
+                      deleteTournament(t.id); r.push("/");
+                    }
+                  }}
+                >Delete</button>
+              )}
+              <button style={btnGhost} onClick={addTestPlayer}>+ Add test player</button>
             </div>
+
+            {/* Pending approvals */}
+            <div style={{ marginTop:8 }}>
+              <h4 style={{ margin:"6px 0" }}>Pending approvals ({t.pending?.length || 0})</h4>
+              {(t.pending?.length || 0) === 0 ? (
+                <div style={{ opacity:.7, fontSize:13 }}>No pending players.</div>
+              ) : (
+                <ul style={{ listStyle:"none", padding:0, margin:0, display:"grid", gap:8 }}>
+                  {t.pending!.map(p => (
+                    <li key={p.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", background:"#111", padding:"10px 12px", borderRadius:10 }}>
+                      <span>{p.name}</span>
+                      <div style={{ display:"flex", gap:8 }}>
+                        <button style={btn} onClick={()=>approve(p.id)}>Approve</button>
+                        <button style={btnDanger} onClick={()=>decline(p.id)}>Decline</button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
             <p style={{ opacity:.75, fontSize:12, marginTop:8 }}>
-              Tip: remove no-shows from participants — their opponent advances.
+              Start randomizes the bracket and handles BYEs automatically.
+              Late approvals fill BYEs; if none, a play-in is added at the bottom.
             </p>
           </div>
         )}
 
-        {/* Participants */}
-        <div style={card}>
-          <h3 style={{ marginTop:0 }}>Participants ({t.players.length})</h3>
-          <ul style={{ listStyle:"none", padding:0, margin:0, display:"grid", gap:8 }}>
-            {t.players.map(p => (
-              <li key={p.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", background:"#111", padding:"10px 12px", borderRadius:10 }}>
-                <span>{p.name}{p.id===t.hostId && " (Host)"}{p.id===me?.id && " — You"}</span>
-                <span style={{ fontSize:12, opacity:.75 }}>
-                  {t.queue.includes(p.id) ? `#${t.queue.findIndex(x=>x===p.id)+1}` : '—'}
-                </span>
-                {isHost && p.id!==t.hostId && (
-                  <button style={btnDanger} onClick={()=>kick(p.id)}>Remove</button>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-
-        {/* Bracket */}
-        {t.matches?.length>0 && (
+        {/* Bracket: all rounds in columns */}
+        {t.rounds.length > 0 && (
           <div style={card}>
             <h3 style={{ marginTop:0 }}>Bracket</h3>
-            <div style={{ display:"grid", gap:8 }}>
-              {t.matches.map((m, i) => {
-                const a = t.players.find(p=>p.id===m.a)?.name || (m.a ? "??" : "BYE");
-                const b = t.players.find(p=>p.id===m.b)?.name || (m.b ? "??" : "BYE");
-                const w = m.winner;
-                return (
-                  <div key={i} style={{ background:"#111", borderRadius:10, padding:"10px 12px", display:"flex", gap:8, alignItems:"center", justifyContent:"space-between" }}>
-                    <div>{a} vs {b}</div>
-                    {isHost && (
-                      <div style={{ display:"flex", gap:6 }}>
-                        <button style={w===m.a?btnActive:btnMini} onClick={()=>setWinner(i, m.a)}>A wins</button>
-                        <button style={w===m.b?btnActive:btnMini} onClick={()=>setWinner(i, m.b)}>B wins</button>
-                        <button style={btnMini} onClick={()=>setWinner(i, undefined)}>Clear</button>
+            <div style={{ display:"grid", gridTemplateColumns: `repeat(${t.rounds.length}, minmax(220px, 1fr))`, gap:12, overflowX:"auto" }}>
+              {t.rounds.map((round, rIdx) => (
+                <div key={rIdx} style={{ display:"grid", gap:8 }}>
+                  <div style={{ opacity:.8, fontSize:13 }}>Round {rIdx + 1}</div>
+                  {round.map((m, i) => {
+                    const aName = t.players.find(p=>p.id===m.a)?.name || (m.a ? "??" : "BYE");
+                    const bName = t.players.find(p=>p.id===m.b)?.name || (m.b ? "??" : "BYE");
+                    const w = m.winner;
+
+                    const iPlay = me && (m.a === me.id || m.b === me.id);
+                    const canReport = iPlay && !w && t.status === "active";
+
+                    return (
+                      <div key={i} style={{ background:"#111", borderRadius:10, padding:"10px 12px", display:"grid", gap:8 }}>
+                        <div>{aName} vs {bName}</div>
+
+                        {/* Host override */}
+                        {isHost && t.status !== "completed" && (
+                          <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+                            <button style={w===m.a?btnActive:btnMini} onClick={()=>hostSetWinner(rIdx, i, m.a)}>A wins</button>
+                            <button style={w===m.b?btnActive:btnMini} onClick={()=>hostSetWinner(rIdx, i, m.b)}>B wins</button>
+                            <button style={btnMini} onClick={()=>hostSetWinner(rIdx, i, undefined)}>Clear</button>
+                            {w && <span style={{ fontSize:12, opacity:.8 }}>Winner: {t.players.find(p=>p.id===w)?.name}</span>}
+                          </div>
+                        )}
+
+                        {/* Player self-report */}
+                        {!isHost && canReport && (
+                          <div style={{ display:"flex", gap:6 }}>
+                            <button style={btnMini} onClick={()=>report(rIdx, i, "win")}>I won</button>
+                            <button style={btnMini} onClick={()=>report(rIdx, i, "loss")}>I lost</button>
+                          </div>
+                        )}
+                        {!isHost && w && (
+                          <div style={{ fontSize:12, opacity:.8 }}>
+                            Winner: {t.players.find(p=>p.id===w)?.name}
+                          </div>
+                        )}
                       </div>
-                    )}
-                    {!isHost && w && <div style={{ fontSize:12, opacity:.8 }}>Winner: {t.players.find(p=>p.id===w)?.name}</div>}
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -170,6 +277,7 @@ export default function Lobby() {
   );
 }
 
+/* --------- styles --------- */
 const wrap: React.CSSProperties = { minHeight:"100vh", background:"#0b0b0b", color:"#fff", fontFamily:"system-ui", padding:24, position:"relative" };
 const card: React.CSSProperties = { background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:14, padding:14 };
 const btn: React.CSSProperties = { padding:"10px 14px", borderRadius:10, border:"none", background:"#0ea5e9", color:"#fff", fontWeight:700, cursor:"pointer" };
@@ -177,13 +285,4 @@ const btnGhost: React.CSSProperties = { padding:"10px 14px", borderRadius:10, bo
 const btnDanger: React.CSSProperties = { ...btnGhost, borderColor:"#ff6b6b", color:"#ff6b6b" };
 const btnMini: React.CSSProperties = { padding:"6px 10px", borderRadius:8, border:"1px solid rgba(255,255,255,0.25)", background:"transparent", color:"#fff", cursor:"pointer", fontSize:12 };
 const btnActive: React.CSSProperties = { ...btnMini, background:"#0ea5e9", border:"none" };
-
-// ✅ missing style that caused the error
-const input: React.CSSProperties = {
-  width: "100%",
-  padding: "12px 14px",
-  borderRadius: 10,
-  border: "1px solid #333",
-  background: "#111",
-  color: "#fff",
-};
+const input: React.CSSProperties = { width:"100%", padding:"12px 14px", borderRadius:10, border:"1px solid #333", background:"#111", color:"#fff" };
