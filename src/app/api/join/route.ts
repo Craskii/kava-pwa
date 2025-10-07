@@ -1,26 +1,50 @@
-import { getRequestContext } from "@cloudflare/next-on-pages";
+// src/app/api/join/route.ts
 import { NextResponse } from "next/server";
+import { getRequestContext } from "@cloudflare/next-on-pages";
 
 export const runtime = "edge";
 
-type Env = {
-  KAVA_TOURNAMENTS: KVNamespace;
+type KV = {
+  get(key: string): Promise<string | null>;
+  put(key: string, value: string): Promise<void>;
+  delete(key: string): Promise<void>;
 };
+type Env = { KAVA_TOURNAMENTS: KV };
 
+/**
+ * Join a tournament by 4-digit code.
+ * Body: { code: string }
+ * Returns: { id, tournament } or 404.
+ */
 export async function POST(req: Request) {
-  const { env } = getRequestContext<{ env: Env }>();
-  const body = await req.json().catch(() => ({}));
-  const code = body.code?.toString();
+  const { env } = getRequestContext(); // generic CloudflareEnv
+  const kv = (env as unknown as Env).KAVA_TOURNAMENTS; // cast to our shape
 
-  if (!code || code.length !== 4) {
-    return NextResponse.json({ error: "Invalid code." }, { status: 400 });
+  const body = (await req.json().catch(() => ({}))) as { code?: string };
+  const code = String(body.code ?? "").trim();
+
+  if (!/^\d{4}$/.test(code)) {
+    return NextResponse.json(
+      { error: "Invalid code. Expect 4 digits." },
+      { status: 400 }
+    );
   }
 
-  const id = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
+  const id = await kv.get(`code:${code}`);
   if (!id) {
-    return NextResponse.json({ error: "No tournament with that code." }, { status: 404 });
+    return NextResponse.json(
+      { error: "No tournament with that code." },
+      { status: 404 }
+    );
   }
 
-  // For now, just return the tournament ID. Later we’ll add player tracking.
-  return NextResponse.json({ ok: true, id });
+  const data = await kv.get(`t:${id}`);
+  if (!data) {
+    return NextResponse.json(
+      { error: "Tournament data missing." },
+      { status: 404 }
+    );
+  }
+
+  return NextResponse.json({ id, tournament: JSON.parse(data) });
 }
