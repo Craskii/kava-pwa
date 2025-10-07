@@ -15,8 +15,8 @@ function random4Digits(): string {
 }
 
 export async function POST(req: Request) {
-  const { env } = getRequestContext<{ env: Env }>();
-  const kv = env.KAVA_TOURNAMENTS;
+  const { env } = getRequestContext();
+  const kv = (env as unknown as Env).KAVA_TOURNAMENTS;
 
   const body = await req.json().catch(() => ({} as { name?: string; hostId?: string }));
   const name = body.name || "Untitled Tournament";

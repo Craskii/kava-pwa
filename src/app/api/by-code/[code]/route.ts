@@ -22,8 +22,8 @@ export async function GET(
     );
   }
 
-  const { env } = getRequestContext<{ env: Env }>();
-  const kv = env.KAVA_TOURNAMENTS;
+  const { env } = getRequestContext();
+  const kv = (env as unknown as Env).KAVA_TOURNAMENTS;
 
   const id = await kv.get(`code:${safeCode}`);
   if (!id) {

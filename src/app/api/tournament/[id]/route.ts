@@ -13,8 +13,8 @@ export async function GET(
   context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
-  const { env } = getRequestContext<{ env: Env }>();
-  const kv = env.KAVA_TOURNAMENTS;
+  const { env } = getRequestContext();
+  const kv = (env as unknown as Env).KAVA_TOURNAMENTS;
 
   const data = await kv.get(`t:${id}`);
   if (!data) {
