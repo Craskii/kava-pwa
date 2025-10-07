@@ -1,13 +1,15 @@
 // src/app/api/create/route.ts
 import { getRequestContext } from "@cloudflare/next-on-pages";
 import { NextResponse } from "next/server";
-import { randomUUID } from "crypto";
 
 export const runtime = "edge";
 
 type Env = {
   KAVA_TOURNAMENTS: KVNamespace;
 };
+
+// Safe for Cloudflare Edge (no Node.js crypto)
+const randomUUID = () => crypto.randomUUID();
 
 function random4Digits() {
   return Math.floor(1000 + Math.random() * 9000).toString();
@@ -16,9 +18,9 @@ function random4Digits() {
 export async function POST(req: Request) {
   const { env } = getRequestContext<{ env: Env }>();
   const body = await req.json().catch(() => ({}));
+
   const name = body.name || "Untitled Tournament";
   const hostId = body.hostId || randomUUID();
-
   const code = random4Digits();
   const id = randomUUID();
 
