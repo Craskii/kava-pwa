@@ -7,7 +7,6 @@ type KV = { get: (key: string) => Promise<string | null> };
 type Env = { KAVA_TOURNAMENTS: KV };
 
 export async function GET(_req: Request, context: unknown) {
-  // Safely extract params without constraining the handler's signature type
   const { params } = (context as { params?: { code?: string } }) ?? {};
   const code = String(params?.code ?? "").trim().toUpperCase();
 
@@ -18,10 +17,11 @@ export async function GET(_req: Request, context: unknown) {
     );
   }
 
-  // Access Cloudflare bindings with next-on-pages
-  const { env } = getRequestContext<{ env: Env }>();
-  const id = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
+  // Cast the Cloudflare env to our Env shape so TS stops complaining
+  const { env } = getRequestContext();
+  const kv = (env as unknown as Env).KAVA_TOURNAMENTS;
 
+  const id = await kv.get(`code:${code}`);
   if (!id) {
     return NextResponse.json(
       { error: "No tournament with that code" },
