@@ -4,19 +4,14 @@ import { getRequestContext } from "@cloudflare/next-on-pages";
 
 export const runtime = "edge";
 
-// @ts-ignore - Cloudflare Pages KV type
-type KVNamespace = any;
-
 type Env = {
   KAVA_TOURNAMENTS: KVNamespace;
 };
 
-// New correct Next.js 15 signature
 export async function GET(
-  request: Request,
+  _request: Request,
   context: { params: Promise<{ code: string }> }
 ) {
-  // await params since it’s now a promise in Next 15
   const { code } = await context.params;
   const safeCode = String(code || "").trim();
 

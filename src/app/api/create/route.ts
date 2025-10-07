@@ -4,24 +4,21 @@ import { NextResponse } from "next/server";
 
 export const runtime = "edge";
 
-// @ts-ignore - Cloudflare Pages KV type
-type KVNamespace = any;
-
 type Env = {
   KAVA_TOURNAMENTS: KVNamespace;
 };
 
-// Safe for Cloudflare Edge (no Node.js crypto)
 const randomUUID = () => crypto.randomUUID();
 
-function random4Digits() {
+function random4Digits(): string {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
 export async function POST(req: Request) {
   const { env } = getRequestContext<{ env: Env }>();
-  const body = await req.json().catch(() => ({}));
+  const kv = env.KAVA_TOURNAMENTS;
 
+  const body = await req.json().catch(() => ({} as { name?: string; hostId?: string }));
   const name = body.name || "Untitled Tournament";
   const hostId = body.hostId || randomUUID();
   const code = random4Digits();
@@ -32,16 +29,16 @@ export async function POST(req: Request) {
     code,
     name,
     hostId,
-    players: [],
-    queue: [],
-    pending: [],
-    rounds: [],
+    players: [] as Array<{ id: string; name: string }>,
+    queue: [] as string[],
+    pending: [] as Array<{ id: string; name: string }>,
+    rounds: [] as Array<Array<unknown>>,
     status: "setup",
     createdAt: new Date().toISOString(),
   };
 
-  await env.KAVA_TOURNAMENTS.put(`code:${code}`, id);
-  await env.KAVA_TOURNAMENTS.put(`t:${id}`, JSON.stringify(tournament));
+  await kv.put(`code:${code}`, id);
+  await kv.put(`t:${id}`, JSON.stringify(tournament));
 
   return NextResponse.json({ ok: true, id, code, tournament });
 }
