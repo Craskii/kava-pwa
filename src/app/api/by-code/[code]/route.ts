@@ -1,14 +1,17 @@
-import { NextResponse } from "next/server";
+// src/app/api/by-code/[code]/route.ts
 import { getRequestContext } from "@cloudflare/next-on-pages";
+import { NextResponse } from "next/server";
 
 export const runtime = "edge";
 
-type KV = { get: (key: string) => Promise<string | null> };
-type Env = { KAVA_TOURNAMENTS: KV };
+type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-export async function GET(_req: Request, context: unknown) {
-  const { params } = (context as { params?: { code?: string } }) ?? {};
-  const code = String(params?.code ?? "").trim().toUpperCase();
+export async function GET(
+  req: Request,
+  { params }: { params: { code: string } }
+) {
+  const { env } = getRequestContext<{ env: Env }>();
+  const code = params.code?.trim();
 
   if (!/^\d{4}$/.test(code)) {
     return NextResponse.json(
@@ -17,11 +20,7 @@ export async function GET(_req: Request, context: unknown) {
     );
   }
 
-  // Cast the Cloudflare env to our Env shape so TS stops complaining
-  const { env } = getRequestContext();
-  const kv = (env as unknown as Env).KAVA_TOURNAMENTS;
-
-  const id = await kv.get(`code:${code}`);
+  const id = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
   if (!id) {
     return NextResponse.json(
       { error: "No tournament with that code" },

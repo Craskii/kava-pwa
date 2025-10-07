@@ -1,14 +1,12 @@
 // src/lib/storage.ts
 /* ---------------- Types ---------------- */
-
 export type Player = { id: string; name: string };
 export type Report = "win" | "loss" | undefined;
 
 export type Match = {
-  a?: string;              // playerId
-  b?: string;              // playerId
-  winner?: string;         // playerId
-  // per-player self report
+  a?: string;
+  b?: string;
+  winner?: string;
   reports?: { [playerId: string]: Report };
 };
 
@@ -17,61 +15,37 @@ export type TournamentStatus = "setup" | "active" | "completed";
 export type Tournament = {
   id: string;
   name: string;
-  code?: string;                 // short join code (must be unique server-side)
+  code?: string;
   hostId: string;
-  status: TournamentStatus;      // 'setup' until host starts
+  status: TournamentStatus;
   createdAt: number;
-
-  // roster
-  players: Player[];             // approved players
-  pending: Player[];             // awaiting host approval
-
-  // optional queue you already use on the pages
+  players: Player[];
+  pending: Player[];
   queue: string[];
-
-  // rounds[r][m] -> Match   (0 = first round)
   rounds: Match[][];
 };
 
 export const uid = () => Math.random().toString(36).slice(2, 9);
 
-/* ---------------- Local (existing) ---------------- */
-
+/* ---------------- Local helpers ---------------- */
 const KEY = "kava_tournaments_v2";
 
 function readAll(): Record<string, Tournament> {
   if (typeof window === "undefined") return {};
-  try { return JSON.parse(localStorage.getItem(KEY) || "{}"); } catch { return {}; }
+  try {
+    return JSON.parse(localStorage.getItem(KEY) || "{}");
+  } catch {
+    return {};
+  }
 }
+
 function writeAll(all: Record<string, Tournament>) {
   if (typeof window === "undefined") return;
   localStorage.setItem(KEY, JSON.stringify(all));
 }
 
-export function listTournaments(): Tournament[] {
-  return Object.values(readAll());
-}
-export function getTournament(id: string): Tournament | null {
-  return readAll()[id] || null;
-}
-export function saveTournament(t: Tournament) {
-  const all = readAll(); all[t.id] = t; writeAll(all);
-}
-export function deleteTournament(id: string) {
-  const all = readAll(); delete all[id]; writeAll(all);
-}
-export function findByCode(code: string): Tournament | null {
-  return listTournaments().find(t => (t.code || "") === code) || null;
-}
-
-/* ---------------- Remote (Cloudflare Functions) ----------------
-   Uses the /functions/api/... endpoints we added:
-   - /api/tournaments (GET list, POST create)
-   - /api/tournaments/[id] (GET/PUT/DELETE one)
-   - /api/by-code/[code] (GET resolve, HEAD check)
------------------------------------------------------------------- */
-
-const API_BASE = ""; // relative to the site origin
+/* ---------------- Cloudflare API ---------------- */
+const API_BASE = "";
 
 async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -81,63 +55,65 @@ async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers || {}),
     },
   });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status} ${res.statusText} – ${txt}`);
-  }
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
   return (await res.json()) as T;
 }
 
-/** GET a tournament by id from KV (multi-device). */
-export async function getTournamentRemote(id: string): Promise<Tournament | null> {
-  try {
-    return await apiJson<Tournament>(`/api/tournaments/${encodeURIComponent(id)}`);
-  } catch {
-    return null;
-  }
+/* ---------------- Combined Sync ---------------- */
+
+export function listTournaments(): Tournament[] {
+  return Object.values(readAll());
 }
 
-/** PUT full tournament to KV (enforces code ownership). */
-export async function saveTournamentRemote(t: Tournament): Promise<void> {
-  await apiJson(`/api/tournaments/${encodeURIComponent(t.id)}`, {
-    method: "PUT",
-    body: JSON.stringify(t),
-  });
+export function getTournament(id: string): Tournament | null {
+  const local = readAll()[id];
+  if (local) return local;
+
+  // Try fetching from Cloudflare in background
+  fetch(`/api/tournament/${id}`)
+    .then(res => res.ok ? res.json() : null)
+    .then(data => {
+      if (data) {
+        const all = readAll();
+        all[id] = data;
+        writeAll(all);
+      }
+    })
+    .catch(() => {});
+
+  return null;
 }
 
-/** POST create new tournament (fails if code is in use). */
-export async function createTournamentRemote(t: Tournament): Promise<{ id: string }> {
-  return await apiJson<{ id: string }>(`/api/tournaments`, {
+export async function saveTournament(t: Tournament) {
+  // Save locally
+  const all = readAll();
+  all[t.id] = t;
+  writeAll(all);
+
+  // Sync to Cloudflare KV
+  fetch("/api/tournament/update", {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(t),
-  });
+  }).catch(() => {});
 }
 
-/** DELETE tournament and free its code. */
-export async function deleteTournamentRemote(id: string): Promise<void> {
-  await apiJson(`/api/tournaments/${encodeURIComponent(id)}`, {
-    method: "DELETE",
-  });
+export function deleteTournament(id: string) {
+  const all = readAll();
+  delete all[id];
+  writeAll(all);
 }
 
-/** GET tournament by short code (404 if not found). */
-export async function findByCodeRemote(code: string): Promise<Tournament | null> {
+/* ---------------- Helpers ---------------- */
+export async function findByCodeRemote(code: string): Promise<{ id: string } | null> {
   try {
-    return await apiJson<Tournament>(`/api/by-code/${encodeURIComponent(code.trim().toLowerCase())}`);
+    return await apiJson<{ id: string }>(`/api/by-code/${encodeURIComponent(code.trim())}`);
   } catch {
     return null;
   }
 }
 
-/** HEAD to see if a code is already in use (true = taken). */
-export async function isCodeInUseRemote(code: string): Promise<boolean> {
-  const res = await fetch(`/api/by-code/${encodeURIComponent(code.trim().toLowerCase())}`, { method: "HEAD" });
-  // We defined HEAD to return 200 if exists, 404 if free
-  return res.status === 200;
-}
-
-/* ---------------- Bracket helpers (unchanged) ---------------- */
-
+/* ---------------- Bracket helpers ---------------- */
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -146,11 +122,11 @@ function shuffle<T>(arr: T[]): T[] {
   }
   return a;
 }
+
 function nextPowerOf2(n: number) {
   return Math.pow(2, Math.ceil(Math.log2(Math.max(1, n))));
 }
 
-/** Host presses Start (randomize + pad to power of 2 with BYEs). */
 export function seedInitialRounds(t: Tournament) {
   const ids = shuffle(t.players.map(p => p.id));
   const size = nextPowerOf2(ids.length);
@@ -161,10 +137,9 @@ export function seedInitialRounds(t: Tournament) {
   }
   t.rounds = [firstRound];
   t.status = "active";
-  saveTournament(t); // local save for offline; use saveTournamentRemote() when online
+  saveTournament(t);
 }
 
-/** Insert a late player during an active tournament. Prefer filling a BYE seat. */
 export function insertLatePlayer(t: Tournament, p: Player) {
   if (!t.players.some(x => x.id === p.id)) t.players.push(p);
 
@@ -178,13 +153,11 @@ export function insertLatePlayer(t: Tournament, p: Player) {
   saveTournament(t);
 }
 
-/** Recompute the next round from winners when a round completes. */
 function buildNextRoundFrom(t: Tournament, roundIndex: number) {
   const cur = t.rounds[roundIndex];
-  const winners: (string | undefined)[] = cur.map(m => m.winner);
-  if (winners.some(w => w === undefined)) return;
+  const winners = cur.map(m => m.winner);
+  if (winners.some(w => !w)) return;
 
-  // final done?
   if (winners.length === 1 && winners[0]) {
     t.status = "completed";
     saveTournament(t);
@@ -200,8 +173,13 @@ function buildNextRoundFrom(t: Tournament, roundIndex: number) {
   saveTournament(t);
 }
 
-/** Player reports "win" or "loss"; advance when consistent (or BYE). */
-export function submitReport(t: Tournament, roundIndex: number, matchIndex: number, playerId: string, result: "win" | "loss") {
+export function submitReport(
+  t: Tournament,
+  roundIndex: number,
+  matchIndex: number,
+  playerId: string,
+  result: "win" | "loss"
+) {
   const m = t.rounds?.[roundIndex]?.[matchIndex];
   if (!m) return;
 
@@ -224,19 +202,16 @@ export function submitReport(t: Tournament, roundIndex: number, matchIndex: numb
 }
 
 /* ---------------- Approvals ---------------- */
-
 export function approvePending(t: Tournament, playerId: string) {
   const idx = t.pending.findIndex(p => p.id === playerId);
   if (idx < 0) return;
   const p = t.pending[idx];
   t.pending.splice(idx, 1);
 
-  if (t.status === "active") {
-    insertLatePlayer(t, p);
-  } else {
-    t.players.push(p);
-    saveTournament(t);
-  }
+  if (t.status === "active") insertLatePlayer(t, p);
+  else t.players.push(p);
+
+  saveTournament(t);
 }
 
 export function declinePending(t: Tournament, playerId: string) {
