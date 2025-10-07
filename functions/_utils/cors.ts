@@ -1,4 +1,4 @@
-// functions/utils/cors.ts
+// functions/_utils/cors.ts
 
 export const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",

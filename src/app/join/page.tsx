@@ -17,22 +17,38 @@ export default function JoinByCodePage() {
     }
     setLoading(true);
     setMsg(null);
+
     try {
-      // ask the server to translate code -> tournamentId
-      const res = await fetch(`/api/by-code/${c}`);
+      // ✅ Relative URL so it hits Cloudflare Functions at /api/by-code/[code]
+      const res = await fetch(`/api/by-code/${c}`, {
+        method: "GET",
+        headers: { "Accept": "application/json" },
+        // no-cache helps during PWA dev so you don't hit a stale SW response
+        cache: "no-store",
+      });
+
       if (!res.ok) {
         setMsg("Could not reach server.");
         return;
       }
-      const data = (await res.json()) as { id: string } | null;
+
+      // Guard against non-JSON (e.g., error HTML)
+      let data: any = null;
+      try {
+        data = await res.json();
+      } catch {
+        setMsg("Server returned an unexpected response.");
+        return;
+      }
+
       if (!data || !data.id) {
         setMsg("No tournament with that code.");
         return;
       }
 
-      // ✅ IMPORTANT: navigate with the **ID**, not the code
+      // Navigate with the actual tournament ID
       r.push(`/t/${data.id}`);
-    } catch (e) {
+    } catch {
       setMsg("Something went wrong.");
     } finally {
       setLoading(false);
