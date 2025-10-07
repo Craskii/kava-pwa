@@ -1,5 +1,5 @@
 // functions/api/tournaments/index.ts
-import { ok, error, handleOptions } from "../../utils/cors";
+import { ok, error, handleOptions } from "../../_utils/cors";
 
 type KV = {
   get: (key: string) => Promise<string | null>;

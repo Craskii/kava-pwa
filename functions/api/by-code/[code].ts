@@ -1,5 +1,5 @@
 // functions/api/by-code/[code].ts
-import { ok, notFound, handleOptions, error } from "../../utils/cors";
+import { ok, notFound, handleOptions, error } from "../../_utils/cors";
 
 type KV = {
   get: (key: string) => Promise<string | null>;
