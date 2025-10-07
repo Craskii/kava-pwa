@@ -3,6 +3,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
+type ByCodeOk = { id: string };
+type ByCodeErr = { error: string };
+type ByCodeResponse = ByCodeOk | ByCodeErr;
+
 export default function JoinByCodePage() {
   const r = useRouter();
   const [code, setCode] = useState("");
@@ -15,15 +19,14 @@ export default function JoinByCodePage() {
       setMsg("Enter a 4-digit code.");
       return;
     }
+
     setLoading(true);
     setMsg(null);
 
     try {
-      // ✅ Relative URL so it hits Cloudflare Functions at /api/by-code/[code]
       const res = await fetch(`/api/by-code/${c}`, {
         method: "GET",
-        headers: { "Accept": "application/json" },
-        // no-cache helps during PWA dev so you don't hit a stale SW response
+        headers: { Accept: "application/json" },
         cache: "no-store",
       });
 
@@ -32,16 +35,15 @@ export default function JoinByCodePage() {
         return;
       }
 
-      // Guard against non-JSON (e.g., error HTML)
-      let data: any = null;
+      let data: ByCodeResponse;
       try {
-        data = await res.json();
+        data = (await res.json()) as ByCodeResponse;
       } catch {
         setMsg("Server returned an unexpected response.");
         return;
       }
 
-      if (!data || !data.id) {
+      if ("error" in data || !("id" in data)) {
         setMsg("No tournament with that code.");
         return;
       }
