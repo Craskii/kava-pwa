@@ -1,4 +1,4 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
 export const runtime = "edge";
@@ -6,12 +6,10 @@ export const runtime = "edge";
 type KV = { get: (key: string) => Promise<string | null> };
 type Env = { KAVA_TOURNAMENTS: KV };
 
-// ✅ Note: the 2nd arg must be `{ params: { code: string } }` (not optional/union)
-export async function GET(
-  _req: NextRequest,
-  { params }: { params: { code: string } }
-) {
-  const code = (params.code ?? "").trim().toUpperCase();
+export async function GET(_req: Request, context: unknown) {
+  // Safely extract params without constraining the handler's signature type
+  const { params } = (context as { params?: { code?: string } }) ?? {};
+  const code = String(params?.code ?? "").trim().toUpperCase();
 
   if (!/^\d{4}$/.test(code)) {
     return NextResponse.json(
@@ -20,6 +18,7 @@ export async function GET(
     );
   }
 
+  // Access Cloudflare bindings with next-on-pages
   const { env } = getRequestContext<{ env: Env }>();
   const id = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
 
