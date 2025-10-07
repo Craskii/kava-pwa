@@ -4,15 +4,20 @@ import { getRequestContext } from "@cloudflare/next-on-pages";
 
 export const runtime = "edge";
 
-type Env = {
-  KAVA_TOURNAMENTS: KVNamespace;
+type KV = {
+  get(key: string): Promise<string | null>;
+  put(key: string, value: string): Promise<void>;
+  delete(key: string): Promise<void>;
 };
+type Env = { KAVA_TOURNAMENTS: KV };
 
+// GET tournament by ID
 export async function GET(
   _req: Request,
   context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
+
   const { env } = getRequestContext();
   const kv = (env as unknown as Env).KAVA_TOURNAMENTS;
 
@@ -23,13 +28,15 @@ export async function GET(
   return NextResponse.json(JSON.parse(data));
 }
 
+// PUT update existing tournament
 export async function PUT(
   req: Request,
   context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
-  const { env } = getRequestContext<{ env: Env }>();
-  const kv = env.KAVA_TOURNAMENTS;
+
+  const { env } = getRequestContext();
+  const kv = (env as unknown as Env).KAVA_TOURNAMENTS;
 
   const body = await req.json().catch(() => null);
   if (!body) {
@@ -40,15 +47,29 @@ export async function PUT(
   return NextResponse.json({ ok: true, id });
 }
 
+// DELETE tournament by ID
 export async function DELETE(
   _req: Request,
   context: { params: Promise<{ id: string }> }
 ) {
   const { id } = await context.params;
-  const { env } = getRequestContext<{ env: Env }>();
-  const kv = env.KAVA_TOURNAMENTS;
+
+  const { env } = getRequestContext();
+  const kv = (env as unknown as Env).KAVA_TOURNAMENTS;
+
+  // optional: try to remove code mapping if we can fetch it
+  const data = await kv.get(`t:${id}`);
+  if (data) {
+    try {
+      const t = JSON.parse(data) as { code?: string };
+      if (t.code) {
+        await kv.delete(`code:${t.code}`);
+      }
+    } catch {
+      // ignore parse errors
+    }
+  }
 
   await kv.delete(`t:${id}`);
-  // If you also store the code->id mapping, you could delete it here if you have the code.
   return NextResponse.json({ ok: true, deleted: id });
 }
