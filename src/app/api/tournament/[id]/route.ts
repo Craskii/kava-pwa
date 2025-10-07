@@ -4,6 +4,9 @@ import { getRequestContext } from "@cloudflare/next-on-pages";
 
 export const runtime = "edge";
 
+// @ts-ignore - Cloudflare Pages KV type
+type KVNamespace = any;
+
 type Env = {
   KAVA_TOURNAMENTS: KVNamespace;
 };
