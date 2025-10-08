@@ -1,16 +1,21 @@
 // src/app/api/tournaments/route.ts
 import { NextResponse } from "next/server";
-import { getRequestContext, type CloudflareEnv } from "@cloudflare/next-on-pages";
+import { getRequestContext } from "@cloudflare/next-on-pages";
 
 export const runtime = "edge";
 
-// Tell TS that our Cloudflare env ALSO includes this KV binding name.
-type Bindings = CloudflareEnv & { KAVA_TOURNAMENTS: KVNamespace };
+// --- Minimal env typing: only what we actually use ---
+type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-// Minimal types for KV list() response
+// KV list() response shape
 type KVListKey = { name: string; expiration?: number; metadata?: unknown };
-type KVListResult = { keys: KVListKey[]; list_complete: boolean; cursor?: string };
+type KVListResult = {
+  keys: KVListKey[];
+  list_complete: boolean;
+  cursor?: string;
+};
 
+// Tournament shape (kept loose for this endpoint)
 type Tournament = {
   id: string;
   name: string;
@@ -25,17 +30,18 @@ type Tournament = {
 };
 
 export async function GET(req: Request) {
-  // Cast the env to include our KV binding so TS is happy
-  const { env } = getRequestContext<{ env: Bindings }>();
+  const { env } = getRequestContext<{ env: Env }>();
 
   const url = new URL(req.url);
   const hostId = url.searchParams.get("hostId") || undefined;
 
-  // Collect all tournament ids from KV (keys are "t:<id>")
+  // 1) Collect all tournament ids via KV pagination
   const ids: string[] = [];
-  let cursor: string | undefined = undefined;
+  let cursor: string | undefined;
 
+  // eslint-disable-next-line no-constant-condition
   while (true) {
+    // TS for Workers KV list() is a bit loose; cast to our local type
     const res = (await env.KAVA_TOURNAMENTS.list({
       prefix: "t:",
       limit: 1000,
@@ -43,12 +49,11 @@ export async function GET(req: Request) {
     } as unknown)) as unknown as KVListResult;
 
     ids.push(...res.keys.map((k) => k.name.slice(2)));
-
     if (res.list_complete || !res.cursor) break;
     cursor = res.cursor;
   }
 
-  // Load tournaments
+  // 2) Load and parse each tournament
   const tournaments = (
     await Promise.all(
       ids.map(async (id) => {
@@ -63,11 +68,12 @@ export async function GET(req: Request) {
     )
   ).filter((x): x is Tournament => Boolean(x));
 
+  // 3) Optional filter by host
   const filtered = hostId
     ? tournaments.filter((t) => String(t.hostId) === hostId)
     : tournaments;
 
-  // Sort newest first
+  // 4) Sort newest first
   filtered.sort((a, b) => {
     const aT = Number(a.createdAt) || Date.parse(String(a.createdAt));
     const bT = Number(b.createdAt) || Date.parse(String(b.createdAt));
