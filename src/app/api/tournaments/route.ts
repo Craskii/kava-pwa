@@ -1,10 +1,11 @@
 // src/app/api/tournaments/route.ts
 import { NextResponse } from "next/server";
-import { getRequestContext } from "@cloudflare/next-on-pages";
+import { getRequestContext, type CloudflareEnv } from "@cloudflare/next-on-pages";
 
 export const runtime = "edge";
 
-type Env = { KAVA_TOURNAMENTS: KVNamespace };
+// Tell TS that our Cloudflare env ALSO includes this KV binding name.
+type Bindings = CloudflareEnv & { KAVA_TOURNAMENTS: KVNamespace };
 
 // Minimal types for KV list() response
 type KVListKey = { name: string; expiration?: number; metadata?: unknown };
@@ -24,7 +25,8 @@ type Tournament = {
 };
 
 export async function GET(req: Request) {
-  const { env } = getRequestContext<{ env: Env }>();
+  // Cast the env to include our KV binding so TS is happy
+  const { env } = getRequestContext<{ env: Bindings }>();
 
   const url = new URL(req.url);
   const hostId = url.searchParams.get("hostId") || undefined;
