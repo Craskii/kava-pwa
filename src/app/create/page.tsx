@@ -1,61 +1,65 @@
-'use client';
+// src/app/create/page.tsx
+"use client";
+
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import BackButton from "../../components/BackButton";
-import { Tournament, saveTournament, uid } from "../../lib/storage";
+import { uid } from "../../lib/storage"; // we still use uid for a default host id
 
 export default function CreatePage() {
   const r = useRouter();
   const [name, setName] = useState("");
-  const [code, setCode] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
 
-  function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const id = uid();
-    const hostId = uid();
-    const t: Tournament = {
-  id,
-  name: name || "Untitled Tournament",
-  code: code || undefined,
-  hostId,
-  status: "setup",
-  createdAt: Date.now(),
-  players: [{ id: hostId, name: "Host" }],
-  pending: [],
-  queue: [hostId],
-  rounds: [],
-};
+  async function onCreate() {
+    setMsg(null);
+    const n = name.trim() || "Untitled Tournament";
+    setLoading(true);
 
-    saveTournament(t);
-    // store "me" for this browser
-    localStorage.setItem("kava_me", JSON.stringify({ id: hostId, name: "Host" }));
-    r.push(`/t/${id}`);
+    // simple “me” identity (same as your app already does)
+    let me = null;
+    try { me = JSON.parse(localStorage.getItem("kava_me") || "null"); } catch {}
+    if (!me) {
+      me = { id: uid(), name: "Host" };
+      localStorage.setItem("kava_me", JSON.stringify(me));
+    }
+
+    try {
+      const res = await fetch("/api/create", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ name: n, hostId: me.id }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json(); // { ok, id, code }
+      r.push(`/t/${data.id}`);
+    } catch (e) {
+      setMsg("Could not create tournament.");
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
-    <main style={wrap}>
+    <main style={{ minHeight: "100vh", background:"#0b1220", color:"#fff", padding:16 }}>
       <BackButton />
-      <div style={{ width: "100%", maxWidth: 520 }}>
-        <h1 style={h1}>Create Tournament</h1>
-        <form onSubmit={onSubmit} style={{ display: "grid", gap: 12 }}>
-          <label style={label}>
-            Name
-            <input style={input} value={name} onChange={(e) => setName(e.target.value)} placeholder="Friday Night Bracket" />
-          </label>
-          <label style={label}>
-            Private? (4-digit code)
-            <input style={input} value={code} maxLength={4} inputMode="numeric"
-                   onChange={(e)=>setCode(e.target.value.replace(/\D/g,''))}
-                   placeholder="Optional e.g. 1234" />
-          </label>
-          <button type="submit" style={btn}>Create</button>
-        </form>
-      </div>
+      <h1>Create tournament</h1>
+      <input
+        value={name}
+        onChange={e=>setName(e.target.value)}
+        placeholder="Tournament name"
+        style={{ width:"100%", padding:"12px 14px", borderRadius:10, border:"1px solid #333", background:"#111", color:"#fff" }}
+      />
+      <button
+        onClick={onCreate}
+        disabled={loading}
+        style={{ marginTop:10, padding:"12px 16px", borderRadius:12, background:"#0ea5e9", border:"none", color:"#fff", fontWeight:700 }}
+      >
+        {loading ? "Creating…" : "Create"}
+      </button>
+      {msg && <p style={{ color:"#fca5a5", marginTop:8 }}>{msg}</p>}
     </main>
   );
 }
-const wrap: React.CSSProperties = { minHeight:"100vh", display:"grid", placeItems:"center", padding:24, color:"#fff", background:"#0b0b0b", fontFamily:"system-ui" };
-const h1: React.CSSProperties = { margin:"48px 0 16px" };
-const label: React.CSSProperties = { display:"grid", gap:6, fontSize:14, opacity:.9 };
-const input: React.CSSProperties = { width:"100%", padding:"12px 14px", borderRadius:10, border:"1px solid #333", background:"#111", color:"#fff" };
-const btn: React.CSSProperties = { padding:"12px 16px", borderRadius:12, border:"none", background:"#0ea5e9", color:"#fff", fontWeight:700, marginTop:8 };

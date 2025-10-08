@@ -1,19 +1,26 @@
 // src/app/t/[id]/page.tsx
-'use client';
-export const runtime = 'edge';
+"use client";
+export const runtime = "edge";
 
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import BackButton from "../../../components/BackButton";
+
 import {
-  getTournament, saveTournament,
+  // remote helpers (Cloudflare KV)
+  getTournamentRemote,
+  saveTournamentRemote,
+  deleteTournamentRemote,
+  // bracket + helpers (pure functions)
   seedInitialRounds as seedInitial,
-  submitReport, approvePending, declinePending,
-  insertLatePlayer, Tournament, uid, Match
+  submitReport,
+  approvePending,
+  declinePending,
+  insertLatePlayer,
+  Tournament,
+  uid,
+  Match,
 } from "../../../lib/storage";
-// If you have remote helpers, keep this import; otherwise remove it.
-// import { deleteTournamentRemote } from "../../../lib/remote";
-import { deleteTournament as deleteTournamentRemote } from "../../../lib/storage"; // fallback
 
 export default function Lobby() {
   const { id } = useParams<{ id: string }>();
@@ -21,17 +28,32 @@ export default function Lobby() {
   const [t, setT] = useState<Tournament | null>(null);
 
   const me = useMemo(() => {
-    if (typeof window === 'undefined') return null;
-    try { return JSON.parse(localStorage.getItem("kava_me") || "null"); } catch { return null; }
+    if (typeof window === "undefined") return null;
+    try {
+      return JSON.parse(localStorage.getItem("kava_me") || "null");
+    } catch {
+      return null;
+    }
   }, []);
 
-  useEffect(() => { setT(getTournament(id)); }, [id]);
+  // ---------------- load from KV ----------------
+  useEffect(() => {
+    (async () => {
+      const remote = await getTournamentRemote(id);
+      setT(remote);
+    })();
+  }, [id]);
 
-  if (!t) return <main style={wrap}><BackButton /><p>Loading…</p></main>;
+  if (!t) return (
+    <main style={wrap}>
+      <BackButton />
+      <p>Loading…</p>
+    </main>
+  );
 
   const isHost = me?.id === t.hostId;
 
-  // ---------- safe updater ----------
+  // ---------- safe updater (persists to KV) ----------
   function update(mut: (x: Tournament) => void) {
     setT(prev => {
       if (!prev) return prev;
@@ -45,7 +67,8 @@ export default function Lobby() {
         ),
       };
       mut(copy);
-      saveTournament(copy);
+      // Write to Cloudflare KV
+      saveTournamentRemote(copy).catch(console.error);
       return copy;
     });
   }
@@ -63,12 +86,12 @@ export default function Lobby() {
   // ---------- host leave = delete; player leave = remove everywhere ----------
   async function leaveTournament() {
     if (!me) return;
-    const cur = t;           // capture current state
-    if (!cur) return;        // guard for TS
+    const cur = t;
+    if (!cur) return;
 
     if (me.id === cur.hostId) {
       if (confirm("You're the host. Leave & delete this tournament?")) {
-        await deleteTournamentRemote(cur.id);
+        await deleteTournamentRemote(cur.id);   // delete in KV
         r.push("/");
       }
       return;
@@ -130,7 +153,7 @@ export default function Lobby() {
   function decline(pId: string) { update(x => declinePending(x, pId)); }
 
   function addTestPlayer() {
-    const cur = t;                 // guard for TS
+    const cur = t;
     if (!cur) return;
     const pid = uid();
     const p = { id: pid, name: `Guest ${cur.players.length + (cur.pending?.length || 0) + 1}` };
