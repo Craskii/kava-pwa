@@ -1,4 +1,3 @@
-// src/app/create/page.tsx
 "use client";
 
 import { useRouter } from "next/navigation";
@@ -17,8 +16,8 @@ export default function CreatePage() {
     const n = name.trim() || "Untitled Tournament";
     setLoading(true);
 
-    // Get or create user identity
-    let me = null;
+    // ensure we have an identity saved locally
+    let me: { id: string; name: string } | null = null;
     try {
       me = JSON.parse(localStorage.getItem("kava_me") || "null");
     } catch {}
@@ -35,13 +34,16 @@ export default function CreatePage() {
       });
 
       if (!res.ok) throw new Error(await res.text());
-      const data = await res.json(); // { id, code, tournament }
 
-      // ✅ Go to My Tournaments page after creating
+      // read the response JSON (for completeness)
+      const data = await res.json();
+      console.log("Tournament created:", data);
+
+      // ✅ After creation, go to the "My tournaments" page
       r.push("/me");
     } catch (e) {
-      console.error(e);
       setMsg("Could not create tournament.");
+      console.error(e);
     } finally {
       setLoading(false);
     }
@@ -58,7 +60,7 @@ export default function CreatePage() {
       }}
     >
       <BackButton />
-      <h1>Create Tournament</h1>
+      <h1>Create tournament</h1>
 
       <input
         value={name}
@@ -91,11 +93,7 @@ export default function CreatePage() {
         {loading ? "Creating…" : "Create"}
       </button>
 
-      {msg && (
-        <p style={{ color: "#fca5a5", marginTop: 8 }}>
-          {msg}
-        </p>
-      )}
+      {msg && <p style={{ color: "#fca5a5", marginTop: 8 }}>{msg}</p>}
     </main>
   );
 }

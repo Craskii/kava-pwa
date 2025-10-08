@@ -18,8 +18,7 @@ export type Tournament = {
   code?: string;
   hostId: string;
   status: TournamentStatus;
-  // If your /api/create returns Date.now(), keep this as number.
-  // If it returns an ISO string, use: number | string
+  // Accept number or ISO string; the UI sorts either
   createdAt: number | string;
   players: Player[];
   pending: Player[];
@@ -29,8 +28,7 @@ export type Tournament = {
 
 export const uid = () => Math.random().toString(36).slice(2, 9);
 
-// ---- Remote helpers (Cloudflare API under /api/**) ----
-
+// ---------- fetch helper (no-store) ----------
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -45,16 +43,15 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-// ... keep your types + api<T>() from your message ...
-
-export async function listTournamentsRemoteForUser(userId: string): Promise<{
-  hosting: Tournament[];
-  playing: Tournament[];
-}> {
-  // no-store baked into api()
-  return await api<{ hosting: Tournament[]; playing: Tournament[] }>(
-    `/api/tournament?userId=${encodeURIComponent(userId)}`
-  );
+// ---------- remote CRUD ----------
+export async function createTournamentRemote(payload: {
+  name: string;
+  hostId: string;
+}): Promise<{ id: string; code: string; tournament: Tournament }> {
+  return api(`/api/create`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getTournamentRemote(id: string): Promise<Tournament | null> {
@@ -90,30 +87,21 @@ export async function isCodeInUseRemote(code: string): Promise<boolean> {
   return res.status === 200;
 }
 
-/** 
- * List tournaments relevant to a user.
- * If your /api/tournaments implements ?userId= it will be used.
- * Otherwise we fall back to fetching all and filtering on the client.
- */
-export async function listTournamentsRemote(userId?: string): Promise<Tournament[]> {
-  const qs = userId ? `?userId=${encodeURIComponent(userId)}` : "";
-  try {
-    // Preferred: server filters by user
-    return await api<Tournament[]>(`/api/tournaments${qs}`);
-  } catch {
-    // Fallback: fetch all and filter locally
-    const all = await api<Tournament[]>(`/api/tournaments`);
-    if (!userId) return all;
-    return all.filter(t =>
-      t.hostId === userId ||
-      t.players.some(p => p.id === userId) ||
-      t.pending.some(p => p.id === userId)
-    );
-  }
+export async function listTournamentsRemote(hostId?: string): Promise<Tournament[]> {
+  const qs = hostId ? `?hostId=${encodeURIComponent(hostId)}` : "";
+  return await api<Tournament[]>(`/api/tournaments${qs}`);
 }
 
-// ---- Bracket helpers (call saveTournamentRemote after mutating) ----
+// NEW: return hosting + playing for a specific user id
+export async function listTournamentsRemoteForUser(
+  userId: string
+): Promise<{ hosting: Tournament[]; playing: Tournament[] }> {
+  return await api<{ hosting: Tournament[]; playing: Tournament[] }>(
+    `/api/tournaments?userId=${encodeURIComponent(userId)}`
+  );
+}
 
+// ---------- bracket helpers (always save to remote) ----------
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {

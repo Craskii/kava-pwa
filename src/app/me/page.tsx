@@ -30,10 +30,10 @@ export default function MePage() {
     setLoading(true);
     try {
       const data = await listTournamentsRemoteForUser(me.id);
-      // sort newest first by createdAt if present
+      const toNum = (x: number | string) =>
+        typeof x === "number" ? x : Number.isNaN(Date.parse(x)) ? 0 : Date.parse(x);
       const sortByCreated = (a: Tournament, b: Tournament) =>
-        (Number(b.createdAt) || Date.parse(String(b.createdAt))) -
-        (Number(a.createdAt) || Date.parse(String(a.createdAt)));
+        toNum(b.createdAt) - toNum(a.createdAt);
       setHosting([...data.hosting].sort(sortByCreated));
       setPlaying([...data.playing].sort(sortByCreated));
     } catch (e) {
@@ -46,11 +46,11 @@ export default function MePage() {
 
   useEffect(() => {
     refresh();
-    const t = setInterval(refresh, 4000); // auto-refresh every 4s
+    const t = setInterval(refresh, 4000);
     return () => clearInterval(t);
-  }, [me?.id]);
+  }, [me?.id]); // refresh when identity changes
 
-  // Leave (non-host): remove me from players/pending/queue and save
+  // Leave (non-host): scrub identity and save
   async function leaveTournament(t: Tournament) {
     if (!me?.id) return;
     const latest = await getTournamentRemote(t.id);
@@ -60,8 +60,6 @@ export default function MePage() {
     latest.players = (latest.players || []).filter(p => p.id !== id);
     latest.pending = (latest.pending || []).filter(p => p.id !== id);
     latest.queue   = (latest.queue   || []).filter(pid => pid !== id);
-
-    // also scrub from matches
     latest.rounds = (latest.rounds || []).map(round =>
       round.map(m => ({
         ...m,
