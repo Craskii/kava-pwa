@@ -1,44 +1,63 @@
 // src/app/api/create/route.ts
-import { getRequestContext } from "@cloudflare/next-on-pages";
 import { NextResponse } from "next/server";
+import { getRequestContext } from "@cloudflare/next-on-pages";
 
 export const runtime = "edge";
 
-type Env = {
-  KAVA_TOURNAMENTS: KVNamespace;
-};
+type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-const randomUUID = () => crypto.randomUUID();
-
-function random4Digits(): string {
+function uid() {
+  return Math.random().toString(36).slice(2, 9);
+}
+function random4() {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
+type Player = { id: string; name: string };
+type Match = { a?: string; b?: string; winner?: string; reports?: Record<string, "win" | "loss" | undefined> };
+type Tournament = {
+  id: string;
+  name: string;
+  code?: string;
+  hostId: string;
+  status: "setup" | "active" | "completed";
+  createdAt: number; // Date.now()
+  players: Player[];
+  pending: Player[];
+  queue: string[];
+  rounds: Match[][];
+};
+
 export async function POST(req: Request) {
-  const { env } = getRequestContext();
-  const kv = (env as unknown as Env).KAVA_TOURNAMENTS;
-
+  const { env } = getRequestContext<{ env: Env }>();
   const body = await req.json().catch(() => ({} as { name?: string; hostId?: string }));
-  const name = body.name || "Untitled Tournament";
-  const hostId = body.hostId || randomUUID();
-  const code = random4Digits();
-  const id = randomUUID();
+  const name = (body.name || "Untitled Tournament").toString();
+  const hostId = (body.hostId || uid()).toString();
 
-  const tournament = {
+  // unique-ish 4-digit join code (retry a few times if collision)
+  let code = random4();
+  for (let i = 0; i < 4; i++) {
+    const taken = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
+    if (!taken) break;
+    code = random4();
+  }
+
+  const id = crypto.randomUUID();
+  const t: Tournament = {
     id,
-    code,
     name,
+    code,
     hostId,
-    players: [] as Array<{ id: string; name: string }>,
-    queue: [] as string[],
-    pending: [] as Array<{ id: string; name: string }>,
-    rounds: [] as Array<Array<unknown>>,
     status: "setup",
-    createdAt: new Date().toISOString(),
+    createdAt: Date.now(),
+    players: [{ id: hostId, name: "Host" }], // host present by default (adjust as you wish)
+    pending: [],
+    queue: [],
+    rounds: [],
   };
 
-  await kv.put(`code:${code}`, id);
-  await kv.put(`t:${id}`, JSON.stringify(tournament));
+  await env.KAVA_TOURNAMENTS.put(`code:${code}`, id);
+  await env.KAVA_TOURNAMENTS.put(`t:${id}`, JSON.stringify(t));
 
-  return NextResponse.json({ ok: true, id, code, tournament });
+  return NextResponse.json({ ok: true, id, code, tournament: t });
 }

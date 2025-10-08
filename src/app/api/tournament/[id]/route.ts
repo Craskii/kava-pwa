@@ -3,73 +3,43 @@ import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
 export const runtime = "edge";
+type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-type KV = {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
-  delete(key: string): Promise<void>;
-};
-type Env = { KAVA_TOURNAMENTS: KV };
+export async function GET(_req: Request, ctx: { params: { id: string } }) {
+  const { env } = getRequestContext<{ env: Env }>();
+  const id = (ctx.params?.id || "").trim();
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
 
-// GET tournament by ID
-export async function GET(
-  _req: Request,
-  context: { params: Promise<{ id: string }> }
-) {
-  const { id } = await context.params;
-
-  const { env } = getRequestContext();
-  const kv = (env as unknown as Env).KAVA_TOURNAMENTS;
-
-  const data = await kv.get(`t:${id}`);
-  if (!data) {
-    return NextResponse.json({ error: "Tournament not found." }, { status: 404 });
-  }
-  return NextResponse.json(JSON.parse(data));
+  const raw = await env.KAVA_TOURNAMENTS.get(`t:${id}`);
+  if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  return NextResponse.json(JSON.parse(raw));
 }
 
-// PUT update existing tournament
-export async function PUT(
-  req: Request,
-  context: { params: Promise<{ id: string }> }
-) {
-  const { id } = await context.params;
-
-  const { env } = getRequestContext();
-  const kv = (env as unknown as Env).KAVA_TOURNAMENTS;
+export async function PUT(req: Request, ctx: { params: { id: string } }) {
+  const { env } = getRequestContext<{ env: Env }>();
+  const id = (ctx.params?.id || "").trim();
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
 
   const body = await req.json().catch(() => null);
-  if (!body) {
-    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
-  }
+  if (!body) return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
 
-  await kv.put(`t:${id}`, JSON.stringify(body));
-  return NextResponse.json({ ok: true, id });
+  await env.KAVA_TOURNAMENTS.put(`t:${id}`, JSON.stringify(body));
+  return NextResponse.json({ ok: true });
 }
 
-// DELETE tournament by ID
-export async function DELETE(
-  _req: Request,
-  context: { params: Promise<{ id: string }> }
-) {
-  const { id } = await context.params;
+export async function DELETE(_req: Request, ctx: { params: { id: string } }) {
+  const { env } = getRequestContext<{ env: Env }>();
+  const id = (ctx.params?.id || "").trim();
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
 
-  const { env } = getRequestContext();
-  const kv = (env as unknown as Env).KAVA_TOURNAMENTS;
-
-  // optional: try to remove code mapping if we can fetch it
-  const data = await kv.get(`t:${id}`);
-  if (data) {
+  // remove code -> id mapping too (best-effort)
+  const raw = await env.KAVA_TOURNAMENTS.get(`t:${id}`);
+  if (raw) {
     try {
-      const t = JSON.parse(data) as { code?: string };
-      if (t.code) {
-        await kv.delete(`code:${t.code}`);
-      }
-    } catch {
-      // ignore parse errors
-    }
+      const t = JSON.parse(raw) as { code?: string };
+      if (t?.code) await env.KAVA_TOURNAMENTS.delete(`code:${t.code}`);
+    } catch {}
   }
-
-  await kv.delete(`t:${id}`);
-  return NextResponse.json({ ok: true, deleted: id });
+  await env.KAVA_TOURNAMENTS.delete(`t:${id}`);
+  return NextResponse.json({ ok: true });
 }
