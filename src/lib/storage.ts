@@ -18,7 +18,9 @@ export type Tournament = {
   code?: string;
   hostId: string;
   status: TournamentStatus;
-  createdAt: number;
+  // If your /api/create returns Date.now(), keep this as number.
+  // If it returns an ISO string, use: number | string
+  createdAt: number | string;
   players: Player[];
   pending: Player[];
   queue: string[];
@@ -33,10 +35,11 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
     headers: { "content-type": "application/json", ...(init?.headers || {}) },
+    cache: "no-store",
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status} ${res.statusText} – ${txt}`);
+    throw new Error(`HTTP ${res.status} ${res.statusText}${txt ? ` – ${txt}` : ""}`);
   }
   if (res.status === 204) return undefined as unknown as T;
   return (await res.json()) as T;
@@ -81,13 +84,13 @@ export async function findByCodeRemote(code: string): Promise<string | null> {
 }
 
 export async function isCodeInUseRemote(code: string): Promise<boolean> {
-  const res = await fetch(`/api/by-code/${encodeURIComponent(code)}`, { method: "HEAD" });
+  const res = await fetch(`/api/by-code/${encodeURIComponent(code)}`, { method: "HEAD", cache: "no-store" });
   return res.status === 200;
 }
 
 export async function listTournamentsRemote(hostId?: string): Promise<Tournament[]> {
   const qs = hostId ? `?hostId=${encodeURIComponent(hostId)}` : "";
-  return await apiJson<Tournament[]>(`/api/tournaments${qs}`);
+  return await api<Tournament[]>(`/api/tournaments${qs}`);
 }
 
 // ---- Bracket helpers (call saveTournamentRemote after mutating) ----
@@ -176,6 +179,7 @@ export async function approvePending(t: Tournament, playerId: string) {
   if (t.status === "active") await insertLatePlayer(t, p);
   else { t.players.push(p); await saveTournamentRemote(t); }
 }
+
 export async function declinePending(t: Tournament, playerId: string) {
   t.pending = t.pending.filter(p => p.id !== playerId);
   await saveTournamentRemote(t);
