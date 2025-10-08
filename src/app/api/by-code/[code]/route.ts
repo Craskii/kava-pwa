@@ -1,24 +1,38 @@
 // src/app/api/by-code/[code]/route.ts
-import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
+import { NextResponse } from "next/server";
 
 export const runtime = "edge";
-type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-export async function GET(_req: Request, ctx: { params: { code: string } }) {
+type Env = {
+  KAVA_TOURNAMENTS: KVNamespace;
+};
+
+// GET /api/by-code/:code  -> { id } or 404
+export async function GET(
+  _req: Request,
+  context: { params: Promise<{ code: string }> }
+) {
+  const { code } = await context.params;
+  const safeCode = (code || "").trim().toUpperCase();
+
   const { env } = getRequestContext<{ env: Env }>();
-  const code = (ctx.params?.code || "").trim();
-  if (!code) return NextResponse.json({ error: "Missing code" }, { status: 400 });
+  const id = await env.KAVA_TOURNAMENTS.get(`code:${safeCode}`);
 
-  const id = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
   if (!id) return NextResponse.json({ error: "Not found" }, { status: 404 });
   return NextResponse.json({ id });
 }
 
-export async function HEAD(_req: Request, ctx: { params: { code: string } }) {
+// HEAD /api/by-code/:code  -> 200 if exists, 404 if not
+export async function HEAD(
+  _req: Request,
+  context: { params: Promise<{ code: string }> }
+) {
+  const { code } = await context.params;
+  const safeCode = (code || "").trim().toUpperCase();
+
   const { env } = getRequestContext<{ env: Env }>();
-  const code = (ctx.params?.code || "").trim();
-  if (!code) return new Response(null, { status: 400 });
-  const id = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
+  const id = await env.KAVA_TOURNAMENTS.get(`code:${safeCode}`);
+
   return new Response(null, { status: id ? 200 : 404 });
 }
