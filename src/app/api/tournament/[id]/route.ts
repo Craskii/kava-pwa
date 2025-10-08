@@ -1,89 +1,53 @@
 // src/app/api/tournament/[id]/route.ts
-import { getRequestContext } from "@cloudflare/next-on-pages";
-import { NextResponse } from "next/server";
-
 export const runtime = "edge";
 
-type KV = {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
-  delete(key: string): Promise<void>;
-};
-type Env = { KAVA_TOURNAMENTS: KV };
+import { NextResponse } from "next/server";
+import { getRequestContext } from "@cloudflare/next-on-pages";
 
-type Player = { id: string; name: string };
-type Match = {
-  a?: string;
-  b?: string;
-  winner?: string;
-  reports?: Record<string, "win" | "loss" | undefined>;
-};
-type Tournament = {
-  id: string;
-  code: string;
-  name: string;
-  hostId: string;
-  status: "setup" | "active" | "completed";
-  createdAt: number | string;
-  players: Player[];
-  pending: Player[];
-  queue: string[];
-  rounds: Match[][];
-};
+type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-async function readTournament(kv: KV, id: string) {
-  const json = await kv.get(`t:${id}`);
-  return json ? (JSON.parse(json) as Tournament) : null;
+export async function GET(_req: Request, ctx: { params: { id: string } }) {
+  const { env: rawEnv } = getRequestContext();
+  const env = rawEnv as unknown as Env;
+
+  const id = (ctx?.params?.id ?? "").trim();
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
+
+  const json = await env.KAVA_TOURNAMENTS.get(`t:${id}`);
+  if (!json) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  return NextResponse.json(JSON.parse(json));
 }
 
-export async function GET(
-  _req: Request,
-  context: { params: Promise<{ id: string }> }
-) {
-  const { env } = getRequestContext<{ env: Env }>();
-  const kv = env.KAVA_TOURNAMENTS;
+export async function PUT(req: Request, ctx: { params: { id: string } }) {
+  const { env: rawEnv } = getRequestContext();
+  const env = rawEnv as unknown as Env;
 
-  const { id } = await context.params;
-  const t = await readTournament(kv, id);
-  if (!t) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  return NextResponse.json(t);
-}
+  const id = (ctx?.params?.id ?? "").trim();
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
 
-export async function PUT(
-  req: Request,
-  context: { params: Promise<{ id: string }> }
-) {
-  const { env } = getRequestContext<{ env: Env }>();
-  const kv = env.KAVA_TOURNAMENTS;
+  const body = await req.json().catch(() => null);
+  if (!body) return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
 
-  const { id } = await context.params;
-  const body = (await req.json().catch(() => null)) as Tournament | null;
-  if (!body || body.id !== id)
-    return NextResponse.json({ error: "Bad payload" }, { status: 400 });
-
-  // ensure code->id mapping is consistent (in case code changes, though your UI doesn’t)
-  if (body.code) {
-    await kv.put(`code:${body.code.toString().toUpperCase()}`, id);
-  }
-
-  await kv.put(`t:${id}`, JSON.stringify(body));
+  // Save entire tournament object
+  await env.KAVA_TOURNAMENTS.put(`t:${id}`, JSON.stringify(body));
   return NextResponse.json({ ok: true });
 }
 
-export async function DELETE(
-  _req: Request,
-  context: { params: Promise<{ id: string }> }
-) {
-  const { env } = getRequestContext<{ env: Env }>();
-  const kv = env.KAVA_TOURNAMENTS;
+export async function DELETE(_req: Request, ctx: { params: { id: string } }) {
+  const { env: rawEnv } = getRequestContext();
+  const env = rawEnv as unknown as Env;
 
-  const { id } = await context.params;
-  const t = await readTournament(kv, id);
-  if (!t) return NextResponse.json({ ok: true }); // idempotent
+  const id = (ctx?.params?.id ?? "").trim();
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
 
-  if (t.code) {
-    await kv.delete(`code:${t.code.toString().toUpperCase()}`);
+  // Also clear code:<code> if present
+  const json = await env.KAVA_TOURNAMENTS.get(`t:${id}`);
+  if (json) {
+    const t = JSON.parse(json) as { code?: string };
+    if (t?.code) await env.KAVA_TOURNAMENTS.delete(`code:${t.code}`);
   }
-  await kv.delete(`t:${id}`);
+
+  await env.KAVA_TOURNAMENTS.delete(`t:${id}`);
   return NextResponse.json({ ok: true });
 }

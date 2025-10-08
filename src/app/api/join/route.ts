@@ -1,83 +1,55 @@
 // src/app/api/join/route.ts
-import { getRequestContext } from "@cloudflare/next-on-pages";
-import { NextResponse } from "next/server";
-
 export const runtime = "edge";
 
-type KV = {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
-};
-type Env = { KAVA_TOURNAMENTS: KV };
+import { NextResponse } from "next/server";
+import { getRequestContext } from "@cloudflare/next-on-pages";
 
+type Env = { KAVA_TOURNAMENTS: KVNamespace };
 type Player = { id: string; name: string };
-type Match = {
-  a?: string;
-  b?: string;
-  winner?: string;
-  reports?: Record<string, "win" | "loss" | undefined>;
-};
 type Tournament = {
   id: string;
-  code: string;
   name: string;
+  code?: string;
   hostId: string;
   status: "setup" | "active" | "completed";
-  createdAt: number;
+  createdAt: number | string;
   players: Player[];
   pending: Player[];
   queue: string[];
-  rounds: Match[][];
+  rounds: any[][];
 };
 
 export async function POST(req: Request) {
-  const { env } = getRequestContext<{ env: Env }>();
-  const kv = env.KAVA_TOURNAMENTS;
+  const { env: rawEnv } = getRequestContext();
+  const env = rawEnv as unknown as Env;
 
-  const body = (await req.json().catch(() => null)) as
-    | { code?: string; player?: Player }
-    | null;
+  const body = await req.json().catch(() => null as any);
+  if (!body) return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
 
-  const rawCode = body?.code || "";
-  const safeCode = rawCode.trim().toUpperCase();
-  const player = body?.player;
+  const code = (body.code ?? "").toString().trim().toUpperCase();
+  const player: Player | null = body.player && body.player.id ? { id: String(body.player.id), name: String(body.player.name || "Guest") } : null;
 
-  if (!safeCode || !player?.id || !player?.name) {
-    return NextResponse.json(
-      { error: "Missing code or player" },
-      { status: 400 }
-    );
+  if (!code || !player) {
+    return NextResponse.json({ error: "Missing code or player" }, { status: 400 });
   }
 
-  const id = await kv.get(`code:${safeCode}`);
-  if (!id) {
-    return NextResponse.json(
-      { error: "No tournament with that code." },
-      { status: 404 }
-    );
-  }
+  const id = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
+  if (!id) return NextResponse.json({ error: "No tournament with that code." }, { status: 404 });
 
-  const json = await kv.get(`t:${id}`);
-  if (!json) {
-    return NextResponse.json({ error: "Tournament missing." }, { status: 404 });
-  }
+  const json = await env.KAVA_TOURNAMENTS.get(`t:${id}`);
+  if (!json) return NextResponse.json({ error: "Tournament not found" }, { status: 404 });
+
   const t = JSON.parse(json) as Tournament;
 
-  // Don’t duplicate
-  const alreadyIn =
-    t.players.some((p) => p.id === player.id) ||
-    t.pending.some((p) => p.id === player.id);
-
-  if (!alreadyIn) {
-    if (t.status === "active") {
-      // while active: put into pending; host can approve to place them
-      t.pending.push(player);
-    } else {
-      // setup phase
-      t.players.push(player);
-    }
-    await kv.put(`t:${id}`, JSON.stringify(t));
+  // Already in players or pending? no-op success
+  if (t.players.some((p) => p.id === player.id) || t.pending.some((p) => p.id === player.id)) {
+    return NextResponse.json({ ok: true, id: t.id });
   }
 
-  return NextResponse.json({ ok: true, id: t.id, tournament: t });
+  // If tournament is active, late-join goes to pending (host will approve -> insertLatePlayer)
+  // If setup, pending also (host approves into players)
+  t.pending = [...(t.pending || []), player];
+
+  await env.KAVA_TOURNAMENTS.put(`t:${t.id}`, JSON.stringify(t));
+  return NextResponse.json({ ok: true, id: t.id });
 }

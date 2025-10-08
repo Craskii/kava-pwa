@@ -1,39 +1,33 @@
 // src/app/api/by-code/[code]/route.ts
-import { getRequestContext } from "@cloudflare/next-on-pages";
-import { NextResponse } from "next/server";
-
 export const runtime = "edge";
 
-type KV = {
-  get(key: string): Promise<string | null>;
-};
-type Env = { KAVA_TOURNAMENTS: KV };
+import { NextResponse } from "next/server";
+import { getRequestContext } from "@cloudflare/next-on-pages";
 
-// GET /api/by-code/:code -> { id } or 404
-export async function GET(
-  _req: Request,
-  context: { params: Promise<{ code: string }> }
-) {
-  const { code } = await context.params;
-  const safeCode = (code || "").trim().toUpperCase();
+type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-  const { env } = getRequestContext<{ env: Env }>();
+export async function GET(_req: Request, ctx: { params: { code: string } }) {
+  const { env: rawEnv } = getRequestContext();
+  const env = rawEnv as unknown as Env;
+
+  const safeCode = (ctx?.params?.code ?? "").trim().toUpperCase();
+  if (!safeCode) {
+    return NextResponse.json({ error: "Missing code" }, { status: 400 });
+  }
+
   const id = await env.KAVA_TOURNAMENTS.get(`code:${safeCode}`);
-
   if (!id) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
   return NextResponse.json({ id });
 }
 
-// HEAD /api/by-code/:code -> 200 if exists, 404 otherwise
-export async function HEAD(
-  _req: Request,
-  context: { params: Promise<{ code: string }> }
-) {
-  const { code } = await context.params;
-  const safeCode = (code || "").trim().toUpperCase();
+export async function HEAD(_req: Request, ctx: { params: { code: string } }) {
+  const { env: rawEnv } = getRequestContext();
+  const env = rawEnv as unknown as Env;
 
-  const { env } = getRequestContext<{ env: Env }>();
+  const safeCode = (ctx?.params?.code ?? "").trim().toUpperCase();
+  if (!safeCode) return new Response(null, { status: 400 });
+
   const id = await env.KAVA_TOURNAMENTS.get(`code:${safeCode}`);
-
   return new Response(null, { status: id ? 200 : 404 });
 }
