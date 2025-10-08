@@ -4,11 +4,12 @@ import { NextResponse } from "next/server";
 
 export const runtime = "edge";
 
-type Env = {
-  KAVA_TOURNAMENTS: KVNamespace;
+type KV = {
+  get(key: string): Promise<string | null>;
 };
+type Env = { KAVA_TOURNAMENTS: KV };
 
-// GET /api/by-code/:code  -> { id } or 404
+// GET /api/by-code/:code -> { id } or 404
 export async function GET(
   _req: Request,
   context: { params: Promise<{ code: string }> }
@@ -23,7 +24,7 @@ export async function GET(
   return NextResponse.json({ id });
 }
 
-// HEAD /api/by-code/:code  -> 200 if exists, 404 if not
+// HEAD /api/by-code/:code -> 200 if exists, 404 otherwise
 export async function HEAD(
   _req: Request,
   context: { params: Promise<{ code: string }> }

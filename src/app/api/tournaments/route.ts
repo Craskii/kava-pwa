@@ -1,80 +1,94 @@
 // src/app/api/tournaments/route.ts
-import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
+import { NextResponse } from "next/server";
 
 export const runtime = "edge";
 
-type Env = { KAVA_TOURNAMENTS: KVNamespace };
+type KV = {
+  get(key: string): Promise<string | null>;
+  list(opts?: { prefix?: string; limit?: number; cursor?: string }): Promise<{
+    keys: { name: string }[];
+    list_complete?: boolean;
+    cursor?: string;
+  }>;
+};
+type Env = { KAVA_TOURNAMENTS: KV };
 
 type Player = { id: string; name: string };
+type Match = {
+  a?: string;
+  b?: string;
+  winner?: string;
+  reports?: Record<string, "win" | "loss" | undefined>;
+};
 type Tournament = {
   id: string;
+  code: string;
   name: string;
-  code?: string;
   hostId: string;
   status: "setup" | "active" | "completed";
   createdAt: number | string;
   players: Player[];
   pending: Player[];
   queue: string[];
-  rounds: unknown[][];
+  rounds: Match[][];
 };
 
-type KVListKey = { name: string };
-type KVListResult = { keys: KVListKey[]; list_complete: boolean; cursor?: string };
+async function listAllTournamentIds(kv: KV) {
+  const ids: string[] = [];
+  let cursor: string | undefined = undefined;
 
-function ts(x: number | string) {
-  return typeof x === "number" ? x : Date.parse(String(x));
+  while (true) {
+    const res = await kv.list({
+      prefix: "t:",
+      limit: 1000,
+      cursor,
+    });
+    for (const k of res.keys) {
+      const id = k.name.slice(2); // strip "t:"
+      if (id) ids.push(id);
+    }
+    if (!res.cursor || res.list_complete) break;
+    cursor = res.cursor;
+  }
+  return ids;
 }
 
 export async function GET(req: Request) {
   const { env } = getRequestContext<{ env: Env }>();
+  const kv = env.KAVA_TOURNAMENTS;
+
   const url = new URL(req.url);
   const hostId = url.searchParams.get("hostId") || undefined;
   const userId = url.searchParams.get("userId") || undefined;
 
-  // gather all ids via pagination
-  const ids: string[] = [];
-  let cursor: string | undefined;
-  while (true) {
-    const res = (await env.KAVA_TOURNAMENTS.list({
-      prefix: "t:",
-      limit: 1000,
-      cursor,
-    } as unknown)) as unknown as KVListResult;
+  const ids = await listAllTournamentIds(kv);
 
-    ids.push(...res.keys.map(k => k.name.slice(2)));
-    if (res.list_complete || !res.cursor) break;
-    cursor = res.cursor;
-  }
+  // We stream GETs for each tournament in parallel, then filter/sort in memory.
+  const tournaments = (await Promise.all(
+    ids.map(async (id) => {
+      const json = await kv.get(`t:${id}`);
+      return json ? (JSON.parse(json) as Tournament) : null;
+    })
+  )).filter(Boolean) as Tournament[];
 
-  // load docs
-  const tournaments = (
-    await Promise.all(
-      ids.map(async (id) => {
-        const raw = await env.KAVA_TOURNAMENTS.get(`t:${id}`);
-        if (!raw) return null;
-        try { return JSON.parse(raw) as Tournament; } catch { return null; }
-      })
-    )
-  ).filter((x): x is Tournament => Boolean(x));
-
-  // sort newest first
-  tournaments.sort((a, b) => ts(b.createdAt) - ts(a.createdAt));
+  let result = tournaments;
 
   if (hostId) {
-    const hosting = tournaments.filter(t => String(t.hostId) === hostId);
-    return NextResponse.json(hosting);
-  }
-
-  if (userId) {
-    const hosting = tournaments.filter(t => String(t.hostId) === userId);
-    const playing = tournaments.filter(t =>
-      (t.players || []).some(p => p.id === userId) && String(t.hostId) !== userId
+    result = result.filter((t) => t.hostId === hostId);
+  } else if (userId) {
+    result = result.filter(
+      (t) =>
+        (t.players || []).some((p) => p.id === userId) ||
+        (t.pending || []).some((p) => p.id === userId)
     );
-    return NextResponse.json({ hosting, playing });
   }
 
-  // fallback: return everything (useful for admin/testing)
-  return NextResponse.json(tournaments);
+  result.sort((a, b) => {
+    const ta = typeof a.createdAt === "number" ? a.createdAt : Date.parse(String(a.createdAt));
+    const tb = typeof b.createdAt === "number" ? b.createdAt : Date.parse(String(b.createdAt));
+    return tb - ta; // newest first
+  });
+
+  return NextResponse.json(result);
 }

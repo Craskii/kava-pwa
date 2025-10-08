@@ -1,63 +1,92 @@
 // src/app/api/create/route.ts
-import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
+import { NextResponse } from "next/server";
 
 export const runtime = "edge";
 
-type Env = { KAVA_TOURNAMENTS: KVNamespace };
+/** Minimal KV type so we don't depend on extra types packages */
+type KV = {
+  get(key: string): Promise<string | null>;
+  put(key: string, value: string): Promise<void>;
+  delete(key: string): Promise<void>;
+  list(opts?: { prefix?: string; limit?: number; cursor?: string }): Promise<{
+    keys: { name: string }[];
+    list_complete?: boolean;
+    cursor?: string;
+  }>;
+};
 
-function uid() {
-  return Math.random().toString(36).slice(2, 9);
-}
-function random4() {
-  return Math.floor(1000 + Math.random() * 9000).toString();
-}
+type Env = { KAVA_TOURNAMENTS: KV };
 
 type Player = { id: string; name: string };
-type Match = { a?: string; b?: string; winner?: string; reports?: Record<string, "win" | "loss" | undefined> };
+type Match = {
+  a?: string;
+  b?: string;
+  winner?: string;
+  reports?: Record<string, "win" | "loss" | undefined>;
+};
 type Tournament = {
   id: string;
+  code: string;
   name: string;
-  code?: string;
   hostId: string;
   status: "setup" | "active" | "completed";
-  createdAt: number; // Date.now()
+  createdAt: number; // epoch ms
   players: Player[];
   pending: Player[];
   queue: string[];
   rounds: Match[][];
 };
 
+function random4Digits() {
+  return Math.floor(1000 + Math.random() * 9000).toString();
+}
+
+function uid() {
+  return crypto.randomUUID();
+}
+
 export async function POST(req: Request) {
   const { env } = getRequestContext<{ env: Env }>();
-  const body = await req.json().catch(() => ({} as { name?: string; hostId?: string }));
-  const name = (body.name || "Untitled Tournament").toString();
-  const hostId = (body.hostId || uid()).toString();
+  const kv = env.KAVA_TOURNAMENTS;
 
-  // unique-ish 4-digit join code (retry a few times if collision)
-  let code = random4();
-  for (let i = 0; i < 4; i++) {
-    const taken = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
-    if (!taken) break;
-    code = random4();
+  const body = (await req.json().catch(() => null)) as
+    | { name?: string; hostId?: string }
+    | null;
+
+  const name = body?.name?.trim() || "Untitled Tournament";
+  const hostId = (body?.hostId || uid()).toString();
+
+  // generate a 4-digit code that isn't taken
+  let code: string;
+  // in practice collisions are rare; loop guard just in case
+  for (let i = 0; i < 20; i++) {
+    const cand = random4Digits();
+    const existing = await kv.get(`code:${cand}`);
+    if (!existing) {
+      code = cand;
+      break;
+    }
   }
+  if (!code!) code = random4Digits();
 
-  const id = crypto.randomUUID();
-  const t: Tournament = {
+  const id = uid();
+  const tournament: Tournament = {
     id,
+    code: code!,
     name,
-    code,
     hostId,
     status: "setup",
     createdAt: Date.now(),
-    players: [{ id: hostId, name: "Host" }], // host present by default (adjust as you wish)
+    players: [],
     pending: [],
     queue: [],
     rounds: [],
   };
 
-  await env.KAVA_TOURNAMENTS.put(`code:${code}`, id);
-  await env.KAVA_TOURNAMENTS.put(`t:${id}`, JSON.stringify(t));
+  // write KV
+  await kv.put(`code:${code!}`, id);
+  await kv.put(`t:${id}`, JSON.stringify(tournament));
 
-  return NextResponse.json({ ok: true, id, code, tournament: t });
+  return NextResponse.json({ ok: true, id, code: code!, tournament });
 }
