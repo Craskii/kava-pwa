@@ -4,10 +4,10 @@ import { getRequestContext } from "@cloudflare/next-on-pages";
 
 export const runtime = "edge";
 
-// --- Minimal env typing: only what we actually use ---
+// Minimal env typing: only what we actually use.
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-// KV list() response shape
+// KV list() response shape we’ll use locally
 type KVListKey = { name: string; expiration?: number; metadata?: unknown };
 type KVListResult = {
   keys: KVListKey[];
@@ -15,7 +15,7 @@ type KVListResult = {
   cursor?: string;
 };
 
-// Tournament shape (kept loose for this endpoint)
+// Tournament shape (loose here; matches what you store)
 type Tournament = {
   id: string;
   name: string;
@@ -39,9 +39,8 @@ export async function GET(req: Request) {
   const ids: string[] = [];
   let cursor: string | undefined;
 
-  // eslint-disable-next-line no-constant-condition
   while (true) {
-    // TS for Workers KV list() is a bit loose; cast to our local type
+    // list() typing is loose; cast its result to our local type
     const res = (await env.KAVA_TOURNAMENTS.list({
       prefix: "t:",
       limit: 1000,
@@ -53,7 +52,7 @@ export async function GET(req: Request) {
     cursor = res.cursor;
   }
 
-  // 2) Load and parse each tournament
+  // 2) Load & parse each tournament doc
   const tournaments = (
     await Promise.all(
       ids.map(async (id) => {
