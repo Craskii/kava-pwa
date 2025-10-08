@@ -4,18 +4,31 @@ export const runtime = "edge";
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
+type KVListResult = { keys: { name: string }[]; cursor?: string; list_complete?: boolean };
+type KVNamespace = {
+  get(key: string): Promise<string | null>;
+  put(key: string, value: string): Promise<void>;
+  delete(key: string): Promise<void>;
+  list(input?: { prefix?: string; limit?: number; cursor?: string }): Promise<KVListResult>;
+};
+
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
+
+type Player = { id: string; name: string };
+type Report = "win" | "loss" | undefined;
+type Match = { a?: string; b?: string; winner?: string; reports?: Record<string, Report> };
+type TournamentStatus = "setup" | "active" | "completed";
 type Tournament = {
   id: string;
   name: string;
   code?: string;
   hostId: string;
-  status: "setup" | "active" | "completed";
+  status: TournamentStatus;
   createdAt: number | string;
-  players: { id: string; name: string }[];
-  pending: { id: string; name: string }[];
+  players: Player[];
+  pending: Player[];
   queue: string[];
-  rounds: any[][];
+  rounds: Match[][];
 };
 
 export async function GET(req: Request) {
@@ -26,36 +39,28 @@ export async function GET(req: Request) {
   const hostId = url.searchParams.get("hostId") || undefined;
   const userId = url.searchParams.get("userId") || undefined;
 
-  // Collect all tournament ids via KV list with pagination
+  // page through KV keys under t:
   const ids: string[] = [];
   let cursor: string | undefined = undefined;
 
   while (true) {
-    const res = (await env.KAVA_TOURNAMENTS.list({
-      prefix: "t:",
-      limit: 1000,
-      cursor,
-    })) as unknown as { keys: { name: string }[]; cursor?: string; list_complete?: boolean };
-
-    for (const k of res.keys) {
-      const id = k.name.replace(/^t:/, "");
-      ids.push(id);
-    }
-
+    const res = await env.KAVA_TOURNAMENTS.list({ prefix: "t:", limit: 1000, cursor });
+    for (const k of res.keys) ids.push(k.name.replace(/^t:/, ""));
     if (!res.cursor || res.list_complete) break;
     cursor = res.cursor;
   }
 
-  // Fetch tournaments (can parallelize)
+  // fetch all tournaments
   const all = await Promise.all(
     ids.map(async (id) => {
       const json = await env.KAVA_TOURNAMENTS.get(`t:${id}`);
       return json ? (JSON.parse(json) as Tournament) : null;
     })
   );
-  const tournaments = all.filter((t): t is Tournament => !!t);
 
-  // Sort newest first
+  const tournaments: Tournament[] = all.filter((t): t is Tournament => t !== null);
+
+  // newest first
   tournaments.sort((a, b) => {
     const ta = Number(a.createdAt) || Date.parse(String(a.createdAt));
     const tb = Number(b.createdAt) || Date.parse(String(b.createdAt));
@@ -65,8 +70,7 @@ export async function GET(req: Request) {
   if (userId) {
     const hosting = tournaments.filter((t) => t.hostId === userId);
     const playing = tournaments.filter(
-      (t) => (t.players || []).some((p) => p.id === userId)
-          || (t.pending || []).some((p) => p.id === userId)
+      (t) => (t.players ?? []).some((p) => p.id === userId) || (t.pending ?? []).some((p) => p.id === userId)
     );
     return NextResponse.json({ hosting, playing });
   }
