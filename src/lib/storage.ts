@@ -85,6 +85,11 @@ export async function isCodeInUseRemote(code: string): Promise<boolean> {
   return res.status === 200;
 }
 
+export async function listTournamentsRemote(hostId?: string): Promise<Tournament[]> {
+  const qs = hostId ? `?hostId=${encodeURIComponent(hostId)}` : "";
+  return await apiJson<Tournament[]>(`/api/tournaments${qs}`);
+}
+
 // ---- Bracket helpers (call saveTournamentRemote after mutating) ----
 
 function shuffle<T>(arr: T[]): T[] {
