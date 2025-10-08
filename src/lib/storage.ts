@@ -45,14 +45,16 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-export async function createTournamentRemote(payload: {
-  name: string;
-  hostId: string;
-}): Promise<{ id: string; code: string; tournament: Tournament }> {
-  return api(`/api/create`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+// ... keep your types + api<T>() from your message ...
+
+export async function listTournamentsRemoteForUser(userId: string): Promise<{
+  hosting: Tournament[];
+  playing: Tournament[];
+}> {
+  // no-store baked into api()
+  return await api<{ hosting: Tournament[]; playing: Tournament[] }>(
+    `/api/tournament?userId=${encodeURIComponent(userId)}`
+  );
 }
 
 export async function getTournamentRemote(id: string): Promise<Tournament | null> {
