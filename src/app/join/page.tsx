@@ -1,111 +1,61 @@
-"use client";
-
-import { useState } from "react";
+'use client';
 import { useRouter } from "next/navigation";
+import { useState, useMemo } from "react";
+import BackButton from "../../components/BackButton";
+import { findByCodeRemote, getTournamentRemote, saveTournamentRemote, uid } from "../../lib/storage";
 
-type ByCodeOk = { id: string };
-type ByCodeErr = { error: string };
-type ByCodeResponse = ByCodeOk | ByCodeErr;
-
-export default function JoinByCodePage() {
+export default function Join() {
   const r = useRouter();
   const [code, setCode] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
-  async function onJoin() {
-    const c = code.replace(/\D/g, ""); // keep digits only
-    if (c.length !== 4) {
-      setMsg("Enter a 4-digit code.");
-      return;
-    }
+  const me = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    try { return JSON.parse(localStorage.getItem("kava_me") || "null"); } catch { return null; }
+  }, []);
 
-    setLoading(true);
-    setMsg(null);
-
+  async function submit() {
+    setErr(null);
     try {
-      const res = await fetch(`/api/by-code/${c}`, {
-        method: "GET",
-        headers: { Accept: "application/json" },
-        cache: "no-store",
-      });
+      const id = await findByCodeRemote(code.trim());
+      if (!id) { setErr("No tournament with that code."); return; }
+      const t = await getTournamentRemote(id);
+      if (!t) { setErr("Could not load tournament."); return; }
 
-      if (!res.ok) {
-        setMsg("Could not reach server.");
-        return;
+      // ensure I have an identity
+      let meObj = me;
+      if (!meObj) {
+        meObj = { id: uid(), name: "Guest" };
+        localStorage.setItem("kava_me", JSON.stringify(meObj));
+      }
+      // add to pending if not present anywhere
+      if (!t.players.some(p => p.id === meObj!.id) &&
+          !t.pending.some(p => p.id === meObj!.id)) {
+        t.pending.push({ id: meObj!.id, name: meObj!.name });
+        await saveTournamentRemote(t);
       }
 
-      let data: ByCodeResponse;
-      try {
-        data = (await res.json()) as ByCodeResponse;
-      } catch {
-        setMsg("Server returned an unexpected response.");
-        return;
-      }
-
-      if ("error" in data || !("id" in data)) {
-        setMsg("No tournament with that code.");
-        return;
-      }
-
-      // Navigate with the actual tournament ID
-      r.push(`/t/${data.id}`);
+      r.push(`/t/${id}`);
     } catch {
-      setMsg("Something went wrong.");
-    } finally {
-      setLoading(false);
+      setErr("Could not reach server.");
     }
   }
 
   return (
-    <main style={{ minHeight: "100vh", background: "#0b1220", color: "white", padding: 16 }}>
-      <h1 style={{ marginBottom: 12 }}>Join with Code</h1>
-
-      <label style={{ display: "block", marginBottom: 10 }}>
-        4-digit code
-        <input
-          inputMode="numeric"
-          pattern="[0-9]*"
-          value={code}
-          onChange={(e) => {
-            const digitsOnly = e.target.value.replace(/\D/g, "").slice(0, 4);
-            setCode(digitsOnly);
-          }}
-          placeholder="1234"
-          style={{
-            marginTop: 6,
-            width: "100%",
-            padding: "10px 12px",
-            borderRadius: 12,
-            border: "1px solid rgba(255,255,255,.15)",
-            background: "rgba(255,255,255,.06)",
-            color: "white",
-            outline: "none",
-            fontSize: 20,
-            letterSpacing: 2,
-          }}
-        />
-      </label>
-
-      <button
-        onClick={onJoin}
-        disabled={loading || code.length !== 4}
-        style={{
-          marginTop: 8,
-          padding: "12px 16px",
-          borderRadius: 12,
-          border: "none",
-          background: loading || code.length !== 4 ? "#0ea5e980" : "#0ea5e9",
-          color: "white",
-          fontWeight: 700,
-          cursor: loading || code.length !== 4 ? "not-allowed" : "pointer",
-          width: "100%",
-        }}
-      >
-        {loading ? "Checking..." : "Join"}
+    <main style={{ padding:24 }}>
+      <BackButton />
+      <h1>Join with Code</h1>
+      <input
+        value={code}
+        onChange={e=>setCode(e.target.value)}
+        placeholder="4-digit code"
+        style={{ padding:10, background:"#111", color:"#fff", border:"1px solid #333", borderRadius:8 }}
+      />
+      <div style={{ height:8 }} />
+      <button onClick={submit} style={{ padding:"10px 14px", borderRadius:10, border:"none", background:"#0ea5e9", color:"#fff", fontWeight:700, cursor:"pointer" }}>
+        Join
       </button>
-
-      {msg && <p style={{ marginTop: 10, color: "#fca5a5" }}>{msg}</p>}
+      {err && <p style={{ color:"#ff6b6b" }}>{err}</p>}
     </main>
   );
 }

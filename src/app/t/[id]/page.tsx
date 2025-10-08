@@ -1,25 +1,14 @@
 // src/app/t/[id]/page.tsx
-"use client";
-export const runtime = "edge";
+'use client';
+export const runtime = 'edge';
 
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import BackButton from "../../../components/BackButton";
-
 import {
-  // remote helpers (Cloudflare KV)
-  getTournamentRemote,
-  saveTournamentRemote,
-  deleteTournamentRemote,
-  // bracket + helpers (pure functions)
-  seedInitialRounds as seedInitial,
-  submitReport,
-  approvePending,
-  declinePending,
-  insertLatePlayer,
-  Tournament,
-  uid,
-  Match,
+  getTournamentRemote, saveTournamentRemote, deleteTournamentRemote,
+  seedInitialRounds, submitReport, approvePending, declinePending,
+  insertLatePlayer, Tournament, uid, Match
 } from "../../../lib/storage";
 
 export default function Lobby() {
@@ -28,33 +17,28 @@ export default function Lobby() {
   const [t, setT] = useState<Tournament | null>(null);
 
   const me = useMemo(() => {
-    if (typeof window === "undefined") return null;
-    try {
-      return JSON.parse(localStorage.getItem("kava_me") || "null");
-    } catch {
-      return null;
-    }
+    if (typeof window === 'undefined') return null;
+    try { return JSON.parse(localStorage.getItem("kava_me") || "null"); } catch { return null; }
   }, []);
 
-  // ---------------- load from KV ----------------
+  // initial load + poll for changes so host/players see updates
   useEffect(() => {
-    (async () => {
-      const remote = await getTournamentRemote(id);
-      setT(remote);
-    })();
+    let stop = false;
+    async function load() {
+      const data = await getTournamentRemote(id);
+      if (!stop) setT(data);
+    }
+    load();
+    const h = setInterval(load, 1500);
+    return () => { stop = true; clearInterval(h); };
   }, [id]);
 
-  if (!t) return (
-    <main style={wrap}>
-      <BackButton />
-      <p>Loading…</p>
-    </main>
-  );
+  if (!t) return <main style={wrap}><BackButton /><p>Loading…</p></main>;
 
   const isHost = me?.id === t.hostId;
 
-  // ---------- safe updater (persists to KV) ----------
-  function update(mut: (x: Tournament) => void) {
+  // ---------- safe updater (REMOTE) ----------
+  async function update(mut: (x: Tournament) => void) {
     setT(prev => {
       if (!prev) return prev;
       const copy: Tournament = {
@@ -62,42 +46,39 @@ export default function Lobby() {
         players: [...prev.players],
         pending: [...(prev.pending || [])],
         queue: [...prev.queue],
-        rounds: prev.rounds.map((rr): Match[] =>
-          rr.map((m): Match => ({ ...m, reports: { ...(m.reports || {}) } }))
-        ),
+        rounds: prev.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
       };
       mut(copy);
-      // Write to Cloudflare KV
-      saveTournamentRemote(copy).catch(console.error);
+      // optimistic UI: set immediately
+      saveTournamentRemote(copy).catch(() => {}); // fire-and-forget; poll will reconcile
       return copy;
     });
   }
 
-  // ---------- queue helpers ----------
-  function joinQueue() {
+  // ---------- queue ----------
+  async function joinQueue() {
     if (!me) return;
-    update(x => { if (!x.queue.includes(me.id)) x.queue.push(me.id); });
+    await update(x => { if (!x.queue.includes(me.id)) x.queue.push(me.id); });
   }
-  function leaveQueue() {
+  async function leaveQueue() {
     if (!me) return;
-    update(x => { x.queue = x.queue.filter(pid => pid !== me.id); });
+    await update(x => { x.queue = x.queue.filter(pid => pid !== me.id); });
   }
 
-  // ---------- host leave = delete; player leave = remove everywhere ----------
+  // ---------- leave/delete ----------
   async function leaveTournament() {
     if (!me) return;
-    const cur = t;
-    if (!cur) return;
-
+    const cur = t; if (!cur) return;
     if (me.id === cur.hostId) {
       if (confirm("You're the host. Leave & delete this tournament?")) {
-        await deleteTournamentRemote(cur.id);   // delete in KV
+        await deleteTournamentRemote(cur.id);
         r.push("/");
       }
       return;
     }
-    update(x => {
+    await update(x => {
       x.players = x.players.filter(p => p.id !== me.id);
+      x.pending = x.pending.filter(p => p.id !== me.id);
       x.queue = x.queue.filter(pid => pid !== me.id);
       x.rounds = x.rounds.map(round =>
         round.map(m => ({
@@ -105,39 +86,26 @@ export default function Lobby() {
           a: m.a === me.id ? undefined : m.a,
           b: m.b === me.id ? undefined : m.b,
           winner: m.winner === me.id ? undefined : m.winner,
-          reports: Object.fromEntries(
-            Object.entries(m.reports || {}).filter(([k]) => k !== me.id)
-          ),
+          reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== me.id)),
         }))
       );
     });
     r.push("/");
   }
 
-  // ---------- small local helper: advance to next round when current is done ----------
+  // ---------- round helpers ----------
   function advanceFromRound(roundIdx: number) {
     update(x => {
       const curRound = x.rounds[roundIdx];
       const winners = curRound.map(m => m.winner);
       if (winners.some(w => !w)) return;
-
-      // final
-      if (winners.length === 1 && winners[0]) {
-        x.status = "completed";
-        return;
-      }
-
+      if (winners.length === 1 && winners[0]) { x.status = "completed"; return; }
       const next: Match[] = [];
-      for (let i = 0; i < winners.length; i += 2) {
-        next.push({ a: winners[i], b: winners[i + 1], reports: {} });
-      }
-
-      if (x.rounds[roundIdx + 1]) x.rounds[roundIdx + 1] = next;
-      else x.rounds.push(next);
+      for (let i = 0; i < winners.length; i += 2) next.push({ a: winners[i], b: winners[i + 1], reports: {} });
+      if (x.rounds[roundIdx + 1]) x.rounds[roundIdx + 1] = next; else x.rounds.push(next);
     });
   }
 
-  // ---------- host override winner ----------
   function hostSetWinner(roundIdx: number, matchIdx: number, winnerId?: string) {
     update(x => {
       const m = x.rounds?.[roundIdx]?.[matchIdx];
@@ -147,29 +115,23 @@ export default function Lobby() {
     });
   }
 
-  // ---------- start / approvals / test add ----------
-  function startTournament() { update(seedInitial); }
-  function approve(pId: string) { update(x => approvePending(x, pId)); }
-  function decline(pId: string) { update(x => declinePending(x, pId)); }
+  // ---------- start / approvals ----------
+  async function startTournament() { await update(seedInitialRounds); }
+  async function approve(pId: string) { await update(x => approvePending(x, pId)); }
+  async function decline(pId: string) { await update(x => declinePending(x, pId)); }
 
   function addTestPlayer() {
-    const cur = t;
-    if (!cur) return;
+    if (!t) return;
     const pid = uid();
-    const p = { id: pid, name: `Guest ${cur.players.length + (cur.pending?.length || 0) + 1}` };
-    update(x => {
-      if (x.status === "active") insertLatePlayer(x, p);
-      else x.players.push(p);
-    });
+    const p = { id: pid, name: `Guest ${t.players.length + (t.pending?.length || 0) + 1}` };
+    update(x => { if (x.status === "active") insertLatePlayer(x, p); else x.players.push(p); });
   }
 
-  // ---------- self-report (player) ----------
   function report(roundIdx: number, matchIdx: number, result: "win" | "loss") {
     if (!me) return;
     update(x => { submitReport(x, roundIdx, matchIdx, me.id, result); });
   }
 
-  // header mini-info
   const lastRound = t.rounds.at(-1);
   const finalWinnerId = lastRound?.[0]?.winner;
   const iAmChampion = t.status === "completed" && finalWinnerId === me?.id;
@@ -178,7 +140,6 @@ export default function Lobby() {
     <main style={wrap}>
       <BackButton />
       <div style={{ width:"100%", maxWidth:1100, display:"grid", gap:18 }}>
-        {/* Header */}
         <div style={{ display:"flex", justifyContent:"space-between", gap:12, alignItems:"center" }}>
           <div>
             <h1 style={{ margin:"8px 0 4px" }}>{t.name}</h1>
@@ -201,12 +162,9 @@ export default function Lobby() {
           </div>
         </div>
 
-        {/* Host controls */}
         {isHost && (
           <div style={card}>
             <h3 style={{ marginTop:0 }}>Host Controls</h3>
-
-            {/* Start / Delete */}
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
               <input
                 defaultValue={t.name}
@@ -218,20 +176,13 @@ export default function Lobby() {
                 <button style={btn} onClick={startTournament}>Start (randomize bracket)</button>
               )}
               {t.status !== "completed" && (
-                <button
-                  style={btnGhost}
-                  onClick={async ()=>{
-                    if (confirm("Delete tournament? This cannot be undone.")) {
-                      await deleteTournamentRemote(t.id);
-                      r.push("/");
-                    }
-                  }}
-                >Delete</button>
+                <button style={btnGhost} onClick={async ()=>{ if (confirm("Delete tournament?")) { await deleteTournamentRemote(t.id); r.push("/"); } }}>
+                  Delete
+                </button>
               )}
               <button style={btnGhost} onClick={addTestPlayer}>+ Add test player</button>
             </div>
 
-            {/* Pending approvals */}
             <div style={{ marginTop:8 }}>
               <h4 style={{ margin:"6px 0" }}>Pending approvals ({t.pending?.length || 0})</h4>
               {(t.pending?.length || 0) === 0 ? (
@@ -258,7 +209,6 @@ export default function Lobby() {
           </div>
         )}
 
-        {/* Bracket: all rounds in columns */}
         {t.rounds.length > 0 && (
           <div style={card}>
             <h3 style={{ marginTop:0 }}>Bracket</h3>
@@ -278,7 +228,6 @@ export default function Lobby() {
                       <div key={i} style={{ background:"#111", borderRadius:10, padding:"10px 12px", display:"grid", gap:8 }}>
                         <div>{aName} vs {bName}</div>
 
-                        {/* Host override */}
                         {isHost && t.status !== "completed" && (
                           <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
                             <button style={w===m.a?btnActive:btnMini} onClick={()=>hostSetWinner(rIdx, i, m.a)}>A wins</button>
@@ -288,7 +237,6 @@ export default function Lobby() {
                           </div>
                         )}
 
-                        {/* Player self-report */}
                         {!isHost && canReport && (
                           <div style={{ display:"flex", gap:6 }}>
                             <button style={btnMini} onClick={()=>report(rIdx, i, "win")}>I won</button>
@@ -313,7 +261,6 @@ export default function Lobby() {
   );
 }
 
-/* --------- styles --------- */
 const wrap: React.CSSProperties = { minHeight:"100vh", background:"#0b0b0b", color:"#fff", fontFamily:"system-ui", padding:24, position:"relative" };
 const card: React.CSSProperties = { background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:14, padding:14 };
 const btn: React.CSSProperties = { padding:"10px 14px", borderRadius:10, border:"none", background:"#0ea5e9", color:"#fff", fontWeight:700, cursor:"pointer" };
