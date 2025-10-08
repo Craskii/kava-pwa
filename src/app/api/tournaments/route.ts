@@ -6,11 +6,10 @@ export const runtime = "edge";
 
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-// Minimal types for KV list() response so we don't use `any`
+// Minimal types for KV list() response
 type KVListKey = { name: string; expiration?: number; metadata?: unknown };
 type KVListResult = { keys: KVListKey[]; list_complete: boolean; cursor?: string };
 
-// If you want stricter typing for what you store:
 type Tournament = {
   id: string;
   name: string;
@@ -24,18 +23,17 @@ type Tournament = {
   rounds: unknown[][];
 };
 
-export async function GET(req: Request, _ctx: { params: {} }) {
+export async function GET(req: Request) {
   const { env } = getRequestContext<{ env: Env }>();
 
   const url = new URL(req.url);
   const hostId = url.searchParams.get("hostId") || undefined;
 
-  // ---- collect all tournament ids from KV (keys are "t:<id>") ----
+  // Collect all tournament ids from KV (keys are "t:<id>")
   const ids: string[] = [];
   let cursor: string | undefined = undefined;
 
   while (true) {
-    // Cast via `unknown` -> our local interface to avoid `any`
     const res = (await env.KAVA_TOURNAMENTS.list({
       prefix: "t:",
       limit: 1000,
@@ -48,7 +46,7 @@ export async function GET(req: Request, _ctx: { params: {} }) {
     cursor = res.cursor;
   }
 
-  // ---- load tournaments and optionally filter by hostId ----
+  // Load tournaments
   const tournaments = (
     await Promise.all(
       ids.map(async (id) => {
@@ -67,7 +65,7 @@ export async function GET(req: Request, _ctx: { params: {} }) {
     ? tournaments.filter((t) => String(t.hostId) === hostId)
     : tournaments;
 
-  // Sort newest first (supports number or ISO string)
+  // Sort newest first
   filtered.sort((a, b) => {
     const aT = Number(a.createdAt) || Date.parse(String(a.createdAt));
     const bT = Number(b.createdAt) || Date.parse(String(b.createdAt));

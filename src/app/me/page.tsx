@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import BackButton from "../../components/BackButton";
 import {
@@ -24,16 +24,15 @@ export default function MePage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     if (!me?.id) return;
     setErr(null);
     setLoading(true);
     try {
       const data = await listTournamentsRemoteForUser(me.id);
-      const toNum = (x: number | string) =>
-        typeof x === "number" ? x : Number.isNaN(Date.parse(x)) ? 0 : Date.parse(x);
       const sortByCreated = (a: Tournament, b: Tournament) =>
-        toNum(b.createdAt) - toNum(a.createdAt);
+        (Number(b.createdAt) || Date.parse(String(b.createdAt))) -
+        (Number(a.createdAt) || Date.parse(String(a.createdAt)));
       setHosting([...data.hosting].sort(sortByCreated));
       setPlaying([...data.playing].sort(sortByCreated));
     } catch (e) {
@@ -42,15 +41,14 @@ export default function MePage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [me?.id]);
 
   useEffect(() => {
     refresh();
     const t = setInterval(refresh, 4000);
     return () => clearInterval(t);
-  }, [me?.id]); // refresh when identity changes
+  }, [refresh]);
 
-  // Leave (non-host): scrub identity and save
   async function leaveTournament(t: Tournament) {
     if (!me?.id) return;
     const latest = await getTournamentRemote(t.id);
@@ -60,6 +58,7 @@ export default function MePage() {
     latest.players = (latest.players || []).filter(p => p.id !== id);
     latest.pending = (latest.pending || []).filter(p => p.id !== id);
     latest.queue   = (latest.queue   || []).filter(pid => pid !== id);
+
     latest.rounds = (latest.rounds || []).map(round =>
       round.map(m => ({
         ...m,
