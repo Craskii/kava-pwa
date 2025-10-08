@@ -88,9 +88,26 @@ export async function isCodeInUseRemote(code: string): Promise<boolean> {
   return res.status === 200;
 }
 
-export async function listTournamentsRemote(hostId?: string): Promise<Tournament[]> {
-  const qs = hostId ? `?hostId=${encodeURIComponent(hostId)}` : "";
-  return await api<Tournament[]>(`/api/tournaments${qs}`);
+/** 
+ * List tournaments relevant to a user.
+ * If your /api/tournaments implements ?userId= it will be used.
+ * Otherwise we fall back to fetching all and filtering on the client.
+ */
+export async function listTournamentsRemote(userId?: string): Promise<Tournament[]> {
+  const qs = userId ? `?userId=${encodeURIComponent(userId)}` : "";
+  try {
+    // Preferred: server filters by user
+    return await api<Tournament[]>(`/api/tournaments${qs}`);
+  } catch {
+    // Fallback: fetch all and filter locally
+    const all = await api<Tournament[]>(`/api/tournaments`);
+    if (!userId) return all;
+    return all.filter(t =>
+      t.hostId === userId ||
+      t.players.some(p => p.id === userId) ||
+      t.pending.some(p => p.id === userId)
+    );
+  }
 }
 
 // ---- Bracket helpers (call saveTournamentRemote after mutating) ----

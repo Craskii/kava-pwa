@@ -4,7 +4,7 @@
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import BackButton from "../../components/BackButton";
-import { uid } from "../../lib/storage"; // we still use uid for a default host id
+import { uid } from "../../lib/storage";
 
 export default function CreatePage() {
   const r = useRouter();
@@ -17,9 +17,11 @@ export default function CreatePage() {
     const n = name.trim() || "Untitled Tournament";
     setLoading(true);
 
-    // simple “me” identity (same as your app already does)
+    // Get or create user identity
     let me = null;
-    try { me = JSON.parse(localStorage.getItem("kava_me") || "null"); } catch {}
+    try {
+      me = JSON.parse(localStorage.getItem("kava_me") || "null");
+    } catch {}
     if (!me) {
       me = { id: uid(), name: "Host" };
       localStorage.setItem("kava_me", JSON.stringify(me));
@@ -31,35 +33,69 @@ export default function CreatePage() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: n, hostId: me.id }),
       });
+
       if (!res.ok) throw new Error(await res.text());
-      const data = await res.json(); // { ok, id, code }
-      r.push(`/t/${data.id}`);
+      const data = await res.json(); // { id, code, tournament }
+
+      // ✅ Go to My Tournaments page after creating
+      r.push("/me");
     } catch (e) {
-      setMsg("Could not create tournament.");
       console.error(e);
+      setMsg("Could not create tournament.");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <main style={{ minHeight: "100vh", background:"#0b1220", color:"#fff", padding:16 }}>
+    <main
+      style={{
+        minHeight: "100vh",
+        background: "#0b1220",
+        color: "#fff",
+        padding: 16,
+        fontFamily: "system-ui",
+      }}
+    >
       <BackButton />
-      <h1>Create tournament</h1>
+      <h1>Create Tournament</h1>
+
       <input
         value={name}
-        onChange={e=>setName(e.target.value)}
+        onChange={(e) => setName(e.target.value)}
         placeholder="Tournament name"
-        style={{ width:"100%", padding:"12px 14px", borderRadius:10, border:"1px solid #333", background:"#111", color:"#fff" }}
+        style={{
+          width: "100%",
+          padding: "12px 14px",
+          borderRadius: 10,
+          border: "1px solid #333",
+          background: "#111",
+          color: "#fff",
+        }}
       />
+
       <button
         onClick={onCreate}
         disabled={loading}
-        style={{ marginTop:10, padding:"12px 16px", borderRadius:12, background:"#0ea5e9", border:"none", color:"#fff", fontWeight:700 }}
+        style={{
+          marginTop: 10,
+          padding: "12px 16px",
+          borderRadius: 12,
+          background: "#0ea5e9",
+          border: "none",
+          color: "#fff",
+          fontWeight: 700,
+          cursor: "pointer",
+        }}
       >
         {loading ? "Creating…" : "Create"}
       </button>
-      {msg && <p style={{ color:"#fca5a5", marginTop:8 }}>{msg}</p>}
+
+      {msg && (
+        <p style={{ color: "#fca5a5", marginTop: 8 }}>
+          {msg}
+        </p>
+      )}
     </main>
   );
 }
