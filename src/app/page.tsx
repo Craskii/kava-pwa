@@ -43,19 +43,10 @@ export default function Home() {
           justifySelf: "center",
         }}
       >
-        {/* 1) My tournaments */}
         <Link href="/me" style={btnGhost}>🧑‍💼 My tournaments</Link>
-
-        {/* 2) My lists (scrolls to Lists section on /me if present) */}
-        <Link href="/me#lists" style={btnGhost}>📝 My lists</Link>
-
-        {/* 3) Create game (moved below My tournaments + renamed) */}
+        <Link href="/lists" style={btnGhost}>📝 My lists</Link>
         <Link href="/create" style={btnPrimary}>➕ Create game</Link>
-
-        {/* 4) Join with code */}
         <Link href="/join" style={btnGhost}>🔐 Join with code</Link>
-
-        {/* 5) Find nearby */}
         <Link href="/nearby" style={btnGhost}>📍 Find nearby</Link>
 
         {/* PWA install helpers */}

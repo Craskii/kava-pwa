@@ -1,4 +1,3 @@
-// src/app/create/page.tsx
 'use client';
 export const runtime = 'edge';
 
@@ -37,12 +36,11 @@ export default function CreateGamePage() {
       const res = await fetch('/api/create', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        // ✅ include hostId so it shows under “Hosting” in /me
-        body: JSON.stringify({ name: nm, type, hostId: me.id }),
+        body: JSON.stringify({ name: nm, type, hostId: me.id }), // include hostId
       });
       if (!res.ok) throw new Error(await res.text());
 
-      // Per your preference: go back Home after creating
+      // After creating, send home (your preference earlier)
       r.push('/');
       r.refresh();
     } catch (e: any) {
@@ -59,12 +57,7 @@ export default function CreateGamePage() {
         <h1 style={h1}>Create game</h1>
 
         <form onSubmit={onCreate} style={{ display:'grid', gap:12 }}>
-          <input
-            value={name}
-            onChange={(e)=>setName(e.target.value)}
-            placeholder="Game name"
-            style={input}
-          />
+          <input value={name} onChange={(e)=>setName(e.target.value)} placeholder="Game name" style={input} />
 
           <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
             <button type="button" onClick={()=>setType('list')} style={type==='list'?btnPrimary:btnOutline}>List</button>
@@ -72,10 +65,7 @@ export default function CreateGamePage() {
           </div>
 
           {err && <p style={errP}>{err}</p>}
-
-          <button type="submit" disabled={loading} style={btnPrimary}>
-            {loading ? 'Creating…' : 'Create'}
-          </button>
+          <button type="submit" disabled={loading} style={btnPrimary}>{loading ? 'Creating…' : 'Create'}</button>
         </form>
       </div>
     </main>

@@ -1,10 +1,9 @@
-// src/app/api/create/route.ts
 export const runtime = "edge";
 
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
-/* ---------- Cloudflare KV types ---------- */
+/* KV */
 type KVListResult = { keys: { name: string }[]; cursor?: string; list_complete?: boolean };
 type KVNamespace = {
   get(key: string): Promise<string | null>;
@@ -14,63 +13,35 @@ type KVNamespace = {
 };
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-/* ---------- app data types ---------- */
+/* Types */
 type Player = { id: string; name: string };
-
 type Report = "win" | "loss" | undefined;
 type Match = { a?: string; b?: string; winner?: string; reports?: Record<string, Report> };
 type TournamentStatus = "setup" | "active" | "completed";
-
 type Tournament = {
-  id: string;
-  name: string;
-  code?: string;                 // always 5 digits
-  hostId: string;
-  status: TournamentStatus;
-  createdAt: number;
-  players: Player[];
-  pending: Player[];
-  queue: string[];               // kept for compatibility
-  rounds: Match[][];
+  id: string; name: string; code?: string; hostId: string; status: TournamentStatus;
+  createdAt: number; players: Player[]; pending: Player[]; queue: string[]; rounds: Match[][];
 };
-
 type Table = { a?: string; b?: string };
 type ListGame = {
-  id: string;
-  name: string;
-  code?: string;                 // always 5 digits
-  hostId: string;
-  status: "active";
-  createdAt: number;
-  tables: Table[];               // default 2 tables; host can change in UI
-  players: Player[];             // roster
-  queue: string[];               // player ids in line
+  id: string; name: string; code?: string; hostId: string; status: "active";
+  createdAt: number; tables: Table[]; players: Player[]; queue: string[];
 };
 
-type CreateBody = {
-  name?: string;
-  hostId?: string;
-  type?: "tournament" | "list";
-};
+type CreateBody = { name?: string; hostId?: string; type?: "tournament" | "list" };
 
-/* ---------- helpers ---------- */
-function random5(): string {
-  // 00000–99999 with left-padding
-  return Math.floor(Math.random() * 100000).toString().padStart(5, "0");
-}
-
+/* helpers */
+function random5(): string { return Math.floor(Math.random() * 100000).toString().padStart(5, "0"); }
 async function uniqueNumericCode(env: Env): Promise<string> {
-  // Avoid collisions across BOTH tournaments & lists
   for (let i = 0; i < 12; i++) {
     const c = random5();
     const exists = await env.KAVA_TOURNAMENTS.get(`code:${c}`);
     if (!exists) return c;
   }
-  // practically impossible to reach
   return random5();
 }
 
-/* ---------- route ---------- */
+/* route */
 export async function POST(req: Request) {
   const { env: rawEnv } = getRequestContext();
   const env = rawEnv as unknown as Env;
@@ -87,46 +58,21 @@ export async function POST(req: Request) {
 
   if (type === "list") {
     const listDoc: ListGame = {
-      id,
-      code,
-      name,
-      hostId,
-      status: "active",
-      createdAt: Date.now(),
-      tables: [{}, {}],
-      players: [],
-      queue: [],
+      id, code, name, hostId, status: "active", createdAt: Date.now(),
+      tables: [{}, {}], players: [], queue: [],
     };
-
-    // Single KV namespace; use distinct prefixes
     await env.KAVA_TOURNAMENTS.put(`l:${id}`, JSON.stringify(listDoc));
-
-    // New unified mapping (JSON) so /api/join can route by type
     await env.KAVA_TOURNAMENTS.put(`code:${code}`, JSON.stringify({ type: "list", id }));
-
     return NextResponse.json({ ok: true, id, code, type: "list" });
   }
 
-  // Default: tournament
   const tournament: Tournament = {
-    id,
-    code,
-    name,
-    hostId,
-    status: "setup",
-    createdAt: Date.now(),
-    players: [],
-    pending: [],
-    queue: [],
-    rounds: [],
+    id, code, name, hostId, status: "setup", createdAt: Date.now(),
+    players: [], pending: [], queue: [], rounds: [],
   };
 
   await env.KAVA_TOURNAMENTS.put(`t:${id}`, JSON.stringify(tournament));
-
-  // Write BOTH formats for backward compatibility:
-  // 1) legacy (string id) for any old /api/join logic
-  await env.KAVA_TOURNAMENTS.put(`code:${code}`, id);
-  // 2) new JSON mapping that includes type (so new /api/join can branch cleanly)
+  await env.KAVA_TOURNAMENTS.put(`code:${code}`, id); // legacy
   await env.KAVA_TOURNAMENTS.put(`code2:${code}`, JSON.stringify({ type: "tournament", id }));
 
   return NextResponse.json({ ok: true, id, code, type: "tournament" });
