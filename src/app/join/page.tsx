@@ -1,75 +1,85 @@
 // src/app/join/page.tsx
-'use client';
-import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
-import BackButton from "../../components/BackButton";
-import { findByCodeRemote, getTournamentRemote, saveTournamentRemote, uid } from "../../lib/storage";
+"use client";
 
-export default function Join() {
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import BackButton from "../../components/BackButton";
+import { uid } from "../../lib/storage";
+
+export default function JoinPage() {
   const r = useRouter();
-  const [code, setCode] = useState("");
   const [name, setName] = useState("");
+  const [code, setCode] = useState("");
+  const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const me = useMemo(() => {
-    if (typeof window === "undefined") return null;
-    try { return JSON.parse(localStorage.getItem("kava_me") || "null"); } catch { return null; }
-  }, []);
+  function ensureIdentity(defaultName: string) {
+    let me: { id: string; name: string } | null = null;
+    try { me = JSON.parse(localStorage.getItem("kava_me") || "null"); } catch {}
+    if (!me) {
+      me = { id: uid(), name: defaultName || "Player" };
+      localStorage.setItem("kava_me", JSON.stringify(me));
+    } else if (defaultName && me.name !== defaultName) {
+      me = { ...me, name: defaultName };
+      localStorage.setItem("kava_me", JSON.stringify(me));
+    }
+    return me;
+    }
 
-  async function submit() {
+  async function onJoin() {
     setErr(null);
+    const n = name.trim() || "Player";
+    const c = code.replace(/[^0-9]/g, "");
+    if (c.length < 4) { setErr("Enter the numeric code."); return; }
+
+    setLoading(true);
+    const me = ensureIdentity(n);
+
     try {
-      // ensure identity saved with chosen name
-      let meObj = me;
-      if (!meObj) {
-        meObj = { id: uid(), name: name?.trim() || "Guest" };
-      } else if (name?.trim()) {
-        meObj = { ...meObj, name: name.trim() };
-      }
-      localStorage.setItem("kava_me", JSON.stringify(meObj));
-
-      const id = await findByCodeRemote(code.trim());
-      if (!id) { setErr("No tournament with that code."); return; }
-
-      const t = await getTournamentRemote(id);
-      if (!t) { setErr("Could not load tournament."); return; }
-
-      // add to pending if not already there
-      const mine = t.players.some(p => p.id === meObj.id) || t.pending.some(p => p.id === meObj.id);
-      if (!mine) {
-        t.pending.push({ id: meObj.id, name: meObj.name });
-        await saveTournamentRemote(t);
-      }
-
-      r.push("/me"); // go to My tournaments
-    } catch {
-      setErr("Could not reach server.");
+      const res = await fetch("/api/join", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: c, player: me }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      // land on /me; it now smart-polls so you'll see "Playing" update instantly
+      r.push("/me");
+    } catch (e) {
+      console.error(e);
+      setErr("Could not join. Check the code.");
+    } finally {
+      setLoading(false);
     }
   }
 
   return (
-    <main style={{ padding:24 }}>
+    <main style={{ minHeight:"100vh", background:"#0b1220", color:"#fff", padding:16 }}>
       <BackButton />
-      <h1>Join with Code</h1>
-      <div style={{ display:"grid", gap:10, maxWidth: 360 }}>
-        <input
-          value={name}
-          onChange={e=>setName(e.target.value)}
-          placeholder="Your name"
-          style={input}
-        />
-        <input
-          value={code}
-          onChange={e=>setCode(e.target.value)}
-          placeholder="4-digit code"
-          style={input}
-        />
-        <button onClick={submit} style={btn}>Join</button>
-        {err && <div style={{ color:"#ff6b6b" }}>{err}</div>}
-      </div>
+      <h1>Join a tournament</h1>
+      <input
+        value={name}
+        onChange={e=>setName(e.target.value)}
+        placeholder="Your name"
+        style={input}
+      />
+      <input
+        value={code}
+        onChange={e=>setCode(e.target.value.replace(/[^0-9]/g, ""))}
+        placeholder="6-digit code"
+        inputMode="numeric"
+        style={{ ...input, marginTop:8 }}
+      />
+      <button onClick={onJoin} disabled={loading} style={btn}>
+        {loading ? "Joining…" : "Join"}
+      </button>
+      {err && <p style={{ color:"#fca5a5", marginTop:8 }}>{err}</p>}
     </main>
   );
 }
 
-const input: React.CSSProperties = { padding:"10px 12px", borderRadius:10, border:"1px solid #333", background:"#111", color:"#fff" };
-const btn: React.CSSProperties = { padding:"10px 14px", borderRadius:10, border:"none", background:"#0ea5e9", color:"#fff", fontWeight:700, cursor:"pointer" };
+const input: React.CSSProperties = {
+  width:"100%", padding:"12px 14px", borderRadius:10, border:"1px solid #333", background:"#111", color:"#fff"
+};
+const btn: React.CSSProperties = {
+  marginTop:10, padding:"12px 16px", borderRadius:12, background:"#0ea5e9", border:"none", color:"#fff", fontWeight:700
+};
