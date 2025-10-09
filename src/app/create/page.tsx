@@ -36,18 +36,13 @@ export default function CreateGamePage() {
       const res = await fetch('/api/create', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name: nm, type, hostId: me.id }), // include hostId
+        body: JSON.stringify({ name: nm, type, hostId: me.id }),
       });
       if (!res.ok) throw new Error(await res.text());
-
-      // After creating, send home (your preference earlier)
-      r.push('/');
-      r.refresh();
+      r.push('/'); r.refresh();
     } catch (e: any) {
       setErr(e?.message || 'Could not create.');
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   }
 
   return (
@@ -58,12 +53,10 @@ export default function CreateGamePage() {
 
         <form onSubmit={onCreate} style={{ display:'grid', gap:12 }}>
           <input value={name} onChange={(e)=>setName(e.target.value)} placeholder="Game name" style={input} />
-
           <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
             <button type="button" onClick={()=>setType('list')} style={type==='list'?btnPrimary:btnOutline}>List</button>
             <button type="button" onClick={()=>setType('tournament')} style={type==='tournament'?btnPrimary:btnOutline}>Tournament</button>
           </div>
-
           {err && <p style={errP}>{err}</p>}
           <button type="submit" disabled={loading} style={btnPrimary}>{loading ? 'Creating…' : 'Create'}</button>
         </form>
@@ -72,7 +65,6 @@ export default function CreateGamePage() {
   );
 }
 
-/* styles */
 const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b1220', color:'#fff', padding:16 };
 const container: React.CSSProperties = { width:'100%', maxWidth:560, margin:'0 auto', display:'grid', gap:16 };
 const h1: React.CSSProperties = { fontSize:24, fontWeight:700, margin:'4px 0 8px' };

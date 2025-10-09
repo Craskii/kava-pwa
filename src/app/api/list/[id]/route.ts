@@ -30,9 +30,17 @@ async function getVersion(env: Env, id: string): Promise<number> {
   const n = raw ? Number(raw) : 0;
   return Number.isFinite(n) ? n : 0;
 }
-
 async function setVersion(env: Env, id: string, v: number): Promise<void> {
   await env.KAVA_TOURNAMENTS.put(verKey(id), String(v));
+}
+function random5(): string { return Math.floor(Math.random() * 100000).toString().padStart(5, "0"); }
+async function uniqueCode(env: Env): Promise<string> {
+  for (let i = 0; i < 12; i++) {
+    const c = random5();
+    const exists = await env.KAVA_TOURNAMENTS.get(`code:${c}`);
+    if (!exists) return c;
+  }
+  return random5();
 }
 
 /* GET */
@@ -42,6 +50,25 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
   const raw = await env.KAVA_TOURNAMENTS.get(listKey(id));
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const doc = JSON.parse(raw) as ListGame;
+  const v = await getVersion(env, id);
+  return NextResponse.json(doc, { headers: { "x-l-version": String(v) } });
+}
+
+/* POST — ensureCode */
+export async function POST(req: Request, { params }: { params: { id: string } }) {
+  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
+  const id = params.id;
+  const raw = await env.KAVA_TOURNAMENTS.get(listKey(id));
+  if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  const doc = JSON.parse(raw) as ListGame;
+  if (!doc.code) {
+    const code = await uniqueCode(env);
+    doc.code = code;
+    await env.KAVA_TOURNAMENTS.put(listKey(id), JSON.stringify(doc));
+    await env.KAVA_TOURNAMENTS.put(`code:${code}`, JSON.stringify({ type: "list", id }));
+    const v = await getVersion(env, id); // don’t bump version for code-only
+    return NextResponse.json(doc, { headers: { "x-l-version": String(v) } });
+  }
   const v = await getVersion(env, id);
   return NextResponse.json(doc, { headers: { "x-l-version": String(v) } });
 }

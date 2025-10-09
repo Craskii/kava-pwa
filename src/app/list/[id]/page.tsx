@@ -8,7 +8,6 @@ import {
   ListGame,
   Player,
   saveListRemote,
-  getListRemote,
   deleteListRemote,
   uid,
   listSetTables,
@@ -22,6 +21,7 @@ export default function ListLobby() {
   const { id } = useParams<{ id: string }>();
   const r = useRouter();
   const [g, setG] = useState<ListGame | null>(null);
+  const [newName, setNewName] = useState('');
   const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
 
   const me = useMemo(() => {
@@ -43,7 +43,7 @@ export default function ListLobby() {
         const vHeader = res.headers.get('x-l-version') || '';
         const next = await res.json();
         const v = Number(vHeader);
-        setG({ ...next, v: Number.isFinite(v) ? v : (next.v ?? 0) }); // ✅ carry server version
+        setG({ ...next, v: Number.isFinite(v) ? v : (next.v ?? 0) });
         return vHeader;
       }
       return null;
@@ -73,13 +73,34 @@ export default function ListLobby() {
     pollRef.current?.bump?.();
   }
 
+  async function ensureCode() {
+    const res = await fetch(`/api/list/${g.id}`, { method: 'POST' });
+    if (res.ok) {
+      const vHeader = res.headers.get('x-l-version') || '';
+      const next = await res.json();
+      const v = Number(vHeader);
+      setG({ ...next, v: Number.isFinite(v) ? v : (next.v ?? g.v ?? 0) });
+    }
+  }
+
   function setTables(n: 1 | 2) { listSetTables(g, n).then(setG); }
-  function join(name?: string) {
-    const nm = (name || me?.name || 'Player').trim();
+  function joinSelf() {
+    const nm = (me?.name || 'Player').trim();
     const pid = me?.id || uid();
     listJoin(g, { id: pid, name: nm } as Player).then(setG);
   }
+  function addNamed() {
+    const nm = newName.trim();
+    if (!nm) return;
+    const pid = uid();
+    listJoin(g, { id: pid, name: nm }).then(setG);
+    setNewName('');
+  }
+  function removePlayer(pid: string) {
+    listLeave(g, pid).then(setG);
+  }
   function iLost(tableIndex: number) { if (!me) return; listILost(g, tableIndex, me.id).then(setG); }
+
   async function leaveOrDelete() {
     if (isHost) {
       if (confirm('Delete this list room?')) { await deleteListRemote(g.id); r.push('/'); r.refresh(); }
@@ -95,23 +116,53 @@ export default function ListLobby() {
           <div>
             <h1 style={h1}>{g.name}</h1>
             <div style={{ opacity: .8, fontSize: 14 }}>
-              {g.code ? <>Private code: <b>{g.code}</b></> : 'Public'} • {g.players.length} players
+              {g.code ? <>Private code: <b>{g.code}</b> <button style={linkBtn} onClick={() => navigator.clipboard.writeText(g.code!)}>Copy</button></> :
+                isHost ? <button style={btnPrimary} onClick={ensureCode}>Generate invite code</button> :
+                'Public'}
+              {' '}• {g.players.length} {g.players.length === 1 ? 'player' : 'players'}
             </div>
           </div>
           <div><button style={btnGhost} onClick={leaveOrDelete}>{isHost ? 'Delete' : 'Leave'}</button></div>
         </header>
 
+        {/* Host controls */}
         {isHost && (
           <div style={card}>
             <h3 style={{ marginTop: 0 }}>Host controls</h3>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
               <button style={g.tables.length === 1 ? btnPrimary : btnGhost} onClick={() => setTables(1)}>1 Table</button>
               <button style={g.tables.length === 2 ? btnPrimary : btnGhost} onClick={() => setTables(2)}>2 Tables</button>
-              <button style={btnGhost} onClick={() => join('Guest ' + (g.players.length + 1))}>+ Add test player</button>
+            </div>
+
+            <div style={{ marginTop:12, display:'grid', gap:8 }}>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                <input value={newName} onChange={(e)=>setNewName(e.target.value)} placeholder="Add player name…" style={input}/>
+                <button style={btnPrimary} onClick={addNamed}>Add player</button>
+                <button style={btnGhost} onClick={joinSelf}>Add me</button>
+              </div>
+
+              <div>
+                <h4 style={{ margin:'8px 0 6px' }}>Players ({g.players.length})</h4>
+                {g.players.length === 0 ? (
+                  <div style={{ opacity:.7, fontSize:13 }}>No players yet.</div>
+                ) : (
+                  <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
+                    {g.players.map(p => (
+                      <li key={p.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}>
+                        <span>{p.name}</span>
+                        <div style={{ display:'flex', gap:8 }}>
+                          <button style={btnMini} onClick={()=>removePlayer(p.id)}>Remove</button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
           </div>
         )}
 
+        {/* Queue */}
         <div style={card}>
           <h3 style={{ marginTop: 0 }}>Queue</h3>
           {g.queue.length === 0 ? (
@@ -126,6 +177,7 @@ export default function ListLobby() {
           )}
         </div>
 
+        {/* Tables */}
         <div style={card}>
           <h3 style={{ marginTop: 0 }}>Tables</h3>
           <div style={{ display: 'grid', gap: 12, gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))' }}>
@@ -147,9 +199,11 @@ export default function ListLobby() {
               );
             })}
           </div>
+
+          {/* Join button for self if not seated/queued */}
           {me && !g.queue.includes(me.id) && !g.tables.some(t => t.a === me.id || t.b === me.id) && (
             <div style={{ marginTop: 10 }}>
-              <button style={btnPrimary} onClick={() => join()}>Join Queue</button>
+              <button style={btnPrimary} onClick={joinSelf}>Join Queue</button>
             </div>
           )}
         </div>
@@ -167,3 +221,5 @@ const card: React.CSSProperties = { background:'rgba(255,255,255,0.05)', border:
 const btnPrimary: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
 const btnGhost: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer' };
 const btnMini: React.CSSProperties = { padding:'6px 10px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontSize:12 };
+const input: React.CSSProperties = { width:'100%', maxWidth:320, padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff' };
+const linkBtn: React.CSSProperties = { marginLeft:8, padding:'2px 8px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontSize:12 };

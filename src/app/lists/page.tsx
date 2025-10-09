@@ -6,7 +6,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { listListsRemoteForUser, uid, ListGame } from '../../lib/storage';
 
 export default function MyListsPage() {
-  const me = useMemo(() => { try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); } catch { return null; } }, []);
+  const me = useMemo(() => {
+    try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); }
+    catch { return null; }
+  }, []);
+
+  // bootstrap identity if missing
   useEffect(() => {
     if (!me) {
       const newMe = { id: uid(), name: 'Player' };
@@ -44,35 +49,60 @@ export default function MyListsPage() {
 
       <section style={card}>
         <h3 style={{ marginTop: 0 }}>Hosting</h3>
-        {loading && hosting.length === 0 ? <div style={muted}>Loading…</div> :
-         hosting.length === 0 ? <div style={muted}>You’re not hosting any lists yet.</div> :
-         <ul style={ul}>{hosting.map(g => (
-           <li key={g.id} style={li}>
-             <a href={`/list/${g.id}`} style={link}>{g.name}</a>
-             <span style={mutedSmall}>{g.players.length} players</span>
-           </li>
-         ))}</ul>}
+        {loading && hosting.length === 0 ? (
+          <div style={muted}>Loading…</div>
+        ) : hosting.length === 0 ? (
+          <div style={muted}>You’re not hosting any lists yet.</div>
+        ) : (
+          <div style={grid}>
+            {hosting.map(g => (
+              <a key={g.id} href={`/list/${g.id}`} style={tile}>
+                <div style={{ fontWeight:700 }}>{g.name}</div>
+                <div style={{ opacity:.8, fontSize:12 }}>
+                  {g.players.length} {g.players.length === 1 ? 'player' : 'players'} • code {g.code || '—'}
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
       </section>
 
       <section style={card}>
         <h3 style={{ marginTop: 0 }}>Playing</h3>
-        {loading && playing.length === 0 ? <div style={muted}>Loading…</div> :
-         playing.length === 0 ? <div style={muted}>You’re not in any lists yet.</div> :
-         <ul style={ul}>{playing.map(g => (
-           <li key={g.id} style={li}>
-             <a href={`/list/${g.id}`} style={link}>{g.name}</a>
-             <span style={mutedSmall}>{g.players.length} players</span>
-           </li>
-         ))}</ul>}
+        {loading && playing.length === 0 ? (
+          <div style={muted}>Loading…</div>
+        ) : playing.length === 0 ? (
+          <div style={muted}>You’re not in any lists yet.</div>
+        ) : (
+          <div style={grid}>
+            {playing.map(g => (
+              <a key={g.id} href={`/list/${g.id}`} style={tile}>
+                <div style={{ fontWeight:700 }}>{g.name}</div>
+                <div style={{ opacity:.8, fontSize:12 }}>
+                  {g.players.length} {g.players.length === 1 ? 'player' : 'players'} • code {g.code || '—'}
+                </div>
+              </a>
+            ))}
+          </div>
+        )}
       </section>
     </main>
   );
 }
 
-const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui' };
-const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginBottom:14 };
+/* styles */
+const wrap: React.CSSProperties = {
+  minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui'
+};
+const card: React.CSSProperties = {
+  background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)',
+  borderRadius:14, padding:14, marginBottom:14
+};
 const muted: React.CSSProperties = { opacity:.7 };
-const mutedSmall: React.CSSProperties = { opacity:.7, fontSize:12 };
-const ul: React.CSSProperties = { margin:0, padding:0, listStyle:'none', display:'grid', gap:8 };
-const li: React.CSSProperties = { display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', borderRadius:10, padding:'10px 12px' };
-const link: React.CSSProperties = { color:'#fff', textDecoration:'none', fontWeight:700 };
+const grid: React.CSSProperties = {
+  display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(240px,1fr))', gap:10
+};
+const tile: React.CSSProperties = {
+  display:'block', padding:'12px', background:'#111', borderRadius:12, color:'#fff',
+  textDecoration:'none', border:'1px solid rgba(255,255,255,0.12)'
+};
