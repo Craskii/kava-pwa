@@ -1,35 +1,61 @@
 // src/app/api/join/route.ts
 export const runtime = "edge";
-import { NextResponse } from "next/server";
-import { getEnv } from "../_kv";
 
-type Body = { code: string; player: { id: string; name: string } };
+import { NextResponse } from "next/server";
+import { getRequestContext } from "@cloudflare/next-on-pages";
+
+/* KV + data types (same as create route) */
+type KVNamespace = {
+  get(key: string): Promise<string | null>;
+  put(key: string, value: string): Promise<void>;
+  delete(key: string): Promise<void>;
+};
+type Env = { KAVA_TOURNAMENTS: KVNamespace };
+
+type Player = { id: string; name: string };
+type Report = "win" | "loss" | undefined;
+type Match = { a?: string; b?: string; winner?: string; reports?: Record<string, Report> };
+type Tournament = {
+  id: string; name: string; code?: string; hostId: string;
+  status: "setup" | "active" | "completed";
+  createdAt: number;
+  players: Player[]; pending: Player[]; queue: string[]; rounds: Match[][];
+};
+
+type JoinBody = { code?: string; player?: Player };
 
 export async function POST(req: Request) {
-  const env = getEnv();
-  const b = (await req.json().catch(() => null)) as Body | null;
-  if (!b?.code || !b?.player?.id || !b?.player?.name) {
-    return NextResponse.json({ error: "Missing code or player" }, { status: 400 });
+  const { env: rawEnv } = getRequestContext();
+  const env = rawEnv as unknown as Env;
+
+  let body: JoinBody = {};
+  try { body = await req.json(); } catch {}
+
+  const code = (body.code ?? "").toString().replace(/[^0-9]/g, "");
+  if (code.length !== 5) {
+    return NextResponse.json({ error: "Invalid code" }, { status: 400 });
   }
-  const code = b.code.toUpperCase();
+  const player = body.player;
+  if (!player?.id || !player?.name) {
+    return NextResponse.json({ error: "Missing player" }, { status: 400 });
+  }
+
   const id = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
-  if (!id) return NextResponse.json({ error: "No tournament with that code." }, { status: 404 });
+  if (!id) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const key = `t:${id}`;
-  const raw = await env.KAVA_TOURNAMENTS.get(key);
-  if (!raw) return NextResponse.json({ error: "Tournament missing." }, { status: 404 });
-  const t = JSON.parse(raw) as any;
+  const raw = await env.KAVA_TOURNAMENTS.get(`t:${id}`);
+  if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  // if already present anywhere, ignore
-  const present = (t.players || []).some((p: any) => p.id === b.player.id)
-    || (t.pending || []).some((p: any) => p.id === b.player.id)
-    || (t.queue || []).includes(b.player.id);
-  if (!present) t.pending = [...(t.pending || []), b.player];
+  const t = JSON.parse(raw) as Tournament;
 
-  t.updatedAt = Date.now();
-  await env.KAVA_TOURNAMENTS.put(key, JSON.stringify(t));
+  // If already a player or pending, do nothing (idempotent)
+  const already =
+    t.players.some(p => p.id === player.id) || (t.pending ?? []).some(p => p.id === player.id);
 
-  return new NextResponse(JSON.stringify({ ok: true, id }), {
-    headers: { "content-type": "application/json", "x-t-version": String(t.updatedAt) }
-  });
+  if (!already) {
+    t.pending = [...(t.pending ?? []), { id: player.id, name: player.name }];
+    await env.KAVA_TOURNAMENTS.put(`t:${id}`, JSON.stringify(t));
+  }
+
+  return NextResponse.json({ ok: true, id });
 }

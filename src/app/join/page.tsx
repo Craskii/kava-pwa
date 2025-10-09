@@ -13,36 +13,30 @@ export default function JoinPage() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  function ensureIdentity(defaultName: string) {
-    let me: { id: string; name: string } | null = null;
+  function ensureMe(n: string) {
+    let me = null as { id: string; name: string } | null;
     try { me = JSON.parse(localStorage.getItem("kava_me") || "null"); } catch {}
-    if (!me) {
-      me = { id: uid(), name: defaultName || "Player" };
-      localStorage.setItem("kava_me", JSON.stringify(me));
-    } else if (defaultName && me.name !== defaultName) {
-      me = { ...me, name: defaultName };
-      localStorage.setItem("kava_me", JSON.stringify(me));
-    }
+    if (!me) me = { id: uid(), name: n || "Player" };
+    else if (n && me.name !== n) me = { ...me, name: n };
+    localStorage.setItem("kava_me", JSON.stringify(me));
     return me;
-    }
+  }
 
   async function onJoin() {
     setErr(null);
     const n = name.trim() || "Player";
-    const c = code.replace(/[^0-9]/g, "");
-    if (c.length < 4) { setErr("Enter the numeric code."); return; }
-
+    const c = code.replace(/[^0-9]/g, "").slice(0, 5);
+    if (c.length !== 5) { setErr("Enter the 5-digit code."); return; }
     setLoading(true);
-    const me = ensureIdentity(n);
 
     try {
+      const me = ensureMe(n);
       const res = await fetch("/api/join", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ code: c, player: me }),
       });
       if (!res.ok) throw new Error(await res.text());
-      // land on /me; it now smart-polls so you'll see "Playing" update instantly
       r.push("/me");
     } catch (e) {
       console.error(e);
@@ -64,8 +58,8 @@ export default function JoinPage() {
       />
       <input
         value={code}
-        onChange={e=>setCode(e.target.value.replace(/[^0-9]/g, ""))}
-        placeholder="6-digit code"
+        onChange={e=>setCode(e.target.value.replace(/[^0-9]/g, "").slice(0,5))}
+        placeholder="5-digit code"
         inputMode="numeric"
         style={{ ...input, marginTop:8 }}
       />
