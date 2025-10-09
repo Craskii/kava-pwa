@@ -16,22 +16,42 @@ type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
 /* ---------- app data types ---------- */
 type Player = { id: string; name: string };
+
 type Report = "win" | "loss" | undefined;
 type Match = { a?: string; b?: string; winner?: string; reports?: Record<string, Report> };
 type TournamentStatus = "setup" | "active" | "completed";
+
 type Tournament = {
   id: string;
   name: string;
-  code?: string;                 // now always 5 digits
+  code?: string;                 // always 5 digits
   hostId: string;
   status: TournamentStatus;
   createdAt: number;
   players: Player[];
   pending: Player[];
-  queue: string[];               // we still keep it on the object to avoid breaking, but UI won’t use it
+  queue: string[];               // kept for compatibility
   rounds: Match[][];
 };
-type CreateBody = { name?: string; hostId?: string };
+
+type Table = { a?: string; b?: string };
+type ListGame = {
+  id: string;
+  name: string;
+  code?: string;                 // always 5 digits
+  hostId: string;
+  status: "active";
+  createdAt: number;
+  tables: Table[];               // default 2 tables; host can change in UI
+  players: Player[];             // roster
+  queue: string[];               // player ids in line
+};
+
+type CreateBody = {
+  name?: string;
+  hostId?: string;
+  type?: "tournament" | "list";
+};
 
 /* ---------- helpers ---------- */
 function random5(): string {
@@ -40,13 +60,13 @@ function random5(): string {
 }
 
 async function uniqueNumericCode(env: Env): Promise<string> {
-  // Try a few times to avoid collisions
-  for (let i = 0; i < 10; i++) {
+  // Avoid collisions across BOTH tournaments & lists
+  for (let i = 0; i < 12; i++) {
     const c = random5();
     const exists = await env.KAVA_TOURNAMENTS.get(`code:${c}`);
     if (!exists) return c;
   }
-  // Fallback (extremely unlikely to hit)
+  // practically impossible to reach
   return random5();
 }
 
@@ -58,12 +78,36 @@ export async function POST(req: Request) {
   let body: CreateBody = {};
   try { body = await req.json(); } catch {}
 
-  const name = (body.name ?? "Untitled Tournament").toString();
+  const name = (body.name ?? "Untitled").toString();
   const hostId = (body.hostId ?? crypto.randomUUID()).toString();
+  const type: "tournament" | "list" = body.type ?? "tournament";
 
   const id = crypto.randomUUID();
   const code = await uniqueNumericCode(env);
 
+  if (type === "list") {
+    const listDoc: ListGame = {
+      id,
+      code,
+      name,
+      hostId,
+      status: "active",
+      createdAt: Date.now(),
+      tables: [{}, {}],
+      players: [],
+      queue: [],
+    };
+
+    // Single KV namespace; use distinct prefixes
+    await env.KAVA_TOURNAMENTS.put(`l:${id}`, JSON.stringify(listDoc));
+
+    // New unified mapping (JSON) so /api/join can route by type
+    await env.KAVA_TOURNAMENTS.put(`code:${code}`, JSON.stringify({ type: "list", id }));
+
+    return NextResponse.json({ ok: true, id, code, type: "list" });
+  }
+
+  // Default: tournament
   const tournament: Tournament = {
     id,
     code,
@@ -71,14 +115,19 @@ export async function POST(req: Request) {
     hostId,
     status: "setup",
     createdAt: Date.now(),
-    players: [],        // host will be auto-added client-side on first open
+    players: [],
     pending: [],
     queue: [],
     rounds: [],
   };
 
-  await env.KAVA_TOURNAMENTS.put(`code:${code}`, id);
   await env.KAVA_TOURNAMENTS.put(`t:${id}`, JSON.stringify(tournament));
 
-  return NextResponse.json({ ok: true, id, code, tournament });
+  // Write BOTH formats for backward compatibility:
+  // 1) legacy (string id) for any old /api/join logic
+  await env.KAVA_TOURNAMENTS.put(`code:${code}`, id);
+  // 2) new JSON mapping that includes type (so new /api/join can branch cleanly)
+  await env.KAVA_TOURNAMENTS.put(`code2:${code}`, JSON.stringify({ type: "tournament", id }));
+
+  return NextResponse.json({ ok: true, id, code, type: "tournament" });
 }

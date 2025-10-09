@@ -26,30 +26,39 @@ export default function Lobby() {
   const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
 
   const me = useMemo(() => {
-    try {
-      return JSON.parse(localStorage.getItem('kava_me') || 'null');
-    } catch {
-      return null;
-    }
+    try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); }
+    catch { return null; }
   }, []);
 
-  // initial load + smart poll
+  // initial load + smart poll (with 404 handling)
   useEffect(() => {
     if (!id) return;
     pollRef.current?.stop();
+
     const poll = startSmartPoll(async () => {
       const res = await fetch(`/api/tournament/${id}`, { cache: 'no-store' });
+
+      // ✅ If host deleted the tournament (or it’s missing), kick everyone to Home
+      if (res.status === 404 || res.status === 410) {
+        r.push('/');
+        r.refresh();
+        return null;
+      }
+
       if (res.ok) {
         const v = res.headers.get('x-t-version') || '';
         const next = await res.json();
         setT(next);
         return v;
       }
+
+      // Non-OK but not 404: don’t crash the page; just keep polling
       return null;
     });
+
     pollRef.current = poll;
     return () => poll.stop();
-  }, [id]);
+  }, [id, r]);
 
   if (!t) {
     return (
@@ -94,13 +103,14 @@ export default function Lobby() {
 
     if (me.id === cur.hostId) {
       if (confirm("You're the host. Leave & delete this tournament?")) {
+        // Deleting here will cause 404 for all other clients → they auto-redirect via the poll above
         await deleteTournamentRemote(cur.id);
-        // ✅ Back to Home
         r.push('/');
         r.refresh();
       }
       return;
     }
+
     await update((x) => {
       x.players = x.players.filter((p) => p.id !== me.id);
       x.pending = (x.pending || []).filter((p) => p.id !== me.id);
@@ -117,7 +127,7 @@ export default function Lobby() {
         }))
       );
     });
-    // ✅ Back to Home
+
     r.push('/');
     r.refresh();
   }
@@ -149,21 +159,12 @@ export default function Lobby() {
   }
 
   // ---------- start / approvals / test add ----------
-  function startTournament() {
-    update(seedInitial);
-  }
-  function approve(pId: string) {
-    update((x) => approvePending(x, pId));
-  }
-  function decline(pId: string) {
-    update((x) => declinePending(x, pId));
-  }
+  function startTournament() { update(seedInitial); }
+  function approve(pId: string) { update((x) => approvePending(x, pId)); }
+  function decline(pId: string) { update((x) => declinePending(x, pId)); }
   function addTestPlayer() {
     const pid = uid();
-    const p = {
-      id: pid,
-      name: `Guest ${t.players.length + (t.pending?.length || 0) + 1}`,
-    };
+    const p = { id: pid, name: `Guest ${t.players.length + (t.pending?.length || 0) + 1}` };
     update((x) => {
       if (x.status === 'active') insertLatePlayer(x, p);
       else x.players.push(p);
@@ -173,9 +174,7 @@ export default function Lobby() {
   // ---------- self-report ----------
   function report(roundIdx: number, matchIdx: number, result: 'win' | 'loss') {
     if (!me) return;
-    update((x) => {
-      submitReport(x, roundIdx, matchIdx, me.id, result);
-    });
+    update((x) => { submitReport(x, roundIdx, matchIdx, me.id, result); });
   }
 
   const lastRound = t.rounds.at(-1);
@@ -185,21 +184,14 @@ export default function Lobby() {
   return (
     <main style={wrap}>
       <div style={container}>
-        {/* Back is INLINE, so no overlap */}
+        {/* Back is INLINE (no fixed positioning) */}
         <BackButton href="/" />
 
         <header style={header}>
           <div>
             <h1 style={h1}>{t.name}</h1>
             <div style={subhead}>
-              {t.code ? (
-                <>
-                  Private code: <b>{t.code}</b>
-                </>
-              ) : (
-                'Public tournament'
-              )}{' '}
-              • {t.players.length} {t.players.length === 1 ? 'player' : 'players'}
+              {t.code ? <>Private code: <b>{t.code}</b></> : 'Public tournament'} • {t.players.length} {t.players.length === 1 ? 'player' : 'players'}
             </div>
             {iAmChampion && (
               <div style={champ}>
@@ -210,9 +202,7 @@ export default function Lobby() {
 
           <div style={{ textAlign: 'right' }}>
             <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
-              <button style={btnGhost} onClick={leaveTournament}>
-                Leave Tournament
-              </button>
+              <button style={btnGhost} onClick={leaveTournament}>Leave Tournament</button>
             </div>
           </div>
         </header>
@@ -224,56 +214,37 @@ export default function Lobby() {
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
               <input
                 defaultValue={t.name}
-                onBlur={(e) =>
-                  update((x) => {
-                    const v = e.target.value.trim();
-                    if (v) x.name = v;
-                  })
-                }
+                onBlur={(e) => update((x) => {
+                  const v = e.target.value.trim();
+                  if (v) x.name = v;
+                })}
                 placeholder="Rename tournament"
                 style={input}
               />
               {t.status === 'setup' && (
-                <button style={btn} onClick={startTournament}>
-                  Start (randomize bracket)
-                </button>
+                <button style={btn} onClick={startTournament}>Start (randomize bracket)</button>
               )}
               {t.status !== 'completed' && (
                 <button
                   style={btnGhost}
                   onClick={async () => {
                     if (confirm('Delete tournament? This cannot be undone.')) {
-                      await deleteTournamentRemote(t.id);
-                      // ✅ Back to Home
+                      await deleteTournamentRemote(t.id); // triggers 404 for everyone else
                       r.push('/');
                       r.refresh();
                     }
                   }}
-                >
-                  Delete
-                </button>
+                >Delete</button>
               )}
-              <button style={btnGhost} onClick={addTestPlayer}>
-                + Add test player
-              </button>
+              <button style={btnGhost} onClick={addTestPlayer}>+ Add test player</button>
             </div>
 
             <div style={{ marginTop: 8 }}>
-              <h4 style={{ margin: '6px 0' }}>
-                Pending approvals ({t.pending?.length || 0})
-              </h4>
+              <h4 style={{ margin: '6px 0' }}>Pending approvals ({t.pending?.length || 0})</h4>
               {(t.pending?.length || 0) === 0 ? (
                 <div style={{ opacity: 0.7, fontSize: 13 }}>No pending players.</div>
               ) : (
-                <ul
-                  style={{
-                    listStyle: 'none',
-                    padding: 0,
-                    margin: 0,
-                    display: 'grid',
-                    gap: 8,
-                  }}
-                >
+                <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 8 }}>
                   {t.pending!.map((p) => (
                     <li
                       key={p.id}
@@ -288,12 +259,8 @@ export default function Lobby() {
                     >
                       <span>{p.name}</span>
                       <div style={{ display: 'flex', gap: 8 }}>
-                        <button style={btn} onClick={() => approve(p.id)}>
-                          Approve
-                        </button>
-                        <button style={btnDanger} onClick={() => decline(p.id)}>
-                          Decline
-                        </button>
+                        <button style={btn} onClick={() => approve(p.id)}>Approve</button>
+                        <button style={btnDanger} onClick={() => decline(p.id)}>Decline</button>
                       </div>
                     </li>
                   ))}
@@ -323,10 +290,8 @@ export default function Lobby() {
                 <div key={rIdx} style={{ display: 'grid', gap: 8 }}>
                   <div style={{ opacity: 0.8, fontSize: 13 }}>Round {rIdx + 1}</div>
                   {round.map((m, i) => {
-                    const aName =
-                      t.players.find((p) => p.id === m.a)?.name || (m.a ? '??' : 'BYE');
-                    const bName =
-                      t.players.find((p) => p.id === m.b)?.name || (m.b ? '??' : 'BYE');
+                    const aName = t.players.find((p) => p.id === m.a)?.name || (m.a ? '??' : 'BYE');
+                    const bName = t.players.find((p) => p.id === m.b)?.name || (m.b ? '??' : 'BYE');
                     const w = m.winner;
 
                     const iPlay = me && (m.a === me.id || m.b === me.id);
@@ -335,38 +300,15 @@ export default function Lobby() {
                     return (
                       <div
                         key={i}
-                        style={{
-                          background: '#111',
-                          borderRadius: 10,
-                          padding: '10px 12px',
-                          display: 'grid',
-                          gap: 8,
-                        }}
+                        style={{ background: '#111', borderRadius: 10, padding: '10px 12px', display: 'grid', gap: 8 }}
                       >
-                        <div>
-                          {aName} vs {bName}
-                        </div>
+                        <div>{aName} vs {bName}</div>
 
                         {isHost && t.status !== 'completed' && (
                           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                            <button
-                              style={w === m.a ? btnActive : btnMini}
-                              onClick={() => hostSetWinner(rIdx, i, m.a)}
-                            >
-                              A wins
-                            </button>
-                            <button
-                              style={w === m.b ? btnActive : btnMini}
-                              onClick={() => hostSetWinner(rIdx, i, m.b)}
-                            >
-                              B wins
-                            </button>
-                            <button
-                              style={btnMini}
-                              onClick={() => hostSetWinner(rIdx, i, undefined)}
-                            >
-                              Clear
-                            </button>
+                            <button style={w === m.a ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.a)}>A wins</button>
+                            <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)}>B wins</button>
+                            <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)}>Clear</button>
                             {w && (
                               <span style={{ fontSize: 12, opacity: 0.8 }}>
                                 Winner: {t.players.find((p) => p.id === w)?.name}
@@ -377,12 +319,8 @@ export default function Lobby() {
 
                         {!isHost && canReport && (
                           <div style={{ display: 'flex', gap: 6 }}>
-                            <button style={btnMini} onClick={() => report(rIdx, i, 'win')}>
-                              I won
-                            </button>
-                            <button style={btnMini} onClick={() => report(rIdx, i, 'loss')}>
-                              I lost
-                            </button>
+                            <button style={btnMini} onClick={() => report(rIdx, i, 'win')}>I won</button>
+                            <button style={btnMini} onClick={() => report(rIdx, i, 'loss')}>I lost</button>
                           </div>
                         )}
                         {!isHost && w && (

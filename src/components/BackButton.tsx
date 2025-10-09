@@ -2,27 +2,34 @@
 'use client';
 
 import Link from 'next/link';
-import React from 'react';
 
-type Props = {
-  href?: string;
-  label?: string;
-  className?: string;
-};
+type Props = { href?: string; label?: string; className?: string };
 
 /**
- * Inline Back button (NOT fixed).
- * It won’t overlap your headers/inputs.
+ * Inline Back button that **cannot** overlap content.
+ * Uses position: static and resets any global fixed styles.
  */
 export default function BackButton({ href = '/', label = 'Back', className = '' }: Props) {
   return (
     <Link
       href={href}
-      className={
-        'inline-flex items-center gap-2 rounded-xl border border-white/15 px-3 py-2 text-sm ' +
-        'hover:bg-white/5 ' +
-        className
-      }
+      style={{
+        // hard reset in case globals had fixed/absolute
+        position: 'static',
+        inset: 'auto',
+        zIndex: 'auto',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 8,
+        padding: '8px 12px',
+        borderRadius: 12,
+        border: '1px solid rgba(255,255,255,0.15)',
+        background: 'transparent',
+        color: '#fff',
+        textDecoration: 'none',
+        touchAction: 'manipulation',
+      }}
+      className={className}
     >
       ← {label}
     </Link>
