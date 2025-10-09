@@ -1,5 +1,6 @@
 // src/app/list/[id]/page.tsx
 'use client';
+export const runtime = 'edge';
 
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
