@@ -43,10 +43,20 @@ export default function Home() {
           justifySelf: "center",
         }}
       >
-        <Link href="/create" style={btnPrimary}>➕ Create tournament</Link>
+        {/* 1) My tournaments */}
+        <Link href="/me" style={btnGhost}>🧑‍💼 My tournaments</Link>
+
+        {/* 2) My lists (scrolls to Lists section on /me if present) */}
+        <Link href="/me#lists" style={btnGhost}>📝 My lists</Link>
+
+        {/* 3) Create game (moved below My tournaments + renamed) */}
+        <Link href="/create" style={btnPrimary}>➕ Create game</Link>
+
+        {/* 4) Join with code */}
         <Link href="/join" style={btnGhost}>🔐 Join with code</Link>
+
+        {/* 5) Find nearby */}
         <Link href="/nearby" style={btnGhost}>📍 Find nearby</Link>
-        <Link href="/me" style={btnGhost}>🧑‍💼 My tournaments</Link> {/* 👈 NEW */}
 
         {/* PWA install helpers */}
         <div style={{ justifySelf: "center", marginTop: 6 }}>
@@ -55,7 +65,7 @@ export default function Home() {
         <IOSInstallTip />
 
         <p style={{ opacity: 0.8, textAlign: "center", marginTop: 4 }}>
-          Create brackets, manage queues, and send “you’re up next” alerts.
+          Create brackets and list games, manage queues, and send “you’re up next” alerts.
         </p>
       </section>
 
