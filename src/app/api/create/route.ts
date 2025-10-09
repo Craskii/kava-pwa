@@ -2,74 +2,45 @@
 export const runtime = "edge";
 
 import { NextResponse } from "next/server";
-import { getRequestContext } from "@cloudflare/next-on-pages";
+import { getEnv } from "../_kv";
 
-type KVListResult = { keys: { name: string }[]; cursor?: string; list_complete?: boolean };
-type KVNamespace = {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
-  delete(key: string): Promise<void>;
-  list(input?: { prefix?: string; limit?: number; cursor?: string }): Promise<KVListResult>;
-};
+type Body = { name: string; hostId: string };
 
-type Env = { KAVA_TOURNAMENTS: KVNamespace };
-
-type Player = { id: string; name: string };
-type Report = "win" | "loss" | undefined;
-type Match = { a?: string; b?: string; winner?: string; reports?: Record<string, Report> };
-type TournamentStatus = "setup" | "active" | "completed";
-type Tournament = {
-  id: string;
-  name: string;
-  code?: string;
-  hostId: string;
-  status: TournamentStatus;
-  createdAt: number | string;
-  players: Player[];
-  pending: Player[];
-  queue: string[];
-  rounds: Match[][];
-};
-
-type CreateBody = { name?: string; hostId?: string };
-
-function random4Digits(): string {
-  return Math.floor(1000 + Math.random() * 9000).toString();
-}
+function uid() { return Math.random().toString(36).slice(2, 9); }
 
 export async function POST(req: Request) {
-  const { env: rawEnv } = getRequestContext();
-  const env = rawEnv as unknown as Env;
+  const env = getEnv();
 
-  let bodyUnknown: unknown;
-  try {
-    bodyUnknown = await req.json();
-  } catch {
-    bodyUnknown = null;
+  const b = (await req.json().catch(() => null)) as Body | null;
+  if (!b?.name || !b?.hostId) {
+    return NextResponse.json({ error: "Missing name or hostId" }, { status: 400 });
   }
 
-  const body = (bodyUnknown && typeof bodyUnknown === "object" ? (bodyUnknown as CreateBody) : {}) ?? {};
-  const name = (body.name ?? "Untitled Tournament").toString();
-  const hostId = (body.hostId ?? crypto.randomUUID()).toString();
+  const id = uid();
+  const code = uid().toUpperCase();
+  const now = Date.now();
 
-  const id = crypto.randomUUID();
-  const code = random4Digits();
-
-  const tournament: Tournament = {
+  const tournament = {
     id,
+    name: b.name,
     code,
-    name,
-    hostId,
-    status: "setup",
-    createdAt: Date.now(),
-    players: [],
+    hostId: b.hostId,
+    status: "setup" as const,
+    createdAt: now,
+    updatedAt: now,
+    players: [{ id: b.hostId, name: "Host" }], // host joins bracket by default
     pending: [],
     queue: [],
     rounds: [],
   };
 
-  await env.KAVA_TOURNAMENTS.put(`code:${code}`, id);
   await env.KAVA_TOURNAMENTS.put(`t:${id}`, JSON.stringify(tournament));
+  await env.KAVA_TOURNAMENTS.put(`code:${code}`, id);
 
-  return NextResponse.json({ ok: true, id, code, tournament });
+  return new NextResponse(JSON.stringify({ id, code, tournament }), {
+    headers: {
+      "content-type": "application/json",
+      "x-t-version": String(tournament.updatedAt),
+    },
+  });
 }

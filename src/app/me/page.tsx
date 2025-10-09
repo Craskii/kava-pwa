@@ -1,6 +1,7 @@
+// src/app/me/page.tsx
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import BackButton from "../../components/BackButton";
 import {
@@ -10,6 +11,7 @@ import {
   deleteTournamentRemote,
   listTournamentsRemoteForUser,
 } from "../../lib/storage";
+import { startSmartPoll } from "../../lib/poll";
 
 type Me = { id: string; name: string } | null;
 
@@ -23,31 +25,43 @@ export default function MePage() {
   const [playing, setPlaying] = useState<Tournament[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const pollRef = useRef<{ stop: () => void } | null>(null);
 
-  const refresh = useCallback(async () => {
-    if (!me?.id) return;
+  async function refreshOnce(): Promise<number | null> {
+    if (!me?.id) return null;
     setErr(null);
     setLoading(true);
     try {
       const data = await listTournamentsRemoteForUser(me.id);
-      const sortByCreated = (a: Tournament, b: Tournament) =>
-        (Number(b.createdAt) || Date.parse(String(b.createdAt))) -
-        (Number(a.createdAt) || Date.parse(String(a.createdAt)));
+      const sortByCreated = (a: Tournament, b: Tournament) => (b.createdAt || 0) - (a.createdAt || 0);
       setHosting([...data.hosting].sort(sortByCreated));
       setPlaying([...data.playing].sort(sortByCreated));
+      return data.listVersion || 0;
     } catch (e) {
       console.error(e);
       setErr("Could not load tournaments.");
+      return null;
     } finally {
       setLoading(false);
     }
-  }, [me?.id]);
+  }
 
   useEffect(() => {
-    refresh();
-    const t = setInterval(refresh, 4000);
-    return () => clearInterval(t);
-  }, [refresh]);
+    pollRef.current?.stop?.();
+    if (!me?.id) return;
+    const poll = startSmartPoll(async () => {
+      const u = new URL(`/api/tournaments?userId=${encodeURIComponent(me.id)}`, window.location.origin);
+      const res = await fetch(u, { cache: "no-store" });
+      if (!res.ok) return null;
+      const json = await res.json();
+      const sortByCreated = (a: Tournament, b: Tournament) => (b.createdAt || 0) - (a.createdAt || 0);
+      setHosting([...json.hosting].sort(sortByCreated));
+      setPlaying([...json.playing].sort(sortByCreated));
+      return json.listVersion || 0;
+    });
+    pollRef.current = poll;
+    return () => poll.stop();
+  }, [me?.id]);
 
   async function leaveTournament(t: Tournament) {
     if (!me?.id) return;
@@ -58,28 +72,25 @@ export default function MePage() {
     latest.players = (latest.players || []).filter(p => p.id !== id);
     latest.pending = (latest.pending || []).filter(p => p.id !== id);
     latest.queue   = (latest.queue   || []).filter(pid => pid !== id);
-
     latest.rounds = (latest.rounds || []).map(round =>
       round.map(m => ({
         ...m,
         a: m.a === id ? undefined : m.a,
         b: m.b === id ? undefined : m.b,
         winner: m.winner === id ? undefined : m.winner,
-        reports: Object.fromEntries(
-          Object.entries(m.reports || {}).filter(([k]) => k !== id)
-        ),
+        reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== id)),
       }))
     );
 
     await saveTournamentRemote(latest);
-    refresh();
+    await refreshOnce();
   }
 
   async function deleteTournament(t: Tournament) {
     if (!me?.id || t.hostId !== me.id) return;
     if (!confirm(`Delete "${t.name}"? This cannot be undone.`)) return;
     await deleteTournamentRemote(t.id);
-    refresh();
+    await refreshOnce();
   }
 
   return (
@@ -93,7 +104,7 @@ export default function MePage() {
         <section style={card}>
           <div style={sectionHeader}>
             <h3 style={{ margin:0 }}>Hosting</h3>
-            <button style={miniBtn} onClick={refresh} disabled={loading}>
+            <button style={miniBtn} onClick={refreshOnce} disabled={loading}>
               {loading ? "Refreshing…" : "Refresh"}
             </button>
           </div>
@@ -121,7 +132,7 @@ export default function MePage() {
           {playing.length === 0 ? (
             <div style={muted}>You’re not in any tournaments yet.</div>
           ) : (
-            <div style={grid}>
+            <div style={grid}}>
               {playing.map(t => (
                 <div key={t.id} style={item}>
                   <div style={{ fontWeight:700 }}>{t.name}</div>

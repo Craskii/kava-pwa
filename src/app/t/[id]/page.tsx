@@ -1,132 +1,173 @@
 // src/app/t/[id]/page.tsx
-'use client';
-export const runtime = 'edge';
+"use client";
+export const runtime = "edge";
 
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import BackButton from "../../../components/BackButton";
 import {
-  getTournamentRemote, saveTournamentRemote, deleteTournamentRemote,
-  seedInitialRounds, submitReport, approvePending, declinePending,
+  getTournamentRemote,
+  saveTournamentRemote,
+  deleteTournamentRemote,
+  seedInitialRounds as seedInitial,
+  submitReport, approvePending, declinePending,
   insertLatePlayer, Tournament, uid, Match
 } from "../../../lib/storage";
+import { startSmartPoll } from "../../../lib/poll";
 
 export default function Lobby() {
   const { id } = useParams<{ id: string }>();
   const r = useRouter();
   const [t, setT] = useState<Tournament | null>(null);
+  const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
 
   const me = useMemo(() => {
-    if (typeof window === 'undefined') return null;
     try { return JSON.parse(localStorage.getItem("kava_me") || "null"); } catch { return null; }
   }, []);
 
-  // initial load + poll for changes so host/players see updates
+  // initial load + smart poll
   useEffect(() => {
-    let stop = false;
-    async function load() {
-      const data = await getTournamentRemote(id);
-      if (!stop) setT(data);
-    }
-    load();
-    const h = setInterval(load, 1500);
-    return () => { stop = true; clearInterval(h); };
+    if (!id) return;
+    pollRef.current?.stop();
+    const poll = startSmartPoll(async () => {
+      const res = await fetch(`/api/tournament/${id}`, { cache: "no-store" });
+      if (res.ok) {
+        const v = res.headers.get("x-t-version") || "";
+        const next = await res.json();
+        setT(next);
+        return v;
+      }
+      return null;
+    });
+    pollRef.current = poll;
+    return () => poll.stop();
   }, [id]);
 
   if (!t) return <main style={wrap}><BackButton /><p>Loading…</p></main>;
 
   const isHost = me?.id === t.hostId;
 
-  // ---------- safe updater (REMOTE) ----------
+  // ---------- safe updater that writes remote ----------
   async function update(mut: (x: Tournament) => void) {
-    setT(prev => {
-      if (!prev) return prev;
-      const copy: Tournament = {
-        ...prev,
-        players: [...prev.players],
-        pending: [...(prev.pending || [])],
-        queue: [...prev.queue],
-        rounds: prev.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
-      };
-      mut(copy);
-      // optimistic UI: set immediately
-      saveTournamentRemote(copy).catch(() => {}); // fire-and-forget; poll will reconcile
-      return copy;
-    });
+    const copy: Tournament = {
+      ...t,
+      players: [...t.players],
+      pending: [...(t.pending || [])],
+      queue: [...t.queue],
+      rounds: t.rounds.map((rr): Match[] =>
+        rr.map((m): Match => ({ ...m, reports: { ...(m.reports || {}) } }))
+      ),
+    };
+    mut(copy);
+    await saveTournamentRemote(copy);
+    setT(copy);
+    pollRef.current?.bump();
   }
 
-  // ---------- queue ----------
-  async function joinQueue() {
+  // ---------- queue helpers ----------
+  function joinQueue() {
     if (!me) return;
-    await update(x => { if (!x.queue.includes(me.id)) x.queue.push(me.id); });
+    update(x => { if (!x.queue.includes(me.id)) x.queue.push(me.id); });
   }
-  async function leaveQueue() {
+  function leaveQueue() {
     if (!me) return;
-    await update(x => { x.queue = x.queue.filter(pid => pid !== me.id); });
+    update(x => { x.queue = x.queue.filter(pid => pid !== me.id); });
   }
 
-  // ---------- leave/delete ----------
+  // ---------- leave ----------
   async function leaveTournament() {
     if (!me) return;
-    const cur = t; if (!cur) return;
+    const cur = t;
+    if (!cur) return;
+
     if (me.id === cur.hostId) {
       if (confirm("You're the host. Leave & delete this tournament?")) {
         await deleteTournamentRemote(cur.id);
-        r.push("/");
+        r.push("/me");
       }
       return;
     }
     await update(x => {
       x.players = x.players.filter(p => p.id !== me.id);
-      x.pending = x.pending.filter(p => p.id !== me.id);
-      x.queue = x.queue.filter(pid => pid !== me.id);
+      x.pending = (x.pending || []).filter(p => p.id !== me.id);
+      x.queue   = x.queue.filter(pid => pid !== me.id);
       x.rounds = x.rounds.map(round =>
         round.map(m => ({
           ...m,
           a: m.a === me.id ? undefined : m.a,
           b: m.b === me.id ? undefined : m.b,
           winner: m.winner === me.id ? undefined : m.winner,
-          reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== me.id)),
+          reports: Object.fromEntries(
+            Object.entries(m.reports || {}).filter(([k]) => k !== me.id)
+          ),
         }))
       );
     });
-    r.push("/");
+    r.push("/me");
   }
 
-  // ---------- round helpers ----------
+  // ---------- small local helper: advance to next round ----------
   function advanceFromRound(roundIdx: number) {
     update(x => {
       const curRound = x.rounds[roundIdx];
       const winners = curRound.map(m => m.winner);
       if (winners.some(w => !w)) return;
-      if (winners.length === 1 && winners[0]) { x.status = "completed"; return; }
+
+      if (winners.length === 1 && winners[0]) {
+        x.status = "completed";
+        return;
+      }
+
       const next: Match[] = [];
-      for (let i = 0; i < winners.length; i += 2) next.push({ a: winners[i], b: winners[i + 1], reports: {} });
-      if (x.rounds[roundIdx + 1]) x.rounds[roundIdx + 1] = next; else x.rounds.push(next);
+      for (let i = 0; i < winners.length; i += 2) {
+        next.push({ a: winners[i], b: winners[i + 1], reports: {} });
+      }
+
+      if (x.rounds[roundIdx + 1]) x.rounds[roundIdx + 1] = next;
+      else x.rounds.push(next);
     });
   }
 
+  // ---------- host override ----------
   function hostSetWinner(roundIdx: number, matchIdx: number, winnerId?: string) {
     update(x => {
       const m = x.rounds?.[roundIdx]?.[matchIdx];
       if (!m) return;
       m.winner = winnerId;
-      if (winnerId) advanceFromRound(roundIdx);
+      if (winnerId) {
+        const winners = x.rounds[roundIdx].map(mm => mm.winner);
+        if (winners.every(Boolean)) {
+          const last = x.rounds.length - 1 === roundIdx;
+          if (last) {
+            const winnersArr = x.rounds[roundIdx].map(mm => mm.winner);
+            if (winnersArr.length === 1) x.status = "completed";
+            else {
+              const next: Match[] = [];
+              for (let i = 0; i < winnersArr.length; i += 2) {
+                next.push({ a: winnersArr[i], b: winnersArr[i + 1], reports: {} });
+              }
+              x.rounds.push(next);
+            }
+          }
+        }
+      }
     });
   }
 
-  // ---------- start / approvals ----------
-  async function startTournament() { await update(seedInitialRounds); }
-  async function approve(pId: string) { await update(x => approvePending(x, pId)); }
-  async function decline(pId: string) { await update(x => declinePending(x, pId)); }
-
+  // ---------- start / approvals / test add ----------
+  function startTournament() { update(seedInitial); }
+  function approve(pId: string) { update(x => approvePending(x, pId)); }
+  function decline(pId: string) { update(x => declinePending(x, pId)); }
   function addTestPlayer() {
-    if (!t) return;
     const pid = uid();
     const p = { id: pid, name: `Guest ${t.players.length + (t.pending?.length || 0) + 1}` };
-    update(x => { if (x.status === "active") insertLatePlayer(x, p); else x.players.push(p); });
+    update(x => {
+      if (x.status === "active") insertLatePlayer(x, p);
+      else x.players.push(p);
+    });
   }
 
+  // ---------- self-report ----------
   function report(roundIdx: number, matchIdx: number, result: "win" | "loss") {
     if (!me) return;
     update(x => { submitReport(x, roundIdx, matchIdx, me.id, result); });
@@ -165,6 +206,7 @@ export default function Lobby() {
         {isHost && (
           <div style={card}>
             <h3 style={{ marginTop:0 }}>Host Controls</h3>
+
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:10 }}>
               <input
                 defaultValue={t.name}
@@ -176,9 +218,15 @@ export default function Lobby() {
                 <button style={btn} onClick={startTournament}>Start (randomize bracket)</button>
               )}
               {t.status !== "completed" && (
-                <button style={btnGhost} onClick={async ()=>{ if (confirm("Delete tournament?")) { await deleteTournamentRemote(t.id); r.push("/"); } }}>
-                  Delete
-                </button>
+                <button
+                  style={btnGhost}
+                  onClick={async ()=>{
+                    if (confirm("Delete tournament? This cannot be undone.")) {
+                      await deleteTournamentRemote(t.id);
+                      r.push("/me");
+                    }
+                  }}
+                >Delete</button>
               )}
               <button style={btnGhost} onClick={addTestPlayer}>+ Add test player</button>
             </div>
@@ -261,6 +309,7 @@ export default function Lobby() {
   );
 }
 
+/* --------- styles --------- */
 const wrap: React.CSSProperties = { minHeight:"100vh", background:"#0b0b0b", color:"#fff", fontFamily:"system-ui", padding:24, position:"relative" };
 const card: React.CSSProperties = { background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:14, padding:14 };
 const btn: React.CSSProperties = { padding:"10px 14px", borderRadius:10, border:"none", background:"#0ea5e9", color:"#fff", fontWeight:700, cursor:"pointer" };

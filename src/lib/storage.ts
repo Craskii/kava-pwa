@@ -18,8 +18,8 @@ export type Tournament = {
   code?: string;
   hostId: string;
   status: TournamentStatus;
-  // Accept number or ISO string; the UI sorts either
-  createdAt: number | string;
+  createdAt: number;      // epoch ms
+  updatedAt: number;      // epoch ms (drives versioning)
   players: Player[];
   pending: Player[];
   queue: string[];
@@ -28,7 +28,8 @@ export type Tournament = {
 
 export const uid = () => Math.random().toString(36).slice(2, 9);
 
-// ---------- fetch helper (no-store) ----------
+// ---- Remote helpers (Cloudflare API under /api/**) ----
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     ...init,
@@ -43,23 +44,16 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-// ---------- remote CRUD ----------
 export async function createTournamentRemote(payload: {
   name: string;
   hostId: string;
 }): Promise<{ id: string; code: string; tournament: Tournament }> {
-  return api(`/api/create`, {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
+  return api(`/api/create`, { method: "POST", body: JSON.stringify(payload) });
 }
 
 export async function getTournamentRemote(id: string): Promise<Tournament | null> {
-  try {
-    return await api<Tournament>(`/api/tournament/${encodeURIComponent(id)}`);
-  } catch {
-    return null;
-  }
+  try { return await api<Tournament>(`/api/tournament/${encodeURIComponent(id)}`); }
+  catch { return null; }
 }
 
 export async function saveTournamentRemote(t: Tournament): Promise<void> {
@@ -87,21 +81,16 @@ export async function isCodeInUseRemote(code: string): Promise<boolean> {
   return res.status === 200;
 }
 
-export async function listTournamentsRemote(hostId?: string): Promise<Tournament[]> {
-  const qs = hostId ? `?hostId=${encodeURIComponent(hostId)}` : "";
-  return await api<Tournament[]>(`/api/tournaments${qs}`);
+export async function listTournamentsRemoteForUser(userId: string): Promise<{
+  hosting: Tournament[];
+  playing: Tournament[];
+  listVersion: number;
+}> {
+  return api(`/api/tournaments?userId=${encodeURIComponent(userId)}`);
 }
 
-// NEW: return hosting + playing for a specific user id
-export async function listTournamentsRemoteForUser(
-  userId: string
-): Promise<{ hosting: Tournament[]; playing: Tournament[] }> {
-  return await api<{ hosting: Tournament[]; playing: Tournament[] }>(
-    `/api/tournaments?userId=${encodeURIComponent(userId)}`
-  );
-}
+// ---- Bracket helpers (call saveTournamentRemote after mutating) ----
 
-// ---------- bracket helpers (always save to remote) ----------
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
