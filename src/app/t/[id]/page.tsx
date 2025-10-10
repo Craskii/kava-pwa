@@ -16,6 +16,7 @@ import {
   Tournament,
   uid,
   Match,
+  getTournamentRemote,
 } from '../../../lib/storage';
 import { startSmartPoll } from '../../../lib/poll';
 
@@ -23,7 +24,7 @@ export default function Lobby() {
   const { id } = useParams<{ id: string }>();
   const r = useRouter();
   const [t, setT] = useState<Tournament | null>(null);
-  const [busy, setBusy] = useState(false); // global small lock to avoid double taps
+  const [busy, setBusy] = useState(false);
   const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
 
   const me = useMemo(() => {
@@ -31,7 +32,6 @@ export default function Lobby() {
     catch { return null; }
   }, []);
   useEffect(() => {
-    // bootstrap identity if missing
     if (!me) {
       const m = { id: uid(), name: 'Player' };
       localStorage.setItem('kava_me', JSON.stringify(m));
@@ -56,7 +56,7 @@ export default function Lobby() {
     return () => poll.stop();
   }, [id]);
 
-  // If my name in the tournament diverges from local “me”, fix it once
+  // keep my name in sync on server once
   useEffect(() => {
     if (!t || !me) return;
     const idx = t.players.findIndex(p => p.id === me.id);
@@ -73,7 +73,7 @@ export default function Lobby() {
           const saved = await saveTournamentRemote(copy);
           setT(saved);
           pollRef.current?.bump();
-        } catch (e) { console.error(e); }
+        } catch (e) { /* ignore */ }
         finally { setBusy(false); }
       })();
     }
@@ -92,11 +92,34 @@ export default function Lobby() {
 
   const isHost = me?.id === t.hostId;
 
-  // ---------- safe updater that writes remote ----------
+  // ---------- save with one retry on version conflict ----------
+  async function saveWithRetry(draft: Tournament) {
+    try {
+      const saved = await saveTournamentRemote(draft);
+      setT(saved);
+      pollRef.current?.bump();
+      return saved;
+    } catch (e) {
+      // refetch latest, re-apply, try once more
+      const fresh = await getTournamentRemote(t.id);
+      if (!fresh) throw e;
+      setT(fresh);
+      const again: Tournament = {
+        ...fresh,
+        players: [...fresh.players],
+        pending: [...fresh.pending],
+        rounds: fresh.rounds.map(r => r.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
+      };
+      // caller will pass a mutator; we can’t here, so the caller (update()) re-applies mutate
+      throw e; // we signal update() to retry after refetch
+    }
+  }
+
+  // ---------- safe updater that writes remote with retry ----------
   async function update(mut: (x: Tournament) => void) {
     if (busy) return;
     setBusy(true);
-    const copy: Tournament = {
+    const base: Tournament = {
       ...t,
       players: [...t.players],
       pending: [...(t.pending || [])],
@@ -104,16 +127,37 @@ export default function Lobby() {
         rr.map((m): Match => ({ ...m, reports: { ...(m.reports || {}) } }))
       ),
     };
-    mut(copy);
+
+    // 1st attempt
+    const first = structuredClone(base);
+    mut(first);
     try {
-      const saved = await saveTournamentRemote(copy);
+      const saved = await saveTournamentRemote(first);
       setT(saved);
       pollRef.current?.bump();
-    } catch (e) {
-      console.error(e);
-      alert('Could not save changes.');
-    } finally {
       setBusy(false);
+      return;
+    } catch (e) {
+      // retry after refetch
+      try {
+        const latest = await getTournamentRemote(t.id);
+        if (!latest) throw e;
+        const second: Tournament = {
+          ...latest,
+          players: [...latest.players],
+          pending: [...(latest.pending || [])],
+          rounds: latest.rounds.map(r => r.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
+        };
+        mut(second);
+        const saved = await saveTournamentRemote(second);
+        setT(saved);
+        pollRef.current?.bump();
+      } catch (ee) {
+        console.error(ee);
+        alert('Could not save changes.');
+      } finally {
+        setBusy(false);
+      }
     }
   }
 
@@ -409,78 +453,16 @@ export default function Lobby() {
 }
 
 /* --------- styles --------- */
-const wrap: React.CSSProperties = {
-  minHeight: '100vh',
-  background: '#0b0b0b',
-  color: '#fff',
-  fontFamily: 'system-ui',
-  padding: 24,
-};
-
-const container: React.CSSProperties = {
-  width: '100%',
-  maxWidth: 1100,
-  margin: '0 auto',
-  display: 'grid',
-  gap: 18,
-};
-
-const header: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  gap: 12,
-  alignItems: 'center',
-};
-
+const wrap: React.CSSProperties = { minHeight: '100vh', background: '#0b0b0b', color: '#fff', fontFamily: 'system-ui', padding: 24 };
+const container: React.CSSProperties = { width: '100%', maxWidth: 1100, margin: '0 auto', display: 'grid', gap: 18 };
+const header: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' };
 const h1: React.CSSProperties = { margin: '8px 0 4px', fontSize: 24 };
 const subhead: React.CSSProperties = { opacity: 0.75, fontSize: 14 };
-const champ: React.CSSProperties = {
-  marginTop: 8,
-  padding: '10px 12px',
-  borderRadius: 10,
-  background: '#14532d',
-  border: '1px solid #166534',
-};
-
-const card: React.CSSProperties = {
-  background: 'rgba(255,255,255,0.05)',
-  border: '1px solid rgba(255,255,255,0.1)',
-  borderRadius: 14,
-  padding: 14,
-};
-const btn: React.CSSProperties = {
-  padding: '10px 14px',
-  borderRadius: 10,
-  border: 'none',
-  background: '#0ea5e9',
-  color: '#fff',
-  fontWeight: 700,
-  cursor: 'pointer',
-};
-const btnGhost: React.CSSProperties = {
-  padding: '10px 14px',
-  borderRadius: 10,
-  border: '1px solid rgba(255,255,255,0.25)',
-  background: 'transparent',
-  color: '#fff',
-  cursor: 'pointer',
-};
+const champ: React.CSSProperties = { marginTop: 8, padding: '10px 12px', borderRadius: 10, background: '#14532d', border: '1px solid #166534' };
+const card: React.CSSProperties = { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 14, padding: 14 };
+const btn: React.CSSProperties = { padding: '10px 14px', borderRadius: 10, border: 'none', background: '#0ea5e9', color: '#fff', fontWeight: 700, cursor: 'pointer' };
+const btnGhost: React.CSSProperties = { padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.25)', background: 'transparent', color: '#fff', cursor: 'pointer' };
 const btnDanger: React.CSSProperties = { ...btnGhost, borderColor: '#ff6b6b', color: '#ff6b6b' };
-const btnMini: React.CSSProperties = {
-  padding: '6px 10px',
-  borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.25)',
-  background: 'transparent',
-  color: '#fff',
-  cursor: 'pointer',
-  fontSize: 12,
-};
+const btnMini: React.CSSProperties = { padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.25)', background: 'transparent', color: '#fff', cursor: 'pointer', fontSize: 12 };
 const btnActive: React.CSSProperties = { ...btnMini, background: '#0ea5e9', border: 'none' };
-const input: React.CSSProperties = {
-  width: '100%',
-  padding: '12px 14px',
-  borderRadius: 10,
-  border: '1px solid #333',
-  background: '#111',
-  color: '#fff',
-};
+const input: React.CSSProperties = { width: '100%', padding: '12px 14px', borderRadius: 10, border: '1px solid #333', background: '#111', color: '#fff' };
