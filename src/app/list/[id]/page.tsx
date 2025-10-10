@@ -1,3 +1,4 @@
+// src/app/list/[id]/page.tsx
 'use client';
 export const runtime = 'edge';
 
@@ -25,20 +26,19 @@ export default function ListLobby() {
   useEffect(() => { localStorage.setItem('kava_me', JSON.stringify(me)); }, [me]);
 
   async function loadOnce() { if (!id) return; const next = await getListRemote(id); setG(next); }
-  useEffect(() => { loadOnce(); clearInterval(pollRef.current); pollRef.current=setInterval(loadOnce, 1000); return ()=>clearInterval(pollRef.current); }, [id]);
+  useEffect(() => { loadOnce(); clearInterval(pollRef.current); pollRef.current = setInterval(loadOnce, 1000); return () => clearInterval(pollRef.current); }, [id]);
 
   const iAmHost = g && me?.id === g.hostId;
 
   async function onCopy(){ if (!g?.code) return; await navigator.clipboard.writeText(g.code); alert('Code copied!'); }
 
-  // *** CHANGE: Add player -> join queue immediately ***
   async function onAddPlayerManual() {
     if (!g || busy) return;
     const nm = nameField.trim(); if (!nm) return;
     setBusy(true);
     try {
       const p: Player = { id: uid(), name: nm };
-      const updated = await listJoin(g, p);   // <— queues and auto-seats if free
+      const updated = await listJoin(g, p);   // queues + auto-seats
       setG({ ...updated });
       setNameField('');
     } catch { alert('Could not add player.'); }
@@ -58,6 +58,9 @@ export default function ListLobby() {
   const seated = myTableIndex >= 0;
   const queued = g.queue.includes(me.id);
 
+  const oneActive = g.tables.length === 1;
+  const twoActive = g.tables.length >= 2;
+
   return (
     <main style={wrap}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
@@ -71,7 +74,7 @@ export default function ListLobby() {
       <header style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginTop:6}}>
         <div>
           <h1 style={{ margin:'8px 0 4px' }}>
-            <input defaultValue={g.name} onBlur={(e)=>{/* keep inline name edit simple */}} style={nameInput} disabled={busy}/>
+            <input defaultValue={g.name} onBlur={()=>{}} style={nameInput} disabled={busy}/>
           </h1>
           <div style={{ opacity:.8, fontSize:14, display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
             Private code: <b>{g.code || '—'}</b> {g.code && <button style={chipBtn} onClick={onCopy}>Copy</button>} • {g.players.length} {g.players.length===1?'player':'players'}
@@ -90,13 +93,13 @@ export default function ListLobby() {
         <i> “I lost”</i>, the next person in the queue sits at whichever table frees up first.
       </section>
 
-      {iAmHost && (
+      {g.hostId === me.id && (
         <section style={card}>
           <h3 style={{marginTop:0}}>Host controls</h3>
 
           <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
-            <button style={btn} onClick={()=>onTables(1)} disabled={busy}>1 Table</button>
-            <button style={btnGhost} onClick={()=>onTables(2)} disabled={busy}>2 Tables</button>
+            <button style={oneActive ? btnActive : btn} onClick={()=>onTables(1)} disabled={busy}>1 Table</button>
+            <button style={twoActive ? btnActive : btnGhost} onClick={()=>onTables(2)} disabled={busy}>2 Tables</button>
           </div>
 
           <div style={{display:'flex',gap:8,flexWrap:'wrap', marginBottom:12}}>
@@ -165,6 +168,7 @@ const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:
 const pill: React.CSSProperties = { padding:'6px 10px', borderRadius:999, background:'rgba(16,185,129,.2)', border:'1px solid rgba(16,185,129,.35)', fontSize:12 };
 const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
 const btnGhost: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer' };
+const btnActive: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
 const btnGhostSm: React.CSSProperties = { padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontWeight:600 };
 const btnMini: React.CSSProperties = { padding:'6px 10px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontSize:12 };
 const chipBtn: React.CSSProperties = { padding:'4px 8px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontSize:12 };
