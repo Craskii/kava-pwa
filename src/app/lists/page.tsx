@@ -1,3 +1,4 @@
+// src/app/lists/page.tsx
 'use client';
 export const runtime = 'edge';
 
@@ -23,14 +24,18 @@ export default function MyListsPage() {
   const [playing, setPlaying] = useState<ListGame[]>([]);
   const [loading, setLoading] = useState(true);
   const [live, setLive] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!me?.id) return;
     setLoading(true);
+    setErr(null);
     try {
       const res = await listListsRemoteForUser(me.id);
-      setHosting(res.hosting.sort((a,b)=>b.createdAt-a.createdAt));
-      setPlaying(res.playing.sort((a,b)=>b.createdAt-a.createdAt));
+      setHosting([...res.hosting].sort((a,b)=>b.createdAt-a.createdAt));
+      setPlaying([...res.playing].sort((a,b)=>b.createdAt-a.createdAt));
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to load lists');
     } finally { setLoading(false); }
   }, [me?.id]);
 
@@ -41,6 +46,20 @@ export default function MyListsPage() {
     if (live) t = setInterval(() => !stop && load(), 1000);
     return () => { stop = true; if (t) clearInterval(t); };
   }, [live, load]);
+
+  async function deleteList(id: string) {
+    if (!confirm('Delete this list and remove all players?')) return;
+    const prev = hosting;
+    setHosting(h => h.filter(x => x.id !== id)); // optimistic
+    try {
+      const res = await fetch(`/api/list/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
+      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+    } catch (e:any) {
+      alert(e?.message || 'Could not delete list.');
+      setHosting(prev); // rollback
+    }
+  }
 
   return (
     <main style={wrap}>
@@ -55,6 +74,8 @@ export default function MyListsPage() {
 
       <h1 style={{ margin: '8px 0 12px' }}>My lists</h1>
 
+      {err && <div style={error}>{err}</div>}
+
       <section style={card}>
         <h3 style={{ marginTop: 0 }}>Hosting</h3>
         {loading && hosting.length === 0 ? <div style={muted}>Loading…</div> :
@@ -64,9 +85,14 @@ export default function MyListsPage() {
              <li key={g.id} style={tileOuter}>
                <div style={tileInner}>
                  <div style={{ fontWeight:700, marginBottom:4 }}>{g.name}</div>
-                 <div style={{ opacity:.8, fontSize:12 }}>Code: <b>{g.code || '—'}</b> • {g.players.length} {g.players.length===1?'player':'players'}</div>
+                 <div style={{ opacity:.8, fontSize:12 }}>
+                   Code: <b>{g.code || '—'}</b> • {g.players.length} {g.players.length===1?'player':'players'}
+                 </div>
                </div>
-               <a href={`/list/${g.id}`} style={btn}>Open</a>
+               <div style={{display:'flex',gap:8}}>
+                 <a href={`/list/${g.id}`} style={btn}>Open</a>
+                 <button onClick={() => deleteList(g.id)} style={btnDanger}>Delete</button>
+               </div>
              </li>
            ))}
          </ul>}
@@ -81,7 +107,9 @@ export default function MyListsPage() {
              <li key={g.id} style={tileOuter}>
                <div style={tileInner}>
                  <div style={{ fontWeight:700, marginBottom:4 }}>{g.name}</div>
-                 <div style={{ opacity:.8, fontSize:12 }}>Code: <b>{g.code || '—'}</b> • {g.players.length} {g.players.length===1?'player':'players'}</div>
+                 <div style={{ opacity:.8, fontSize:12 }}>
+                   Code: <b>{g.code || '—'}</b> • {g.players.length} {g.players.length===1?'player':'players'}
+                 </div>
                </div>
                <a href={`/list/${g.id}`} style={btn}>Open</a>
              </li>
@@ -100,6 +128,8 @@ const list: React.CSSProperties = { listStyle:'none', padding:0, margin:0, displ
 const tileOuter: React.CSSProperties = { display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, padding:'12px', background:'#111', borderRadius:12, border:'1px solid rgba(255,255,255,0.12)' };
 const tileInner: React.CSSProperties = { minWidth:0 };
 const pill: React.CSSProperties = { padding:'6px 10px', borderRadius:999, background:'rgba(16,185,129,.2)', border:'1px solid rgba(16,185,129,.35)', fontSize:12 };
-const btn: React.CSSProperties = { padding:'8px 12px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, textDecoration:'none' };
+const btn: React.CSSProperties = { padding:'8px 12px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, textDecoration:'none', cursor:'pointer' };
 const btnSm: React.CSSProperties = { ...btn, padding:'6px 10px', fontWeight:600 };
-const btnGhostSm: React.CSSProperties = { padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', fontWeight:600 };
+const btnGhostSm: React.CSSProperties = { padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', fontWeight:600, cursor:'pointer' };
+const btnDanger: React.CSSProperties = { padding:'8px 12px', borderRadius:10, background:'transparent', color:'#ff6b6b', border:'1px solid #ff6b6b', fontWeight:700, cursor:'pointer' };
+const error: React.CSSProperties = { background:'#7f1d1d', border:'1px solid #b91c1c', padding:10, borderRadius:8 };

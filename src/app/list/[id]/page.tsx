@@ -4,14 +4,12 @@ export const runtime = 'edge';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
+import AlertsToggle from '../../../components/AlertsToggle';
+import { useQueueAlerts } from '../../../lib/alerts';
 import {
   getListRemote, listJoin, listLeave, listILost, listSetTables,
   ListGame, Player, uid
 } from '../../../lib/storage';
-
-// 🔔 Alerts
-import AlertsToggle from '@/components/AlertsToggle';
-import { useQueueAlerts } from '@/hooks/useQueueAlerts';
 
 export default function ListLobby() {
   const [g, setG] = useState<ListGame | null>(null);
@@ -29,15 +27,29 @@ export default function ListLobby() {
   }, []);
   useEffect(() => { localStorage.setItem('kava_me', JSON.stringify(me)); }, [me]);
 
-  // 🔔 Alerts for lists: sound + banner (seated => match_ready, queue #1 => up_next)
+  // 🔔 Mount alerts for this list
   useQueueAlerts({
-  listId: id,
-  upNextMessage: "You're up!",
-  matchReadyMessage: () => "You're up!" // <-- fires exactly when you're seated
-});
+    listId: id,
+    upNextMessage: "You're up!",
+    matchReadyMessage: () => "You're up!"
+  });
 
-  async function loadOnce() { if (!id) return; const next = await getListRemote(id); setG(next); }
-  useEffect(() => { loadOnce(); clearInterval(pollRef.current); pollRef.current = setInterval(loadOnce, 1000); return () => clearInterval(pollRef.current); }, [id]);
+  async function loadOnce() {
+    if (!id) return;
+    const next = await getListRemote(id);
+    setG(next);
+  }
+  useEffect(() => {
+    loadOnce();
+    clearInterval(pollRef.current);
+    pollRef.current = setInterval(loadOnce, 1000);
+    return () => clearInterval(pollRef.current);
+  }, [id]);
+
+  // helper to nudge the alerts hook immediately after any change
+  function bumpAlerts() {
+    try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+  }
 
   const iAmHost = g && me?.id === g.hostId;
 
@@ -52,7 +64,7 @@ export default function ListLobby() {
       const updated = await listJoin(g, p);   // queues + auto-seats
       setG({ ...updated });
       setNameField('');
-      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+      bumpAlerts();
     } catch { alert('Could not add player.'); }
     finally { setBusy(false); }
   }
@@ -63,40 +75,44 @@ export default function ListLobby() {
     try {
       const updated = await listJoin(g, me);
       setG({ ...updated });
-      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+      bumpAlerts();
     } catch { alert('Could not join.'); }
     finally { setBusy(false); }
   }
+
   async function onRemovePlayer(id: string){
     if (!g || busy) return;
     setBusy(true);
     try {
       const updated = await listLeave(g, id);
       setG({ ...updated });
-      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+      bumpAlerts();
     } catch { alert('Could not remove.'); }
     finally { setBusy(false); }
   }
+
   async function onJoinQueue(){
     if (!g || busy) return;
     setBusy(true);
     try {
       const updated = await listJoin(g, me);
       setG({ ...updated });
-      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+      bumpAlerts();
     } catch { alert('Could not join queue.'); }
     finally { setBusy(false); }
   }
+
   async function onLeaveQueue(){
     if (!g || busy) return;
     setBusy(true);
     try {
       const updated = await listLeave(g, me.id);
       setG({ ...updated });
-      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+      bumpAlerts();
     } catch { alert('Could not leave.'); }
     finally { setBusy(false); }
   }
+
   async function onILost(){
     if (!g || busy) return;
     const idx = g.tables.findIndex(t=>t.a===me.id || t.b===me.id);
@@ -106,17 +122,18 @@ export default function ListLobby() {
       const updated = await listILost(g, idx, me.id);
       setG({ ...updated });
       alert("It's ok — join again by pressing “Join queue”.");
-      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+      bumpAlerts();
     } catch { alert('Could not submit result.'); }
     finally { setBusy(false); }
   }
+
   async function onTables(count:1|2){
     if (!g || busy) return;
     setBusy(true);
     try {
       const updated = await listSetTables(g,count);
       setG({ ...updated });
-      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+      bumpAlerts();
     } catch { alert('Could not update tables.'); }
     finally { setBusy(false); }
   }
@@ -136,6 +153,7 @@ export default function ListLobby() {
         <BackButton href="/lists" />
         <div style={{display:'flex',alignItems:'center',gap:8}}>
           <span style={pill}>Live</span>
+          <AlertsToggle />
           <button style={btnGhostSm} onClick={()=>loadOnce()}>Refresh</button>
         </div>
       </div>
@@ -150,9 +168,7 @@ export default function ListLobby() {
           </div>
         </div>
 
-        <div style={{display:'flex',gap:8, alignItems:'center'}}>
-          {/* 🔔 Alerts (toggle + test buttons) */}
-          <AlertsToggle />
+        <div style={{display:'flex',gap:8}}>
           {!seated && !queued && <button style={btn} onClick={onJoinQueue} disabled={busy}>Join queue</button>}
           {queued && <button style={btnGhost} onClick={onLeaveQueue} disabled={busy}>Leave queue</button>}
           {seated && <button style={btnGhost} onClick={onILost} disabled={busy}>I lost</button>}
