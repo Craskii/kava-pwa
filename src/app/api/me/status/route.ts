@@ -1,8 +1,12 @@
+// src/app/api/me/status/route.ts
+export const runtime = 'edge';
+export const dynamic = 'force-dynamic';
+
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(req: NextRequest) {
   try {
-    const url = new URL(req.url);
+    const url = req.nextUrl;
     const userId = url.searchParams.get("userId") || "";
     const tournamentId = url.searchParams.get("tournamentId");
 
@@ -22,14 +26,15 @@ export async function GET(req: NextRequest) {
     const status = computeStatusFromTournament(t, userId);
     return NextResponse.json(status, { status: 200 });
   } catch {
+    // Be permissive; alerts will just back off on failures
     return NextResponse.json({ phase: "idle" }, { status: 200 });
   }
 }
 
 /* ---------- helpers using your existing endpoints ---------- */
 function baseUrl(req: NextRequest): string {
-  const u = new URL(req.url);
-  return `${u.protocol}//${u.host}`;
+  // Works on Edge (Cloudflare) and locally
+  return req.nextUrl.origin;
 }
 
 async function fetchMine(req: NextRequest, userId: string): Promise<{ hosting: any[]; playing: any[] }> {
@@ -37,6 +42,7 @@ async function fetchMine(req: NextRequest, userId: string): Promise<{ hosting: a
   if (!res.ok) return { hosting: [], playing: [] };
   return res.json();
 }
+
 async function fetchTournament(req: NextRequest, tournamentId: string): Promise<any> {
   const res = await fetch(`${baseUrl(req)}/api/tournament/${encodeURIComponent(tournamentId)}`, { cache: "no-store" });
   if (!res.ok) return {};
@@ -56,10 +62,9 @@ function computeStatusFromTournament(t: any, userId: string): {
 } {
   if (!t) return { phase: "idle" };
 
-  // Try “tables”, “matches”, “queue/waitlist/line”, “players”
   const idOf = (p: any) => (typeof p === "string" ? p : p?.id || p?.playerId || p?.uid);
 
-  // 1) On table?
+  // 1) On a table?
   const tables = Array.isArray(t.tables) ? t.tables : [];
   for (const tb of tables) {
     const tableNum = tb?.number ?? tb?.id ?? tb?.tableNumber ?? null;
@@ -72,7 +77,7 @@ function computeStatusFromTournament(t: any, userId: string): {
     }
   }
 
-  // 2) Bracket match?
+  // 2) Assigned match?
   if (Array.isArray(t.matches)) {
     const mine = t.matches.find((m: any) => Array.isArray(m?.players) && m.players.some((p: any) => idOf(p) === userId));
     if (mine) {
@@ -101,7 +106,7 @@ function computeStatusFromTournament(t: any, userId: string): {
     }
   }
 
-  // 4) Fallback if they’re in players
+  // 4) Fallback: in players list => queued
   const players = Array.isArray(t.players) ? t.players : [];
   if (players.some((p: any) => idOf(p) === userId)) return { phase: "queued" };
 
