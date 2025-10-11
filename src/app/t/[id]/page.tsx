@@ -74,7 +74,12 @@ export default function Lobby() {
   }, [me]);
 
   // 🔔 Alerts: tournament-aware (fires when your match becomes the top-most active match)
-  useQueueAlerts({ tournamentId: id, upNextMessage: "hey you're up next — good luck! :)" });
+  useQueueAlerts({
+  listId: id,
+  upNextMessage: "You're up!",
+  matchReadyMessage: () => "You're up!" // <-- fires exactly when you're seated
+});
+
 
   // load + smart poll
   useEffect(() => {

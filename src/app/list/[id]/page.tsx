@@ -30,7 +30,11 @@ export default function ListLobby() {
   useEffect(() => { localStorage.setItem('kava_me', JSON.stringify(me)); }, [me]);
 
   // 🔔 Alerts for lists: sound + banner (seated => match_ready, queue #1 => up_next)
-  useQueueAlerts({ listId: id, upNextMessage: "hey you're up next — good luck! :)" });
+  useQueueAlerts({
+  listId: id,
+  upNextMessage: "You're up!",
+  matchReadyMessage: () => "You're up!" // <-- fires exactly when you're seated
+});
 
   async function loadOnce() { if (!id) return; const next = await getListRemote(id); setG(next); }
   useEffect(() => { loadOnce(); clearInterval(pollRef.current); pollRef.current = setInterval(loadOnce, 1000); return () => clearInterval(pollRef.current); }, [id]);
