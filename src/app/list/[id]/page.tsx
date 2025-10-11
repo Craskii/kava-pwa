@@ -9,6 +9,10 @@ import {
   ListGame, Player, uid
 } from '../../../lib/storage';
 
+// 🔔 NEW
+import AlertsToggle from '@/components/AlertsToggle';
+import { useQueueAlerts } from '@/hooks/useQueueAlerts';
+
 export default function ListLobby() {
   const [g, setG] = useState<ListGame | null>(null);
   const [busy, setBusy] = useState(false);
@@ -24,6 +28,9 @@ export default function ListLobby() {
     catch { return { id: uid(), name: 'Player' }; }
   }, []);
   useEffect(() => { localStorage.setItem('kava_me', JSON.stringify(me)); }, [me]);
+
+  // 🔔 Alerts for lists: sound + banner with friendly message
+  useQueueAlerts({ listId: id, upNextMessage: "hey you're up next — good luck! :)" });
 
   async function loadOnce() { if (!id) return; const next = await getListRemote(id); setG(next); }
   useEffect(() => { loadOnce(); clearInterval(pollRef.current); pollRef.current = setInterval(loadOnce, 1000); return () => clearInterval(pollRef.current); }, [id]);
@@ -81,7 +88,9 @@ export default function ListLobby() {
           </div>
         </div>
 
-        <div style={{display:'flex',gap:8}}>
+        <div style={{display:'flex',gap:8, alignItems:'center'}}>
+          {/* 🔔 NEW: toggle + tests */}
+          <AlertsToggle />
           {!seated && !queued && <button style={btn} onClick={onJoinQueue} disabled={busy}>Join queue</button>}
           {queued && <button style={btnGhost} onClick={onLeaveQueue} disabled={busy}>Leave queue</button>}
           {seated && <button style={btnGhost} onClick={onILost} disabled={busy}>I lost</button>}
