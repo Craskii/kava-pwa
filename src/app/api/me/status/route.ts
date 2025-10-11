@@ -24,7 +24,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(status, { status: 200 });
     }
 
-    // Optional fallback: look at user's latest tournament
+    // Optional fallback: latest tournament the user is in/hosting
     const mineT = await fetchMineTournaments(req, userId);
     const latestT = pickLatest([...mineT.playing, ...mineT.hosting]);
     if (latestT) {
@@ -62,82 +62,64 @@ function pickLatest(list: any[]): any | null {
   return [...list].sort((a, b) => (Number(b?.createdAt) || 0) - (Number(a?.createdAt) || 0))[0];
 }
 
-/* ---------- ID normalization ---------- */
+/* ---------- normalize various id shapes ---------- */
 const norm = (v: any) => (typeof v === "string" ? v : v?.id || v?.playerId || v?.uid || null);
 
-/* ---------- TOURNAMENT: top-most active match => UP_NEXT ---------- */
-function computeStatusFromTournament(t: any, userId: string): {
-  phase: "idle" | "queued" | "up_next" | "match_ready",
-  position?: number | null,
-  tableNumber?: number | null,
-  bracketRoundName?: string | null,
-  sig?: string
-} {
-  if (!t) return { phase: "idle" };
+/* ---------- TOURNAMENTS: top-most undecided match alerts ---------- */
+function computeStatusFromTournament(t: any, userId: string) {
+  if (!t) return { phase: "idle" as const, sig: "idle" };
 
-  // 0) Respect tables first (if you seat players onto tables)
+  // Respect tables first (if present)
   const tables = Array.isArray(t.tables) ? t.tables : [];
   for (const tb of tables) {
     const tableNum = tb?.number ?? tb?.id ?? tb?.tableNumber ?? null;
     const current =
       Array.isArray(tb?.players) ? tb.players.map(norm) :
       Array.isArray(tb?.currentPlayers) ? tb.currentPlayers.map(norm) :
-      Array.isArray(tb?.currentPlayerIds) ? tb.currentPlayerIds.map(norm) :
-      [];
+      Array.isArray(tb?.currentPlayerIds) ? tb.currentPlayerIds.map(norm) : [];
     if (current.some((p: any) => p === userId)) {
-      return {
-        phase: "match_ready",
-        tableNumber: Number(tableNum) || null,
-        bracketRoundName: tb?.roundName || t?.roundName || null,
-        sig: `T-${tableNum ?? 'x'}`,
-      };
+      const pairKey = current.join('-'); // changes whenever seating changes
+      return { phase: "match_ready" as const, tableNumber: Number(tableNum) || null, sig: `T-${tableNum ?? 'x'}-${pairKey}` };
     }
   }
 
-  // 1) Use bracket order (rounds/matches)
   const rounds: any[][] = Array.isArray(t.rounds) ? t.rounds : [];
-  if (!rounds.length) return { phase: "idle" };
+  if (!rounds.length) return { phase: "idle" as const, sig: "idle" };
 
   // current round = first with any undecided match
-  const currentRoundIdx = rounds.findIndex(r => Array.isArray(r) && r.some(m => !m?.winner));
-  if (currentRoundIdx === -1) return { phase: "idle" }; // tournament done
+  const rIdx = rounds.findIndex(r => Array.isArray(r) && r.some(m => !m?.winner));
+  if (rIdx === -1) return { phase: "idle" as const, sig: "done" };
 
-  const currentRound = rounds[currentRoundIdx];
-
-  // FIRST undecided match (top-most)
-  const firstUndecidedIndex = currentRound.findIndex(m => !m?.winner);
-  const cur = firstUndecidedIndex >= 0 ? currentRound[firstUndecidedIndex] : null;
-  const sig = `R${currentRoundIdx + 1}-M${firstUndecidedIndex + 1}`;
-
+  const round = rounds[rIdx];
+  const mIdx = round.findIndex(m => !m?.winner);
+  const cur = mIdx >= 0 ? round[mIdx] : null;
   const a = norm(cur?.a);
   const b = norm(cur?.b);
+  const sig = `R${rIdx + 1}-M${mIdx + 1}-${a ?? 'x'}-${b ?? 'x'}`; // changes per current match
 
   if (a === userId || b === userId) {
-    return { phase: "up_next", bracketRoundName: `Round ${currentRoundIdx + 1}`, sig };
+    return { phase: "up_next" as const, bracketRoundName: `Round ${rIdx + 1}`, sig };
   }
-
-  const inThisRoundLater = currentRound.some((m, idx) =>
-    idx > firstUndecidedIndex && (norm(m?.a) === userId || norm(m?.b) === userId)
-  );
-  if (inThisRoundLater) return { phase: "queued", sig };
-
-  return { phase: "idle", sig };
+  const later = round.some((m, i) => i > mIdx && (norm(m?.a) === userId || norm(m?.b) === userId));
+  if (later) return { phase: "queued" as const, sig };
+  return { phase: "idle" as const, sig };
 }
 
-/* ---------- LIST: seated => MATCH_READY, queue #1 => UP_NEXT ---------- */
+/* ---------- LISTS: seated => MATCH_READY, #1 in queue => UP_NEXT ---------- */
 function computeStatusFromList(l: any, userId: string) {
-  if (!l) return { phase: "idle" as const };
+  if (!l) return { phase: "idle" as const, sig: "idle" };
 
-  // seated?
   const tables = Array.isArray(l.tables) ? l.tables : [];
   for (let i = 0; i < tables.length; i++) {
     const tb = tables[i];
-    if (norm(tb?.a) === userId || norm(tb?.b) === userId) {
-      return { phase: "match_ready" as const, tableNumber: i + 1, sig: `T${i + 1}` };
+    const a = norm(tb?.a);
+    const b = norm(tb?.b);
+    if (a === userId || b === userId) {
+      const pairKey = `${a ?? 'x'}-${b ?? 'x'}`; // changes as soon as seating swaps
+      return { phase: "match_ready" as const, tableNumber: i + 1, sig: `LT${i + 1}-${pairKey}` };
     }
   }
 
-  // queue / waitlist / line
   const queue =
     (Array.isArray(l.queue) && l.queue.length ? l.queue :
      Array.isArray(l.waitlist) && l.waitlist.length ? l.waitlist :
@@ -148,8 +130,8 @@ function computeStatusFromList(l: any, userId: string) {
     const idx = arr.indexOf(userId);
     if (idx >= 0) {
       const position = idx + 1;
-      if (position === 1) return { phase: "up_next" as const, position, sig: "Q1" };
-      return { phase: "queued" as const, position, sig: `Q${position}` };
+      if (position === 1) return { phase: "up_next" as const, position, sig: `LQ1-${arr.join('-')}` };
+      return { phase: "queued" as const, position, sig: `LQ${position}-${arr.join('-')}` };
     }
   }
 
