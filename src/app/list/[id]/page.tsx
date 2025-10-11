@@ -9,7 +9,7 @@ import {
   ListGame, Player, uid
 } from '../../../lib/storage';
 
-// 🔔 NEW
+// 🔔 Alerts
 import AlertsToggle from '@/components/AlertsToggle';
 import { useQueueAlerts } from '@/hooks/useQueueAlerts';
 
@@ -29,7 +29,7 @@ export default function ListLobby() {
   }, []);
   useEffect(() => { localStorage.setItem('kava_me', JSON.stringify(me)); }, [me]);
 
-  // 🔔 Alerts for lists: sound + banner with friendly message
+  // 🔔 Alerts for lists: sound + banner (seated => match_ready, queue #1 => up_next)
   useQueueAlerts({ listId: id, upNextMessage: "hey you're up next — good luck! :)" });
 
   async function loadOnce() { if (!id) return; const next = await getListRemote(id); setG(next); }
@@ -48,16 +48,74 @@ export default function ListLobby() {
       const updated = await listJoin(g, p);   // queues + auto-seats
       setG({ ...updated });
       setNameField('');
+      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
     } catch { alert('Could not add player.'); }
     finally { setBusy(false); }
   }
 
-  async function onAddMe() { if (!g || busy) return; setBusy(true); try { const updated = await listJoin(g, me); setG({ ...updated }); } catch { alert('Could not join.'); } finally { setBusy(false); } }
-  async function onRemovePlayer(id: string){ if (!g || busy) return; setBusy(true); try { const updated = await listLeave(g, id); setG({ ...updated }); } catch { alert('Could not remove.'); } finally { setBusy(false); } }
-  async function onJoinQueue(){ if (!g || busy) return; setBusy(true); try { const updated = await listJoin(g, me); setG({ ...updated }); } catch { alert('Could not join queue.'); } finally { setBusy(false); } }
-  async function onLeaveQueue(){ if (!g || busy) return; setBusy(true); try { const updated = await listLeave(g, me.id); setG({ ...updated }); } catch { alert('Could not leave.'); } finally { setBusy(false); } }
-  async function onILost(){ if (!g || busy) return; const idx = g.tables.findIndex(t=>t.a===me.id || t.b===me.id); if (idx<0) { alert('You are not seated right now.'); return; } setBusy(true); try { const updated = await listILost(g, idx, me.id); setG({ ...updated }); alert("It's ok — join again by pressing “Join queue”."); } catch { alert('Could not submit result.'); } finally { setBusy(false); } }
-  async function onTables(count:1|2){ if (!g || busy) return; setBusy(true); try { const updated = await listSetTables(g,count); setG({ ...updated }); } catch { alert('Could not update tables.'); } finally { setBusy(false); } }
+  async function onAddMe() {
+    if (!g || busy) return;
+    setBusy(true);
+    try {
+      const updated = await listJoin(g, me);
+      setG({ ...updated });
+      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+    } catch { alert('Could not join.'); }
+    finally { setBusy(false); }
+  }
+  async function onRemovePlayer(id: string){
+    if (!g || busy) return;
+    setBusy(true);
+    try {
+      const updated = await listLeave(g, id);
+      setG({ ...updated });
+      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+    } catch { alert('Could not remove.'); }
+    finally { setBusy(false); }
+  }
+  async function onJoinQueue(){
+    if (!g || busy) return;
+    setBusy(true);
+    try {
+      const updated = await listJoin(g, me);
+      setG({ ...updated });
+      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+    } catch { alert('Could not join queue.'); }
+    finally { setBusy(false); }
+  }
+  async function onLeaveQueue(){
+    if (!g || busy) return;
+    setBusy(true);
+    try {
+      const updated = await listLeave(g, me.id);
+      setG({ ...updated });
+      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+    } catch { alert('Could not leave.'); }
+    finally { setBusy(false); }
+  }
+  async function onILost(){
+    if (!g || busy) return;
+    const idx = g.tables.findIndex(t=>t.a===me.id || t.b===me.id);
+    if (idx<0) { alert('You are not seated right now.'); return; }
+    setBusy(true);
+    try {
+      const updated = await listILost(g, idx, me.id);
+      setG({ ...updated });
+      alert("It's ok — join again by pressing “Join queue”.");
+      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+    } catch { alert('Could not submit result.'); }
+    finally { setBusy(false); }
+  }
+  async function onTables(count:1|2){
+    if (!g || busy) return;
+    setBusy(true);
+    try {
+      const updated = await listSetTables(g,count);
+      setG({ ...updated });
+      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+    } catch { alert('Could not update tables.'); }
+    finally { setBusy(false); }
+  }
 
   if (!g) return (<main style={wrap}><BackButton href="/lists" /><p>Loading…</p></main>);
 
@@ -89,7 +147,7 @@ export default function ListLobby() {
         </div>
 
         <div style={{display:'flex',gap:8, alignItems:'center'}}>
-          {/* 🔔 NEW: toggle + tests */}
+          {/* 🔔 Alerts (toggle + test buttons) */}
           <AlertsToggle />
           {!seated && !queued && <button style={btn} onClick={onJoinQueue} disabled={busy}>Join queue</button>}
           {queued && <button style={btnGhost} onClick={onLeaveQueue} disabled={busy}>Leave queue</button>}

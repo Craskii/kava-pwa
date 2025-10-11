@@ -19,7 +19,7 @@ import {
 } from '../../../lib/storage';
 import { startSmartPoll } from '../../../lib/poll';
 
-// 🔔 NEW
+// 🔔 Alerts
 import AlertsToggle from '@/components/AlertsToggle';
 import { useQueueAlerts } from '@/hooks/useQueueAlerts';
 
@@ -73,8 +73,8 @@ export default function Lobby() {
     if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' }));
   }, [me]);
 
-  // 🔔 Alerts: poll /api/me/status for this tournament and fire sound + notification
-  useQueueAlerts({ tournamentId: id });
+  // 🔔 Alerts: tournament-aware (fires when your match becomes the top-most active match)
+  useQueueAlerts({ tournamentId: id, upNextMessage: "hey you're up next — good luck! :)" });
 
   // load + smart poll
   useEffect(() => {
@@ -125,6 +125,7 @@ export default function Lobby() {
       const saved = await saveTournamentRemote(first);
       setT(saved);
       pollRef.current?.bump();
+      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
       setBusy(false);
       return;
     } catch {
@@ -141,6 +142,7 @@ export default function Lobby() {
         const saved = await saveTournamentRemote(second);
         setT(saved);
         pollRef.current?.bump();
+        try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
       } catch (e) {
         console.error(e);
         alert('Could not save changes.');
@@ -157,7 +159,11 @@ export default function Lobby() {
     if (me.id === t.hostId) {
       if (!confirm("You're the host. Leave & delete this tournament?")) return;
       setBusy(true);
-      try { await deleteTournamentRemote(t.id); r.push('/'); r.refresh(); }
+      try { 
+        await deleteTournamentRemote(t.id); 
+        try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+        r.push('/'); r.refresh(); 
+      }
       finally { setBusy(false); }
       return;
     }
@@ -184,10 +190,10 @@ export default function Lobby() {
     setT(local); // instant
     setBusy(true);
     try {
-      // persist directly (not via update to avoid re-applying mut twice)
       const saved = await saveTournamentRemote(local);
       setT(saved);
       pollRef.current?.bump();
+      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
     } catch (e) {
       console.error(e);
       // one retry with latest
@@ -198,6 +204,7 @@ export default function Lobby() {
         const saved = await saveTournamentRemote(reseeded);
         setT(saved);
         pollRef.current?.bump();
+        try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
       } catch (ee) {
         console.error(ee);
         alert('Could not start bracket.');
@@ -250,7 +257,6 @@ export default function Lobby() {
           </div>
           <div style={{ textAlign: 'right' }}>
             <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
-              {/* 🔔 NEW */}
               <AlertsToggle />
               <button style={{ ...btnGhost, ...lock }} onClick={leaveTournament}>Leave Tournament</button>
             </div>
@@ -289,7 +295,11 @@ export default function Lobby() {
                     if (busy) return;
                     if (confirm('Delete tournament? This cannot be undone.')) {
                       setBusy(true);
-                      try { await deleteTournamentRemote(t.id); r.push('/'); r.refresh(); }
+                      try { 
+                        await deleteTournamentRemote(t.id); 
+                        try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+                        r.push('/'); r.refresh(); 
+                      }
                       finally { setBusy(false); }
                     }
                   }}
