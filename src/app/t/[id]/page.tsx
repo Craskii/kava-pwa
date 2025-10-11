@@ -19,6 +19,10 @@ import {
 } from '../../../lib/storage';
 import { startSmartPoll } from '../../../lib/poll';
 
+// 🔔 NEW
+import AlertsToggle from '@/components/AlertsToggle';
+import { useQueueAlerts } from '@/hooks/useQueueAlerts';
+
 /* ---------- helpers used locally ---------- */
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
@@ -68,6 +72,9 @@ export default function Lobby() {
   useEffect(() => {
     if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' }));
   }, [me]);
+
+  // 🔔 Alerts: poll /api/me/status for this tournament and fire sound + notification
+  useQueueAlerts({ tournamentId: id });
 
   // load + smart poll
   useEffect(() => {
@@ -243,6 +250,8 @@ export default function Lobby() {
           </div>
           <div style={{ textAlign: 'right' }}>
             <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
+              {/* 🔔 NEW */}
+              <AlertsToggle />
               <button style={{ ...btnGhost, ...lock }} onClick={leaveTournament}>Leave Tournament</button>
             </div>
           </div>
