@@ -6,9 +6,8 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import BackButton from '@/components/BackButton';
 
-/** Minimal types that match your API shape */
 type Player = { id: string; name: string };
-type TournamentRow = {
+type Tournament = {
   id: string;
   name: string;
   hostId: string;
@@ -17,7 +16,10 @@ type TournamentRow = {
   code?: string | null;
 };
 
+type ApiOk = { hosting: Tournament[]; playing: Tournament[]; listVersion: number };
+
 export default function MyTournaments() {
+  // establish a stable "me"
   const me = useMemo<Player>(() => {
     try {
       return JSON.parse(localStorage.getItem('kava_me') || 'null') || {
@@ -32,17 +34,35 @@ export default function MyTournaments() {
     localStorage.setItem('kava_me', JSON.stringify(me));
   }, [me]);
 
-  const [rows, setRows] = useState<TournamentRow[] | null>(null);
+  const [hosting, setHosting] = useState<Tournament[] | null>(null);
+  const [playing, setPlaying] = useState<Tournament[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const res = await fetch('/api/tournaments', { cache: 'no-store' });
+        const url = `/api/tournaments?userId=${encodeURIComponent(me.id)}`;
+        const res = await fetch(url, { cache: 'no-store' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = (await res.json()) as TournamentRow[];
-        if (alive) setRows(data);
+        const data = (await res.json()) as ApiOk | Tournament[];
+
+        // Handle your current API (hosting/playing) and a possible legacy array
+        if (Array.isArray(data)) {
+          const h = data.filter((t) => t.hostId === me.id);
+          const p = data.filter(
+            (t) => t.hostId !== me.id && (t.players || []).some((pl) => pl.id === me.id),
+          );
+          if (alive) {
+            setHosting(h);
+            setPlaying(p);
+          }
+        } else {
+          if (alive) {
+            setHosting(data.hosting || []);
+            setPlaying(data.playing || []);
+          }
+        }
       } catch (e: any) {
         if (alive) setError(e?.message || 'Failed to load');
       }
@@ -50,12 +70,9 @@ export default function MyTournaments() {
     return () => {
       alive = false;
     };
-  }, []);
+  }, [me.id]);
 
-  const hosting = (rows || []).filter((t) => t.hostId === me.id);
-  const playing = (rows || []).filter(
-    (t) => t.hostId !== me.id && (t.players || []).some((p) => p.id === me.id)
-  );
+  const loading = hosting === null || playing === null;
 
   return (
     <main style={wrap}>
@@ -63,23 +80,20 @@ export default function MyTournaments() {
         <BackButton href="/" />
         <h1 style={h1}>My tournaments</h1>
 
-        {error && (
-          <div style={errorBox}>
-            Couldn’t load tournaments. <span style={{ opacity: 0.8 }}>{error}</span>
-          </div>
-        )}
+        {error && <div style={errorBox}>Couldn’t load tournaments. {error}</div>}
 
-        {/* Hosting */}
         <section style={card}>
           <div style={rowHead}>
             <b>Hosting</b>
             <span style={hint}>Live</span>
           </div>
-          {hosting.length === 0 ? (
+          {loading ? (
+            <div style={muted}>Loading…</div>
+          ) : hosting!.length === 0 ? (
             <div style={muted}>You’re not hosting any tournaments yet.</div>
           ) : (
             <ul style={list}>
-              {hosting.map((t) => (
+              {hosting!.map((t) => (
                 <li key={t.id} style={row}>
                   <div>
                     <div style={titleLine}>
@@ -88,14 +102,7 @@ export default function MyTournaments() {
                       {t.status === 'completed' && <span style={donePill}>Done</span>}
                     </div>
                     <div style={sub}>
-                      {t.players?.length ?? 0} players •{' '}
-                      {t.code ? (
-                        <>
-                          Private code: <b>{t.code}</b>
-                        </>
-                      ) : (
-                        'Public'
-                      )}
+                      {t.players?.length ?? 0} players • {t.code ? <>Private code: <b>{t.code}</b></> : 'Public'}
                     </div>
                   </div>
                   <Link href={`/t/${t.id}`} style={goBtn} prefetch>
@@ -107,16 +114,17 @@ export default function MyTournaments() {
           )}
         </section>
 
-        {/* Playing */}
         <section style={card}>
           <div style={rowHead}>
             <b>Playing</b>
           </div>
-          {playing.length === 0 ? (
+          {loading ? (
+            <div style={muted}>Loading…</div>
+          ) : playing!.length === 0 ? (
             <div style={muted}>You’re not in any tournaments yet.</div>
           ) : (
             <ul style={list}>
-              {playing.map((t) => (
+              {playing!.map((t) => (
                 <li key={t.id} style={row}>
                   <div>
                     <div style={titleLine}>
@@ -125,8 +133,7 @@ export default function MyTournaments() {
                       {t.status === 'completed' && <span style={donePill}>Done</span>}
                     </div>
                     <div style={sub}>
-                      {t.players?.length ?? 0} players •{' '}
-                      {t.code ? 'Private' : 'Public'}
+                      {t.players?.length ?? 0} players • {t.code ? 'Private' : 'Public'}
                     </div>
                   </div>
                   <Link href={`/t/${t.id}`} style={goBtn} prefetch>
@@ -142,7 +149,7 @@ export default function MyTournaments() {
   );
 }
 
-/* ===== styles (matches your old look) ===== */
+/* styles */
 const wrap: React.CSSProperties = {
   minHeight: '100vh',
   background: '#0b0b0b',
@@ -150,12 +157,7 @@ const wrap: React.CSSProperties = {
   fontFamily: 'system-ui',
   padding: 24,
 };
-const container: React.CSSProperties = {
-  maxWidth: 980,
-  margin: '0 auto',
-  display: 'grid',
-  gap: 14,
-};
+const container: React.CSSProperties = { maxWidth: 980, margin: '0 auto', display: 'grid', gap: 14 };
 const h1: React.CSSProperties = { margin: '4px 0 8px', fontSize: 20 };
 const card: React.CSSProperties = {
   background: 'rgba(255,255,255,0.06)',
@@ -163,11 +165,7 @@ const card: React.CSSProperties = {
   borderRadius: 14,
   padding: 14,
 };
-const rowHead: React.CSSProperties = {
-  display: 'flex',
-  justifyContent: 'space-between',
-  marginBottom: 8,
-};
+const rowHead: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', marginBottom: 8 };
 const hint: React.CSSProperties = { opacity: 0.7, fontSize: 12 };
 const list: React.CSSProperties = { listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 };
 const row: React.CSSProperties = {
