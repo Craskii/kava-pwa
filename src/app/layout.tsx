@@ -1,11 +1,15 @@
 // src/app/layout.tsx
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
+
+// Client components
 import AlertsGlobal from "@/components/AlertsGlobal";
+import LaunchReminder from "@/components/LaunchReminder";
 
 export const metadata: Metadata = {
   title: "Kava Tournaments",
   description: "Create brackets and list games with live alerts.",
+  applicationName: "Kava",
   manifest: "/manifest.webmanifest",
   icons: {
     icon: [
@@ -17,8 +21,11 @@ export const metadata: Metadata = {
       { url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
     ],
   },
+};
+
+export const viewport: Viewport = {
   themeColor: "#0b0b0b",
-  applicationName: "Kava",
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
@@ -29,14 +36,15 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
-        {/* Extra safety for iOS homescreen icon */}
+        {/* iOS A2HS extras */}
         <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black" />
       </head>
       <body>
-        {/* Global client-side alert plumbing (Notification + banner pings) */}
+        {/* Global Notification plumbing + launch reminder */}
         <AlertsGlobal />
+        <LaunchReminder />
         {children}
       </body>
     </html>
