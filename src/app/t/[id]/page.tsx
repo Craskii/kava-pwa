@@ -22,24 +22,79 @@ import {
 import { startSmartPoll } from '../../../lib/poll';
 
 /* ---------- helpers ---------- */
-function shuffle<T>(arr: T[]): T[] { const a=[...arr]; for (let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]];} return a;}
-function nextPow2(n: number) { return Math.pow(2, Math.ceil(Math.log2(Math.max(1, n)))); }
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+/** Auto-advance single-sided matches; drop empty (BYE vs BYE) */
+function normalizeMatch(m: Match): Match | null {
+  const a = m.a;
+  const b = m.b;
+  if (!a && !b) return null; // drop
+  if (a && !b) return { ...m, winner: a, reports: m.reports ?? {} }; // auto-advance A
+  if (!a && b) return { ...m, winner: b, reports: m.reports ?? {} }; // auto-advance B
+  return { ...m, reports: m.reports ?? {} };
+}
+
+/** Seed first round for ANY N (no power-of-two padding). Odd → last player gets a bye automatically. */
 function seedLocal(t: Tournament): Tournament {
   const ids = shuffle(t.players.map(p => p.id));
-  const size = nextPow2(ids.length);
-  const padded = [...ids, ...Array(Math.max(0, size - ids.length)).fill(undefined)];
   const first: Match[] = [];
-  for (let i = 0; i < size; i += 2) first.push({ a: padded[i], b: padded[i + 1], reports: {} });
-  return { ...t, rounds: [first], status: 'active' };
+  for (let i = 0; i < ids.length; i += 2) {
+    const a = ids[i];
+    const b = ids[i + 1]; // maybe undefined if odd
+    const nm = normalizeMatch({ a, b, reports: {} });
+    if (nm) first.push(nm);
+  }
+
+  const seeded: Tournament = { ...t, rounds: [first], status: 'active' };
+  // Cascade if everything auto-advanced
+  buildNextRoundFromSync(seeded, 0);
+  return seeded;
 }
+
+/** Build next round from winners; carry odd winner as a bye (auto-advance). */
 function buildNextRoundFromSync(t: Tournament, roundIndex: number) {
-  const cur = t.rounds[roundIndex];
-  const winners = cur.map(m => m.winner);
-  if (winners.some(w => !w)) return;
-  if (winners.length === 1 && winners[0]) { t.status = 'completed'; return; }
+  const cur = t.rounds[roundIndex] || [];
+
+  // Normalize current round each time (handles later edits)
+  const normalized: Match[] = [];
+  for (const m of cur) {
+    const nm = normalizeMatch(m);
+    if (nm) normalized.push(nm);
+  }
+  t.rounds[roundIndex] = normalized;
+
+  const winners = normalized.map(m => m.winner).filter(Boolean) as string[];
+
+  // If any undecided remains, stop
+  if (normalized.some(m => !m.winner)) return;
+
+  // Champion?
+  if (winners.length <= 1) {
+    if (winners.length === 1) t.status = 'completed';
+    return;
+  }
+
+  // Pair up winners; odd count carries a bye forward
   const next: Match[] = [];
-  for (let i = 0; i < winners.length; i += 2) next.push({ a: winners[i], b: winners[i + 1], reports: {} });
-  if (t.rounds[roundIndex + 1]) t.rounds[roundIndex + 1] = next; else t.rounds.push(next);
+  for (let i = 0; i < winners.length; i += 2) {
+    const a = winners[i];
+    const b = winners[i + 1]; // maybe undefined
+    const nm = normalizeMatch({ a, b, reports: {} });
+    if (nm) next.push(nm);
+  }
+
+  if (t.rounds[roundIndex + 1]) t.rounds[roundIndex + 1] = next;
+  else t.rounds.push(next);
+
+  // If next round is already fully decided (all byes), cascade again
+  if (next.every(m => !!m.winner)) buildNextRoundFromSync(t, roundIndex + 1);
 }
 
 export default function Lobby() {
@@ -55,7 +110,9 @@ export default function Lobby() {
   // 🔔 banners only
   useQueueAlerts({
     tournamentId: id,
-    upNextMessage: (s) => s?.bracketRoundName ? `You're up next in ${s.bracketRoundName}!` : "You're up next — be ready!",
+    upNextMessage: (s) => s?.bracketRoundName
+      ? `You're up next in ${s.bracketRoundName}!`
+      : "You're up next — be ready!",
     matchReadyMessage: () => "OK — you're up on the table!"
   });
 
@@ -77,14 +134,28 @@ export default function Lobby() {
     return () => poll.stop();
   }, [id]);
 
-  if (!t) return (<main style={wrap}><div style={container}><BackButton href="/" /><p>Loading…</p></div></main>);
+  if (!t) return (
+    <main style={wrap}>
+      <div style={container}>
+        <BackButton href="/" />
+        <p>Loading…</p>
+      </div>
+    </main>
+  );
+
   const isHost = me?.id === t.hostId;
 
-  // ---- generic update + bump ----
+  // ---- generic update + poll + alerts bump ----
   async function update(mut: (x: Tournament) => void) {
     if (busy) return;
     setBusy(true);
-    const base: Tournament = { ...t, players:[...t.players], pending:[...t.pending], rounds: t.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))) };
+    const base: Tournament = {
+      ...t,
+      players: [...t.players],
+      pending: [...t.pending],
+      rounds: t.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
+    };
+
     const first = structuredClone(base);
     mut(first);
     try {
@@ -94,12 +165,18 @@ export default function Lobby() {
       try {
         const latest = await getTournamentRemote(t.id);
         if (!latest) throw new Error('fetch-latest-failed');
-        const second: Tournament = { ...latest, players:[...latest.players], pending:[...latest.pending], rounds: latest.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))) };
+        const second: Tournament = {
+          ...latest,
+          players: [...latest.players],
+          pending: [...latest.pending],
+          rounds: latest.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
+        };
         mut(second);
         const saved = await saveTournamentRemote(second);
         setT(saved); pollRef.current?.bump(); bumpAlerts();
       } catch (e) {
-        console.error(e); alert('Could not save changes.');
+        console.error(e);
+        alert('Could not save changes.');
       }
     } finally { setBusy(false); }
   }
@@ -107,22 +184,26 @@ export default function Lobby() {
   // ---- leave/delete ----
   async function leaveTournament() {
     if (!me || busy) return;
+
     if (me.id === t.hostId) {
       if (!confirm("You're the host. Leave & delete this tournament?")) return;
       setBusy(true);
-      try { await deleteTournamentRemote(t.id); r.push('/'); r.refresh(); } finally { setBusy(false); }
+      try { await deleteTournamentRemote(t.id); r.push('/'); r.refresh(); }
+      finally { setBusy(false); }
       return;
     }
     await update(x => {
       x.players = x.players.filter(p => p.id !== me.id);
       x.pending = x.pending.filter(p => p.id !== me.id);
-      x.rounds = x.rounds.map(round => round.map(m => ({
-        ...m,
-        a: m.a === me.id ? undefined : m.a,
-        b: m.b === me.id ? undefined : m.b,
-        winner: m.winner === me.id ? undefined : m.winner,
-        reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== me.id)),
-      })));
+      x.rounds = x.rounds.map(round =>
+        round.map(m => ({
+          ...m,
+          a: m.a === me.id ? undefined : m.a,
+          b: m.b === me.id ? undefined : m.b,
+          winner: m.winner === me.id ? undefined : m.winner,
+          reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== me.id)),
+        }))
+      );
     });
     r.push('/'); r.refresh();
   }
@@ -131,22 +212,26 @@ export default function Lobby() {
   async function startTournament() {
     if (busy || t.status !== 'setup') return;
     const local = seedLocal(t);
-    setT(local);
+    setT(local); // instant
     setBusy(true);
     try {
       const saved = await saveTournamentRemote(local);
       setT(saved); pollRef.current?.bump(); bumpAlerts();
-    } catch {
+    } catch (e) {
+      console.error(e);
       try {
         const latest = await getTournamentRemote(t.id);
         if (!latest) throw new Error('no-latest');
         const reseeded = seedLocal(latest);
         const saved = await saveTournamentRemote(reseeded);
         setT(saved); pollRef.current?.bump(); bumpAlerts();
-      } catch {
+      } catch (ee) {
+        console.error(ee);
         alert('Could not start bracket.');
       }
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   }
 
   // ---- host sets winner => auto-advance ----
@@ -187,7 +272,9 @@ export default function Lobby() {
             <div style={subhead}>
               {t.code ? <>Private code: <b>{t.code}</b></> : 'Public tournament'} • {t.players.length} {t.players.length === 1 ? 'player' : 'players'}
             </div>
-            {iAmChampion && <div style={champ}>🎉 <b>Congratulations!</b> You won the tournament!</div>}
+            {iAmChampion && (
+              <div style={champ}>🎉 <b>Congratulations!</b> You won the tournament!</div>
+            )}
           </div>
           <div style={{ textAlign: 'right' }}>
             <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end', alignItems:'center' }}>
@@ -197,14 +284,18 @@ export default function Lobby() {
           </div>
         </header>
 
+        {/* How it works */}
         <section style={notice}>
-          <b>How it works:</b> Tap <i>Start</i> to seed a single-elimination bracket. Players can self-report.
-          When all matches in a round have winners, the next round is created automatically. Hosts can override.
+          <b>How it works:</b> Tap <i>Start</i> to seed a single-elimination bracket.
+          Players can self-report (<i>I won / I lost</i>). When all matches in a round have winners,
+          the next round is created automatically until a champion is decided.
+          Hosts can override winners with the <i>A wins / B wins / Clear</i> buttons.
         </section>
 
         {isHost && (
           <div style={card}>
             <h3 style={{ marginTop: 0 }}>Host Controls</h3>
+
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
               <input
                 defaultValue={t.name}
@@ -234,7 +325,6 @@ export default function Lobby() {
               <button style={{ ...btnGhost, ...lock }} onClick={addTestPlayer}>+ Add test player</button>
             </div>
 
-            {/* Pending approvals */}
             <div style={{ marginTop: 8 }}>
               <h4 style={{ margin: '6px 0' }}>Pending approvals ({t.pending?.length || 0})</h4>
               {(t.pending?.length || 0) === 0 ? (
@@ -267,6 +357,7 @@ export default function Lobby() {
                     const aName = t.players.find(p => p.id === m.a)?.name || (m.a ? '??' : 'BYE');
                     const bName = t.players.find(p => p.id === m.b)?.name || (m.b ? '??' : 'BYE');
                     const w = m.winner;
+
                     const iPlay = me && (m.a === me?.id || m.b === me?.id);
                     const canReport = iPlay && !w && t.status === 'active';
 
@@ -275,34 +366,26 @@ export default function Lobby() {
                         <div>{aName} vs {bName}</div>
 
                         {isHost && t.status !== 'completed' && (
-                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems:'center' }}>
                             <button style={w === m.a ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.a)} disabled={busy}>A wins</button>
                             <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)} disabled={busy}>B wins</button>
                             <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)} disabled={busy}>Clear</button>
 
-                            {/* PING A */}
+                            {/* Ping A */}
                             <button
                               style={btnPing}
-                              onClick={() => {
-                                update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; });
-                              }}
+                              onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
                               disabled={busy}
                               title={`Ping ${aName}`}
-                            >
-                              Ping A 🔔
-                            </button>
+                            >Ping A 🔔</button>
 
-                            {/* PING B */}
+                            {/* Ping B */}
                             <button
                               style={btnPing}
-                              onClick={() => {
-                                update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; });
-                              }}
+                              onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
                               disabled={busy}
                               title={`Ping ${bName}`}
-                            >
-                              Ping B 🔔
-                            </button>
+                            >Ping B 🔔</button>
 
                             {w && <span style={{ fontSize: 12, opacity: .8 }}>Winner: {t.players.find(p => p.id === w)?.name}</span>}
                           </div>

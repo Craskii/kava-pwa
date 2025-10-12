@@ -1,130 +1,160 @@
-// src/app/me/page.tsx
-"use client";
+// src/app/api/me/status/route.ts
+import { NextRequest, NextResponse } from "next/server";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import Link from "next/link";
-import BackButton from "../../components/BackButton";
-import { Tournament } from "../../lib/storage";
-import { startSmartPoll } from "../../lib/poll";
+/**
+ * Query params:
+ *  - userId (required on first pass; read from localStorage on the client)
+ *  - tournamentId (optional but recommended on /t/[id] pages)
+ *
+ * This route adapts to your existing endpoints so you don't need DB imports here.
+ * It fetches:
+ *   /api/tournaments?userId=...  (already exists per your /app/me/page.tsx)
+ *   /api/t/[id]                  (assumed to exist; otherwise replace fetchTournament)
+ */
 
-type Me = { id: string; name: string } | null;
+export async function GET(req: NextRequest) {
+  try {
+    const url = new URL(req.url);
+    const userId = url.searchParams.get("userId") || "";
+    const tournamentId = url.searchParams.get("tournamentId");
 
-export default function MePage() {
-  // read identity
-  const me: Me = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem("kava_me") || "null"); }
-    catch { return null; }
-  }, []);
+    if (!userId) {
+      return NextResponse.json({ phase: "idle" }, { status: 200 });
+    }
 
-  const [hosting, setHosting] = useState<Tournament[]>([]);
-  const [playing, setPlaying] = useState<Tournament[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
+    // If we know the tournament we're on, compute status for *that* id.
+    if (tournamentId) {
+      const t = await fetchTournament(req, tournamentId);
+      const status = computeStatusFromTournament(t, userId);
+      return NextResponse.json(status, { status: 200 });
+    }
 
-  // fetch helper that also returns a version string from headers
-  async function fetchMine(userId: string): Promise<{ v: string; hosting: Tournament[]; playing: Tournament[] }> {
-    const res = await fetch(`/api/tournaments?userId=${encodeURIComponent(userId)}`, { cache: "no-store" });
-    if (!res.ok) throw new Error(await res.text().catch(()=>"HTTP "+res.status));
-    const v = res.headers.get("x-t-version") || ""; // combined version from API
-    const data = await res.json() as { hosting: Tournament[]; playing: Tournament[] };
-    const coerce = (t: Tournament) => ({ ...t, v: Number((t as any).v ?? 0) });
-    return { v, hosting: data.hosting.map(coerce), playing: data.playing.map(coerce) };
+    // Otherwise, pick the most recent tournament the player is in and compute from that.
+    const mine = await fetchMine(req, userId); // { hosting, playing }
+    const latest = pickLatestTournament([...mine.playing, ...mine.hosting]);
+    if (!latest) return NextResponse.json({ phase: "idle" }, { status: 200 });
+
+    const t = await fetchTournament(req, latest.id);
+    const status = computeStatusFromTournament(t, userId);
+    return NextResponse.json(status, { status: 200 });
+  } catch (e) {
+    return NextResponse.json({ phase: "idle" }, { status: 200 });
   }
-
-  // initial load + smart poll (updates live)
-  useEffect(() => {
-    if (!me?.id) return;
-    setLoading(true);
-    setErr(null);
-
-    pollRef.current?.stop();
-    const poll = startSmartPoll(async () => {
-      const { v, hosting, playing } = await fetchMine(me.id);
-      // newest first
-      const sortByCreated = (a: Tournament, b: Tournament) =>
-        (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0);
-      setHosting([...hosting].sort(sortByCreated));
-      setPlaying([...playing].sort(sortByCreated));
-      setLoading(false);
-      return v; // smartPoll compares this; if it changes, keep polling fast, else slow down
-    });
-
-    // refresh when tab becomes visible again
-    const onVis = () => poll.bump();
-    document.addEventListener("visibilitychange", onVis);
-
-    pollRef.current = poll;
-    return () => { document.removeEventListener("visibilitychange", onVis); poll.stop(); };
-  }, [me?.id]);
-
-  return (
-    <main style={wrap}>
-      <BackButton />
-      <div style={{ display:"grid", gap:18, width:"100%", maxWidth:1000 }}>
-        <h1 style={{ margin:"8px 0 4px" }}>My tournaments</h1>
-
-        {err && <div style={error}>{err}</div>}
-
-        <section style={card}>
-          <div style={sectionHeader}>
-            <h3 style={{ margin:0 }}>Hosting</h3>
-            <div style={{ opacity:.7, fontSize:12 }}>{loading ? "Refreshing…" : "Live"}</div>
-          </div>
-
-          {hosting.length === 0 ? (
-            <div style={muted}>You’re not hosting any tournaments yet.</div>
-          ) : (
-            <div style={grid}>
-              {hosting.map(t => (
-                <div key={t.id} style={item}>
-                  <div style={{ fontWeight:700 }}>{t.name}</div>
-                  <div style={sub}>Code: {t.code || "—"} • {t.players.length} players</div>
-                  <div style={{ display:"flex", gap:8, marginTop:10 }}>
-                    <Link href={`/t/${t.id}`} style={btn}>Open</Link>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section style={card}>
-          <h3 style={{ marginTop:0 }}>Playing</h3>
-          {playing.length === 0 ? (
-            <div style={muted}>You’re not in any tournaments yet.</div>
-          ) : (
-            <div style={grid}>
-              {playing.map(t => (
-                <div key={t.id} style={item}>
-                  <div style={{ fontWeight:700 }}>{t.name}</div>
-                  <div style={sub}>Code: {t.code || "—"} • {t.players.length} players</div>
-                  <div style={{ display:"flex", gap:8, marginTop:10 }}>
-                    <Link href={`/t/${t.id}`} style={btn}>Open</Link>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-      </div>
-    </main>
-  );
 }
 
-/* ---------- styles ---------- */
-const wrap: React.CSSProperties = {
-  minHeight:"100vh", background:"#0b0b0b", color:"#fff", fontFamily:"system-ui", padding:24
-};
-const card: React.CSSProperties = {
-  background:"rgba(255,255,255,0.05)", border:"1px solid rgba(255,255,255,0.1)", borderRadius:14, padding:14
-};
-const grid: React.CSSProperties = { display:"grid", gap:12 };
-const item: React.CSSProperties = {
-  background:"#111", border:"1px solid rgba(255,255,255,0.1)", borderRadius:10, padding:"10px 12px"
-};
-const btn: React.CSSProperties = { padding:"8px 12px", borderRadius:10, background:"#0ea5e9", color:"#fff", textDecoration:"none", fontWeight:700 };
-const sectionHeader: React.CSSProperties = { display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:8 };
-const sub: React.CSSProperties = { opacity:.75, fontSize:13 };
-const muted: React.CSSProperties = { opacity:.7, fontSize:13 };
-const error: React.CSSProperties = { background:"#7f1d1d", border:"1px solid #b91c1c", padding:10, borderRadius:8 };
+/* ---------------- helpers that use your existing APIs ---------------- */
+
+async function fetchMine(req: NextRequest, userId: string): Promise<{ hosting: any[]; playing: any[] }> {
+  const base = baseUrl(req);
+  const res = await fetch(`${base}/api/tournaments?userId=${encodeURIComponent(userId)}`, { cache: "no-store" });
+  if (!res.ok) return { hosting: [], playing: [] };
+  return res.json();
+}
+
+async function fetchTournament(req: NextRequest, tournamentId: string): Promise<any> {
+  const base = baseUrl(req);
+  // If your tournament route is different, point this to the right one.
+  const res = await fetch(`${base}/api/t/${encodeURIComponent(tournamentId)}`, { cache: "no-store" });
+  if (!res.ok) return {};
+  return res.json();
+}
+
+function baseUrl(req: NextRequest): string {
+  const u = new URL(req.url);
+  return `${u.protocol}//${u.host}`;
+}
+
+function pickLatestTournament(list: any[]): any | null {
+  if (!Array.isArray(list) || list.length === 0) return null;
+  return [...list].sort((a, b) => (Number(b?.createdAt) || 0) - (Number(a?.createdAt) || 0))[0];
+}
+
+/**
+ * Compute a unified status from various plausible tournament shapes.
+ * This is conservative: if we can't prove "up_next" or "match_ready", we return "queued" or "idle".
+ */
+function computeStatusFromTournament(t: any, userId: string): {
+  phase: "idle" | "queued" | "up_next" | "match_ready",
+  position?: number | null,
+  tableNumber?: number | null,
+  bracketRoundName?: string | null
+} {
+  if (!t) return { phase: "idle" };
+
+  // Try to detect mode
+  const mode = (t.mode || t.type || t.kind || "").toString().toUpperCase(); // "LIST" or "TOURNAMENT"
+
+  // ---- Common helpers ----
+  const players = Array.isArray(t.players) ? t.players : [];
+  const idOf = (p: any) => (typeof p === "string" ? p : p?.id || p?.playerId || p?.uid);
+
+  // tables may be shaped like: [{ number, players: [ids] }] or { currentPlayerIds: [] } etc.
+  const tables = Array.isArray(t.tables) ? t.tables : [];
+
+  // A general "queue" if present (List mode usually)
+  const queue =
+    (Array.isArray(t.queue) && t.queue.length ? t.queue :
+    Array.isArray(t.waitlist) && t.waitlist.length ? t.waitlist :
+    Array.isArray(t.line) && t.line.length ? t.line : null);
+
+  // --- If user is currently on a table, it's MATCH_READY ---
+  for (const tb of tables) {
+    const tableNum = tb?.number ?? tb?.id ?? tb?.tableNumber ?? null;
+    const current = Array.isArray(tb?.players) ? tb.players
+                 : Array.isArray(tb?.currentPlayers) ? tb.currentPlayers
+                 : Array.isArray(tb?.currentPlayerIds) ? tb.currentPlayerIds
+                 : [];
+    if (current.some((p: any) => idOf(p) === userId)) {
+      return {
+        phase: "match_ready",
+        tableNumber: Number(tableNum) || null,
+        bracketRoundName: t?.roundName || tb?.roundName || null
+      };
+    }
+  }
+
+  // --- Tournament bracket assignment (matches array) ---
+  if (Array.isArray(t.matches)) {
+    // Find this user's match; if assigned to a table or marked ready, call it MATCH_READY
+    const mine = t.matches.find((m: any) =>
+      Array.isArray(m?.players) && m.players.some((p: any) => idOf(p) === userId)
+    );
+    if (mine) {
+      const ready =
+        mine?.status?.toUpperCase?.() === "READY" ||
+        mine?.state?.toUpperCase?.() === "READY" ||
+        mine?.tableNumber != null;
+
+      if (ready) {
+        return {
+          phase: "match_ready",
+          tableNumber: mine?.tableNumber ?? null,
+          bracketRoundName: mine?.roundName ?? t?.roundName ?? null
+        };
+      }
+      // If not ready but explicitly next/queued:
+      if (mine?.isNext || mine?.upNext) {
+        return { phase: "up_next" };
+      }
+      return { phase: "queued" };
+    }
+  }
+
+  // --- List/Queue position ---
+  if (queue) {
+    const arr = queue.map((p: any) => idOf(p));
+    const idx = arr.indexOf(userId);
+    if (idx >= 0) {
+      const position = idx + 1;
+      if (position === 1) return { phase: "up_next", position };
+      return { phase: "queued", position };
+    }
+  }
+
+  // fallback: if user is in players array but nowhere else, call it queued
+  if (players.some((p: any) => idOf(p) === userId)) {
+    return { phase: "queued" };
+  }
+
+  return { phase: "idle" };
+}

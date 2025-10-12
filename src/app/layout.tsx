@@ -36,3 +36,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     </html>
   );
 }
+
+import AlertsGlobal from '@/components/AlertsGlobal';
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>
+        <AlertsGlobal />
+        {children}
+      </body>
+    </html>
+  );
+}
