@@ -5,6 +5,7 @@ export const runtime = 'edge';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 
+// Handles "Install PWA" prompt (only shows on desktop/Android, never iPhone)
 function useInstallPrompt() {
   const [deferred, setDeferred] = useState<any>(null);
   const [isStandalone, setStandalone] = useState(false);
@@ -13,18 +14,18 @@ function useInstallPrompt() {
     const standalone =
       (typeof window !== 'undefined' &&
         (window.matchMedia?.('(display-mode: standalone)').matches ||
-          // iOS Safari
+          // iOS Safari detection
           (navigator as any).standalone === true)) ||
       false;
     setStandalone(standalone);
 
-    function onBIP(e: any) {
-      // Chromium-only event; iOS never fires
+    function onBeforeInstallPrompt(e: any) {
       e.preventDefault();
       setDeferred(e);
     }
-    window.addEventListener('beforeinstallprompt', onBIP);
-    return () => window.removeEventListener('beforeinstallprompt', onBIP);
+
+    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt);
   }, []);
 
   const canInstall = !!deferred && !isStandalone;
@@ -35,7 +36,7 @@ function useInstallPrompt() {
     try {
       await deferred.userChoice;
     } finally {
-      setDeferred(null); // hide either way
+      setDeferred(null);
     }
   }
 
@@ -46,7 +47,7 @@ export default function Home() {
   const { canInstall, promptInstall } = useInstallPrompt();
 
   return (
-    <main style={wrap}>
+    <main style={wrap} suppressHydrationWarning>
       <header style={header}>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <div style={appDot} aria-hidden />
@@ -55,7 +56,7 @@ export default function Home() {
       </header>
 
       <section style={panel}>
-        {/* ✅ correct labels + routes */}
+        {/* ✅ Correct labels and routes */}
         <HomeButton href="/tournaments" label="🧑‍⚖️  My tournaments" />
         <HomeButton href="/lists" label="🧾  My lists" />
         <HomeButton href="/create" label="+  Create game" primary />
@@ -63,6 +64,7 @@ export default function Home() {
         <HomeButton href="/nearby" label="📍  Find nearby" />
       </section>
 
+      {/* ✅ Only shows if installable on desktop/Android */}
       {canInstall && (
         <div style={{ display: 'grid', placeItems: 'center', marginTop: 18 }}>
           <button onClick={promptInstall} style={installBtn}>
@@ -72,13 +74,16 @@ export default function Home() {
       )}
 
       <footer style={foot}>
-        Create brackets and list games, manage queues, and send “you’re up next”
-        alerts.
+        Create brackets and list games, manage queues, and send “you’re up next” alerts.
         <div style={{ opacity: 0.6, marginTop: 4 }}>v0 · PWA ready · Works offline</div>
       </footer>
     </main>
   );
 }
+
+/* ===========================
+   COMPONENTS + STYLES
+=========================== */
 
 function HomeButton({
   href,
@@ -90,13 +95,12 @@ function HomeButton({
   primary?: boolean;
 }) {
   return (
-    <Link href={href} style={primary ? btnPrimary : btn}>
+    <Link href={href} prefetch={false} style={primary ? btnPrimary : btn}>
       {label}
     </Link>
   );
 }
 
-/* styles */
 const wrap: React.CSSProperties = {
   minHeight: '100vh',
   background: '#0b0b0b',
@@ -107,7 +111,13 @@ const wrap: React.CSSProperties = {
   gridTemplateRows: 'auto 1fr auto',
   gap: 18,
 };
-const header: React.CSSProperties = { display: 'flex', alignItems: 'center' };
+
+const header: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+};
+
 const appDot: React.CSSProperties = {
   width: 22,
   height: 22,
@@ -115,7 +125,13 @@ const appDot: React.CSSProperties = {
   background: 'linear-gradient(135deg, #60a5fa, #a78bfa)',
   boxShadow: '0 0 0 1px rgba(255,255,255,.15) inset',
 };
-const h1: React.CSSProperties = { margin: 0, fontSize: 22, fontWeight: 800 };
+
+const h1: React.CSSProperties = {
+  margin: 0,
+  fontSize: 22,
+  fontWeight: 800,
+};
+
 const panel: React.CSSProperties = {
   maxWidth: 720,
   width: '100%',
@@ -123,6 +139,7 @@ const panel: React.CSSProperties = {
   display: 'grid',
   gap: 12,
 };
+
 const btn: React.CSSProperties = {
   display: 'block',
   padding: '18px 16px',
@@ -132,13 +149,16 @@ const btn: React.CSSProperties = {
   color: '#fff',
   textDecoration: 'none',
   fontWeight: 700,
+  textAlign: 'left',
 };
+
 const btnPrimary: React.CSSProperties = {
   ...btn,
   background: '#0ea5e9',
   border: 'none',
   textAlign: 'center',
 };
+
 const installBtn: React.CSSProperties = {
   padding: '14px 16px',
   borderRadius: 12,
@@ -148,6 +168,7 @@ const installBtn: React.CSSProperties = {
   fontWeight: 800,
   cursor: 'pointer',
 };
+
 const foot: React.CSSProperties = {
   textAlign: 'center',
   opacity: 0.9,
