@@ -4,7 +4,7 @@ export const runtime = 'edge';
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
-import BackButton from '../components/BackButton';
+import BackButton from '@/components/BackButton';
 
 type TournamentRow = { id: string; name: string; status?: string; players?: any[] };
 
