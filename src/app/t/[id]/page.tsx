@@ -1,13 +1,14 @@
-// src/app/t/[id]/page.tsx
 'use client';
 export const runtime = 'edge';
 
-import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '@/components/AlertsToggle';
-import { useQueueAlerts, bumpAlerts } from '@/lib/alerts';
-import { useTournamentAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
+
+// ✅ Use the hook from hooks, bumpAlerts from lib
+import { useQueueAlerts } from '@/hooks/useQueueAlerts';
+import { bumpAlerts } from '@/lib/alerts';
+
 import {
   saveTournamentRemote,
   deleteTournamentRemote,
@@ -15,12 +16,13 @@ import {
   approvePending,
   declinePending,
   insertLatePlayer,
-  Tournament,
   uid,
-  Match,
-  getTournamentRemote,
+  getTournamentRemote
 } from '../../../lib/storage';
 import { startSmartPoll } from '../../../lib/poll';
+
+/* … keep the remainder of your file unchanged … */
+
 
 /* ---------- helpers ---------- */
 function shuffle<T>(arr: T[]): T[] {
