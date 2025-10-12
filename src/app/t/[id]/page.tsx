@@ -7,6 +7,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '@/components/AlertsToggle';
 import { useQueueAlerts, bumpAlerts } from '@/lib/alerts';
+import { useTournamentAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
 import {
   saveTournamentRemote,
   deleteTournamentRemote,

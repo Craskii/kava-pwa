@@ -5,7 +5,7 @@ export const runtime = 'edge';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
-import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts'; // <-- updated path
+import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
 import {
   getListRemote, listJoin, listLeave, listILost, listSetTables,
   ListGame, Player, uid
@@ -29,7 +29,7 @@ export default function ListLobby() {
   // 🔔 alerts on this list
   useQueueAlerts({
     listId: id,
-    upNextMessage: "You're up!",
+    upNextMessage: "Your up next",
     matchReadyMessage: () => "OK — you're up on the table!"
   });
 

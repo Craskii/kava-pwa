@@ -1,218 +1,122 @@
+// src/hooks/useQueueAlerts.ts
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useEffect, useRef } from 'react';
+import {
+  getAlertsEnabled,
+  subscribeAlertsChange,
+  bumpAlertsSignal,
+  showSystemNotification,
+} from '@/lib/alerts';
 
-type UseQueueAlertsOpts = {
-  tournamentId?: string;
-  listId?: string;
-  matchReadyMessage?: string | ((s: any) => string);
-  upNextMessage?: string | ((s: any) => string);
-};
+const DING = '/sounds/up-next.mp3';
 
-const LS_KEY_LAST_SIG = 'kava_alerts_last_sig';
-const LS_KEY_ENABLED  = 'kava_alerts_on';
-const LS_KEY_LAST_FIRE= 'kava_alerts_last_fire';
-const BUMP_KEY        = 'kava_alerts_bump';
-
-declare global {
-  interface Window {
-    __kavaAlertLockUntil?: number;
-    __kavaLastCheckAt?: number;
+let unlockedAudio = false;
+let audioEl: HTMLAudioElement | null = null;
+function ensureAudio() {
+  if (typeof window === 'undefined') return null;
+  if (!audioEl) {
+    audioEl = document.createElement('audio');
+    audioEl.src = DING;
+    audioEl.preload = 'auto';
+    audioEl.crossOrigin = 'anonymous';
   }
+  return audioEl;
 }
 
-export function alertsEnabled(): boolean {
-  try { return localStorage.getItem(LS_KEY_ENABLED) === '1'; } catch { return false; }
-}
-export function setAlertsEnabled(on: boolean) {
-  try { localStorage.setItem(LS_KEY_ENABLED, on ? '1' : '0'); } catch {}
+function playDing() {
+  try {
+    const a = ensureAudio();
+    if (!a) return;
+    // iOS requires a prior user gesture on the page at least once
+    a.play().then(() => {
+      a.pause();
+      a.currentTime = 0;
+      unlockedAudio = true;
+    }).catch(() => {});
+  } catch {}
 }
 export function bumpAlerts() {
-  try { localStorage.setItem(BUMP_KEY, String(Date.now())); } catch {}
+  // public bump for pages
+  bumpAlertsSignal();
 }
 
-function showInAppBanner(text: string) {
-  const id = 'kava-inapp-banner';
-  let el = document.getElementById(id);
-  if (!el) {
-    el = document.createElement('div');
-    el.id = id;
-    Object.assign(el.style, {
-      position: 'fixed', left:'10px', right:'10px', top:'10px',
-      background:'rgba(14,165,233,.95)', color:'#000',
-      borderRadius:'12px', padding:'10px 12px', zIndex:'999999',
-      boxShadow:'0 10px 30px rgba(0,0,0,.35)', fontFamily:'system-ui',
-      fontWeight:'700'
-    } as CSSStyleDeclaration);
-    const close = document.createElement('button');
-    close.textContent = '×';
-    Object.assign(close.style, {
-      position:'absolute', right:'8px', top:'4px',
-      background:'transparent', border:'none', fontSize:'18px', cursor:'pointer'
-    } as CSSStyleDeclaration);
-    close.onclick = () => el?.remove();
-    el.appendChild(close);
-    const p = document.createElement('div'); p.id = id+'-txt'; el.appendChild(p);
-    document.body.appendChild(el);
-  }
-  const p = document.getElementById(id+'-txt'); if (p) p.textContent = text;
-  setTimeout(() => { document.getElementById(id)?.remove(); }, 6000);
-}
+type QueueOpts = {
+  listId?: string;
+  tournamentId?: string;
+  upNextMessage?: string | (() => string);
+  matchReadyMessage?: string | (() => string);
+};
 
-function resolveMessage(msg: string | ((s:any)=>string) | undefined, status: any, fallback: string) {
-  if (!msg) return fallback;
-  return typeof msg === 'function' ? msg(status) : msg;
-}
+export function useQueueAlerts(opts: QueueOpts) {
+  const { listId, tournamentId } = opts;
+  const getMsg = (v?: string | (() => string)) =>
+    typeof v === 'function' ? (v as any)() : v;
 
-async function fetchStatus(base: { tournamentId?: string; listId?: string; userId: string }) {
-  const params = new URLSearchParams({ userId: base.userId });
-  if (base.tournamentId) params.set('tournamentId', base.tournamentId);
-  if (base.listId) params.set('listId', base.listId);
-  const res = await fetch(`/api/me/status?${params}`, { cache: 'no-store' });
-  if (!res.ok) return { phase: 'idle', sig: 'idle' };
-  return res.json();
-}
-
-async function askPermission() {
-  if (!('Notification' in window)) return;
-  try { if (Notification.permission === 'default') await Notification.requestPermission(); } catch {}
-}
-
-function fireBanner(text: string) {
-  try {
-    if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification(text);
-      return;
-    }
-  } catch { /* fall back below */ }
-  showInAppBanner(text);
-}
-
-/** single-window lock: prevent two banners within a short window */
-function acquireWindowLock(ms = 1500): boolean {
-  const now = Date.now();
-  const until = window.__kavaAlertLockUntil || 0;
-  if (now < until) return false;
-  window.__kavaAlertLockUntil = now + ms;
-  return true;
-}
-
-/** tiny throttle for status checks */
-function shouldSkipCheck(): boolean {
-  const now = Date.now();
-  const last = window.__kavaLastCheckAt || 0;
-  if (now - last < 250) return true; // micro-throttle
-  window.__kavaLastCheckAt = now;
-  return false;
-}
-
-export function useQueueAlerts(opts: UseQueueAlertsOpts) {
-  const { tournamentId, listId } = opts;
-  const me = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); } catch { return null; }
-  }, []);
-  const userId = me?.id;
-
-  const manualCheck = useCallback(async () => {
-    if (!alertsEnabled() || !userId) return;
-    if (shouldSkipCheck()) return;
-
-    const status = await fetchStatus({ userId, tournamentId, listId });
-
-    // Compare-and-set signature BEFORE firing (dedupe across callers)
-    const nextSig = String(status?.sig || 'idle');
-    let prevSig = '';
-    try { prevSig = localStorage.getItem(LS_KEY_LAST_SIG) || ''; } catch {}
-
-    if (!nextSig || nextSig === prevSig) return;
-
-    // Try to store immediately so any concurrent caller sees the new value
-    try { localStorage.setItem(LS_KEY_LAST_SIG, nextSig); } catch {}
-
-    // Also gate with a per-window lock so two callers in same tab don't both fire
-    if (!acquireWindowLock()) return;
-
-    // As a final guard, re-read lastSig after a microtask (in case another tab raced)
-    await Promise.resolve();
-    try { prevSig = localStorage.getItem(LS_KEY_LAST_SIG) || ''; } catch {}
-    if (prevSig !== nextSig) return; // someone else already superseded
-
-    // Optional: small spacing between real system banners
-    try {
-      const lastFire = Number(localStorage.getItem(LS_KEY_LAST_FIRE) || 0);
-      const now = Date.now();
-      if (now - lastFire < 1200) return; // global spacing across tabs
-      localStorage.setItem(LS_KEY_LAST_FIRE, String(now));
-    } catch {}
-
-    if (status?.phase === 'match_ready') {
-      const msg = resolveMessage(opts.matchReadyMessage, status, "OK — you're up on the table!");
-      fireBanner(msg);
-    } else if (status?.phase === 'up_next') {
-      const msg = resolveMessage(opts.upNextMessage, status, "You're up next — be ready!");
-      fireBanner(msg);
-    }
-  }, [userId, tournamentId, listId, opts.matchReadyMessage, opts.upNextMessage]);
+  const lastSig = useRef<string>('');
 
   useEffect(() => {
-    if (!userId) return;
+    if (typeof window === 'undefined') return;
 
-    // init permission ping (no-op if already decided)
-    askPermission();
+    // unlock audio on first interaction
+    const unlock = () => { playDing(); window.removeEventListener('pointerdown', unlock); };
+    window.addEventListener('pointerdown', unlock, { once: true });
 
-    // run once at mount
-    manualCheck();
+    let stop = false;
 
-    // visibility/focus wake
-    const onVis = () => { if (document.visibilityState === 'visible') manualCheck(); };
-    const onFocus = () => manualCheck();
-    document.addEventListener('visibilitychange', onVis);
-    window.addEventListener('focus', onFocus);
+    async function check() {
+      if (stop || !getAlertsEnabled()) return;
 
-    // cross-tab bumps wake
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === BUMP_KEY || e.key === LS_KEY_LAST_SIG) manualCheck();
+      const qs = new URLSearchParams();
+      const me = JSON.parse(localStorage.getItem('kava_me') || 'null');
+      if (!me?.id) return;
+      qs.set('userId', me.id);
+      if (listId) qs.set('listId', listId);
+      if (tournamentId) qs.set('tournamentId', tournamentId);
+
+      const res = await fetch(`/api/me/status?${qs}`, { cache: 'no-store' }).catch(() => null);
+      if (!res?.ok) return;
+      const s = await res.json();
+
+      // s.sig must change to notify
+      if (s?.sig && s.sig !== lastSig.current) {
+        lastSig.current = s.sig;
+
+        // phase -> message
+        let body = '';
+        if (s.phase === 'up_next') {
+          body = getMsg(opts.upNextMessage) || (tournamentId ? `You're up next in ${s.bracketRoundName || 'the bracket'}!` : `You're up!`);
+        } else if (s.phase === 'match_ready') {
+          body = getMsg(opts.matchReadyMessage) || (listId ? `OK — you're up on the table!` : `It's your match now!`);
+        }
+
+        if (body) {
+          // banner (iOS silent), plus local ding if unlocked
+          showSystemNotification('Kava', body);
+          if (unlockedAudio) {
+            try { await ensureAudio()?.play(); ensureAudio()!.currentTime = 0; } catch {}
+          }
+        }
+      }
+    }
+
+    // poll with backoff + bump handling
+    let t: any = null;
+    const loop = async (delay = 1200) => {
+      await check();
+      if (!stop) t = setTimeout(() => loop(1200), delay);
     };
-    window.addEventListener('storage', onStorage);
+    loop(100);
 
-    // SSE for tournaments (instant wake)
-    let es: EventSource | null = null;
-    if (tournamentId) {
-      try {
-        es = new EventSource(`/api/tournament/${encodeURIComponent(tournamentId)}/stream`);
-        es.onmessage = () => manualCheck();
-        es.onerror = () => { /* ok */ };
-      } catch {}
-    }
-
-    // modest poll for lists (until we add SSE for lists)
-    let int: any = null;
-    if (listId) {
-      let period = 1500;
-      let runs = 0;
-      int = setInterval(() => {
-        manualCheck();
-        runs++;
-        if (runs === 40) period = 4000;
-      }, period);
-    }
+    const off1 = subscribeAlertsChange(() => check());
+    const onBump = () => check();
+    window.addEventListener('kava:alerts-bump', onBump as any);
 
     return () => {
-      document.removeEventListener('visibilitychange', onVis);
-      window.removeEventListener('focus', onFocus);
-      window.removeEventListener('storage', onStorage);
-      if (es) es.close();
-      if (int) clearInterval(int);
+      stop = true;
+      if (t) clearTimeout(t);
+      off1();
+      window.removeEventListener('kava:alerts-bump', onBump as any);
     };
-  }, [userId, tournamentId, listId, manualCheck]);
-
-  const ensurePermissions = useCallback(async () => {
-    await askPermission();
-    if (!('Notification' in window) || Notification.permission === 'granted') {
-      try { localStorage.setItem(LS_KEY_ENABLED, '1'); } catch {}
-      bumpAlerts();
-    }
-  }, []);
-
-  return { ensurePermissions };
+  }, [listId, tournamentId, opts.upNextMessage, opts.matchReadyMessage]);
 }
