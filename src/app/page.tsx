@@ -1,91 +1,46 @@
+// src/app/page.tsx
+export const runtime = 'edge';
+export const dynamic = 'force-dynamic'; // avoid prerender crashes if you read request-time info
+
 import Link from "next/link";
-import InstallPWAButton from "./InstallPWAButton";
-import IOSInstallTip from "./IOSInstallTip";
 
-export default function Home() {
+type HomeSearch = {
+  listId?: string;
+  tournamentId?: string;
+  [k: string]: string | undefined;
+};
+
+export default function HomePage({
+  searchParams,
+}: {
+  searchParams?: HomeSearch; // <<< make optional
+}) {
+  const listId = searchParams?.listId ?? "";
+  const tournamentId = searchParams?.tournamentId ?? "";
+
   return (
-    <main
-      style={{
-        minHeight: "100vh",
-        display: "grid",
-        gridTemplateRows: "auto 1fr auto",
-        padding: "24px",
-        background: "linear-gradient(180deg,#0b0b0b, #111, #0b0b0b)",
-        color: "white",
-        fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-      }}
-    >
-      {/* Header */}
-      <header style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <div
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 12,
-            display: "grid",
-            placeItems: "center",
-            background: "#0ea5e9",
-          }}
-        >
-          🏓
-        </div>
-        <h1 style={{ fontSize: 24, margin: 0 }}>Kava Tournaments</h1>
-      </header>
+    <main style={wrap}>
+      <h1 style={{ margin: "8px 0 12px" }}>Kava</h1>
 
-      {/* Main actions */}
-      <section
-        style={{
-          display: "grid",
-          gap: 16,
-          alignContent: "center",
-          maxWidth: 560,
-          width: "100%",
-          justifySelf: "center",
-        }}
-      >
-        <Link href="/me" style={btnGhost}>🧑‍💼 My tournaments</Link>
-        <Link href="/lists" style={btnGhost}>📝 My lists</Link>
-        <Link href="/create" style={btnPrimary}>➕ Create game</Link>
-        <Link href="/join" style={btnGhost}>🔐 Join with code</Link>
-        <Link href="/nearby" style={btnGhost}>📍 Find nearby</Link>
-
-        {/* PWA install helpers */}
-        <div style={{ justifySelf: "center", marginTop: 6 }}>
-          <InstallPWAButton />
-        </div>
-        <IOSInstallTip />
-
-        <p style={{ opacity: 0.8, textAlign: "center", marginTop: 4 }}>
-          Create brackets and list games, manage queues, and send “you’re up next” alerts.
+      <div style={card}>
+        <p style={{ margin: 0, opacity: .85 }}>
+          Welcome! This page renders safely even when <code>searchParams</code> is undefined.
+          {listId && <> &nbsp;listId=<code>{listId}</code></>}
+          {tournamentId && <> &nbsp;tournamentId=<code>{tournamentId}</code></>}
         </p>
-      </section>
 
-      {/* Footer */}
-      <footer style={{ opacity: 0.6, textAlign: "center", fontSize: 12 }}>
-        v0 • PWA ready • Works offline
-      </footer>
+        <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+          <Link href="/lists" style={btn}>My lists</Link>
+          <Link href="/me" style={btnGhost}>My tournaments</Link>
+          <Link href="/nearby" style={btnGhost}>Nearby</Link>
+        </div>
+      </div>
     </main>
   );
 }
 
-const btnBase: React.CSSProperties = {
-  padding: "16px 18px",
-  borderRadius: 14,
-  textDecoration: "none",
-  fontWeight: 600,
-  textAlign: "center",
-  display: "block",
-};
-
-const btnPrimary: React.CSSProperties = {
-  ...btnBase,
-  background: "#0ea5e9",
-  color: "white",
-};
-
-const btnGhost: React.CSSProperties = {
-  ...btnBase,
-  background: "rgba(255,255,255,0.06)",
-  color: "white",
-  border: "1px solid rgba(255,255,255,0.12)",
-};
+/* styles */
+const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui' };
+const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginTop:12 };
+const btn: React.CSSProperties = { padding:'8px 12px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, textDecoration:'none' };
+const btnGhost: React.CSSProperties = { padding:'8px 12px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', textDecoration:'none' };
