@@ -5,6 +5,8 @@ export const runtime = 'edge';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
+import AlertsToggle from '@/components/AlertsToggle';
+import { useQueueAlerts, bumpAlerts } from '@/lib/alerts';
 import {
   saveTournamentRemote,
   deleteTournamentRemote,
@@ -18,10 +20,6 @@ import {
   getTournamentRemote,
 } from '../../../lib/storage';
 import { startSmartPoll } from '../../../lib/poll';
-
-// 🔔 Alerts
-import AlertsToggle from '@/components/AlertsToggle';
-import { useQueueAlerts } from '@/hooks/useQueueAlerts';
 
 /* ---------- helpers used locally ---------- */
 function shuffle<T>(arr: T[]): T[] {
@@ -73,13 +71,12 @@ export default function Lobby() {
     if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' }));
   }, [me]);
 
-  // 🔔 Alerts: tournament-aware (fires when your match becomes the top-most active match)
+  // 🔔 mount alerts scoped to this tournament
   useQueueAlerts({
-  listId: id,
-  upNextMessage: "You're up!",
-  matchReadyMessage: () => "You're up!" // <-- fires exactly when you're seated
-});
-
+    tournamentId: id,
+    upNextMessage: (s) => s?.bracketRoundName ? `You're up in ${s.bracketRoundName}!` : "You're up next — good luck! :)",
+    matchReadyMessage: () => "You're up!"
+  });
 
   // load + smart poll
   useEffect(() => {
@@ -130,7 +127,7 @@ export default function Lobby() {
       const saved = await saveTournamentRemote(first);
       setT(saved);
       pollRef.current?.bump();
-      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+      bumpAlerts();
       setBusy(false);
       return;
     } catch {
@@ -147,7 +144,7 @@ export default function Lobby() {
         const saved = await saveTournamentRemote(second);
         setT(saved);
         pollRef.current?.bump();
-        try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+        bumpAlerts();
       } catch (e) {
         console.error(e);
         alert('Could not save changes.');
@@ -164,11 +161,7 @@ export default function Lobby() {
     if (me.id === t.hostId) {
       if (!confirm("You're the host. Leave & delete this tournament?")) return;
       setBusy(true);
-      try { 
-        await deleteTournamentRemote(t.id); 
-        try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
-        r.push('/'); r.refresh(); 
-      }
+      try { await deleteTournamentRemote(t.id); r.push('/'); r.refresh(); }
       finally { setBusy(false); }
       return;
     }
@@ -198,7 +191,7 @@ export default function Lobby() {
       const saved = await saveTournamentRemote(local);
       setT(saved);
       pollRef.current?.bump();
-      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+      bumpAlerts();
     } catch (e) {
       console.error(e);
       // one retry with latest
@@ -209,7 +202,7 @@ export default function Lobby() {
         const saved = await saveTournamentRemote(reseeded);
         setT(saved);
         pollRef.current?.bump();
-        try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+        bumpAlerts();
       } catch (ee) {
         console.error(ee);
         alert('Could not start bracket.');
@@ -226,6 +219,11 @@ export default function Lobby() {
       if (!m) return;
       m.winner = winnerId;
       if (winnerId) buildNextRoundFromSync(x, roundIdx);
+      // clear any ping marker for this match since it moved on
+      (x as any).lastPingAt = undefined;
+      (x as any).lastPingR = undefined;
+      (x as any).lastPingM = undefined;
+      (x as any).lastPingPlayer = undefined;
     });
   }
 
@@ -261,7 +259,7 @@ export default function Lobby() {
             )}
           </div>
           <div style={{ textAlign: 'right' }}>
-            <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end', alignItems:'center' }}>
               <AlertsToggle />
               <button style={{ ...btnGhost, ...lock }} onClick={leaveTournament}>Leave Tournament</button>
             </div>
@@ -300,11 +298,7 @@ export default function Lobby() {
                     if (busy) return;
                     if (confirm('Delete tournament? This cannot be undone.')) {
                       setBusy(true);
-                      try { 
-                        await deleteTournamentRemote(t.id); 
-                        try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
-                        r.push('/'); r.refresh(); 
-                      }
+                      try { await deleteTournamentRemote(t.id); r.push('/'); r.refresh(); }
                       finally { setBusy(false); }
                     }
                   }}
@@ -358,10 +352,47 @@ export default function Lobby() {
                         <div>{aName} vs {bName}</div>
 
                         {isHost && t.status !== 'completed' && (
-                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
                             <button style={w === m.a ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.a)} disabled={busy}>A wins</button>
                             <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)} disabled={busy}>B wins</button>
                             <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)} disabled={busy}>Clear</button>
+
+                            {/* 🔔 Ping A */}
+                            <button
+                              style={btnPing}
+                              onClick={() => {
+                                update(x => {
+                                  (x as any).lastPingAt = Date.now();
+                                  (x as any).lastPingR = rIdx;
+                                  (x as any).lastPingM = i;
+                                  (x as any).lastPingPlayer = 'A';
+                                });
+                                bumpAlerts();
+                              }}
+                              disabled={busy}
+                              title={`Ping ${aName}`}
+                            >
+                              Ping A 🔔
+                            </button>
+
+                            {/* 🔔 Ping B */}
+                            <button
+                              style={btnPing}
+                              onClick={() => {
+                                update(x => {
+                                  (x as any).lastPingAt = Date.now();
+                                  (x as any).lastPingR = rIdx;
+                                  (x as any).lastPingM = i;
+                                  (x as any).lastPingPlayer = 'B';
+                                });
+                                bumpAlerts();
+                              }}
+                              disabled={busy}
+                              title={`Ping ${bName}`}
+                            >
+                              Ping B 🔔
+                            </button>
+
                             {w && <span style={{ fontSize: 12, opacity: .8 }}>Winner: {t.players.find(p => p.id === w)?.name}</span>}
                           </div>
                         )}
@@ -404,4 +435,5 @@ const btnGhost: React.CSSProperties = { padding: '10px 14px', borderRadius: 10, 
 const btnDanger: React.CSSProperties = { ...btnGhost, borderColor: '#ff6b6b', color: '#ff6b6b' };
 const btnMini: React.CSSProperties = { padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.25)', background: 'transparent', color: '#fff', cursor: 'pointer', fontSize: 12 };
 const btnActive: React.CSSProperties = { ...btnMini, background: '#0ea5e9', border: 'none' };
+const btnPing: React.CSSProperties = { ...btnMini, background: 'rgba(14,165,233,0.15)', border: '1px solid rgba(14,165,233,0.45)', color: '#38bdf8' };
 const input: React.CSSProperties = { width: '100%', padding: '12px 14px', borderRadius: 10, border: '1px solid #333', background: '#111', color: '#fff' };
