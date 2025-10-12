@@ -10,36 +10,31 @@ export async function GET(req: NextRequest) {
     const userId = url.searchParams.get("userId") || "";
     const tournamentId = url.searchParams.get("tournamentId");
     const listId = url.searchParams.get("listId");
-
     if (!userId) return NextResponse.json({ phase: "idle" }, { status: 200 });
 
     if (tournamentId) {
       const t = await fetchTournament(req, tournamentId);
-      const status = computeStatusFromTournament(t, userId);
-      return NextResponse.json(status, { status: 200 });
+      return NextResponse.json(computeStatusFromTournament(t, userId), { status: 200 });
     }
     if (listId) {
       const l = await fetchList(req, listId);
-      const status = computeStatusFromList(l, userId);
-      return NextResponse.json(status, { status: 200 });
+      return NextResponse.json(computeStatusFromList(l, userId), { status: 200 });
     }
 
-    // Fallbacks so AlertsGlobal works from any page:
-    // 1) Latest list involving the user
+    // Fallbacks so global poller works from any page:
     const mineL = await fetchMineLists(req, userId);
     const latestL = pickLatest([...mineL.playing, ...mineL.hosting]);
     if (latestL) {
       const l = await fetchList(req, latestL.id);
-      const status = computeStatusFromList(l, userId);
-      if (status.phase !== "idle") return NextResponse.json(status, { status: 200 });
+      const st = computeStatusFromList(l, userId);
+      if (st.phase !== 'idle') return NextResponse.json(st, { status: 200 });
     }
-    // 2) Latest tournament involving the user
     const mineT = await fetchMineTournaments(req, userId);
     const latestT = pickLatest([...mineT.playing, ...mineT.hosting]);
     if (latestT) {
       const t = await fetchTournament(req, latestT.id);
-      const status = computeStatusFromTournament(t, userId);
-      if (status.phase !== "idle") return NextResponse.json(status, { status: 200 });
+      const st = computeStatusFromTournament(t, userId);
+      if (st.phase !== 'idle') return NextResponse.json(st, { status: 200 });
     }
 
     return NextResponse.json({ phase: "idle" }, { status: 200 });
@@ -48,42 +43,40 @@ export async function GET(req: NextRequest) {
   }
 }
 
-/* ---------- helpers ---------- */
+/* ------------ helpers ------------ */
 const baseUrl = (req: NextRequest) => req.nextUrl.origin;
 
-async function fetchMineTournaments(req: NextRequest, userId: string): Promise<{ hosting: any[]; playing: any[] }> {
+async function fetchTournament(req: NextRequest, id: string) {
+  const res = await fetch(`${baseUrl(req)}/api/tournament/${encodeURIComponent(id)}`, { cache: "no-store" });
+  if (!res.ok) return null;
+  return res.json();
+}
+async function fetchList(req: NextRequest, id: string) {
+  const res = await fetch(`${baseUrl(req)}/api/list/${encodeURIComponent(id)}`, { cache: "no-store" });
+  if (!res.ok) return null;
+  return res.json();
+}
+async function fetchMineTournaments(req: NextRequest, userId: string) {
   const res = await fetch(`${baseUrl(req)}/api/tournaments?userId=${encodeURIComponent(userId)}`, { cache: "no-store" });
   if (!res.ok) return { hosting: [], playing: [] };
   return res.json();
 }
-async function fetchMineLists(req: NextRequest, userId: string): Promise<{ hosting: any[]; playing: any[] }> {
+async function fetchMineLists(req: NextRequest, userId: string) {
   const res = await fetch(`${baseUrl(req)}/api/lists?userId=${encodeURIComponent(userId)}`, { cache: "no-store" });
   if (!res.ok) return { hosting: [], playing: [] };
   return res.json();
 }
-async function fetchTournament(req: NextRequest, tournamentId: string): Promise<any> {
-  const res = await fetch(`${baseUrl(req)}/api/tournament/${encodeURIComponent(tournamentId)}`, { cache: "no-store" });
-  if (!res.ok) return {};
-  return res.json();
-}
-async function fetchList(req: NextRequest, listId: string): Promise<any> {
-  const res = await fetch(`${baseUrl(req)}/api/list/${encodeURIComponent(listId)}`, { cache: "no-store" });
-  if (!res.ok) return {};
-  return res.json();
-}
 function pickLatest(list: any[]): any | null {
-  if (!Array.isArray(list) || list.length === 0) return null;
-  return [...list].sort((a, b) => (Number(b?.createdAt) || 0) - (Number(a?.createdAt) || 0))[0];
+  if (!Array.isArray(list) || !list.length) return null;
+  return [...list].sort((a,b)=>(+b?.createdAt||0)-(+a?.createdAt||0))[0];
 }
+const norm = (v: any) => (typeof v === 'string' ? v : v?.id || v?.playerId || v?.uid || null);
 
-/* ---------- normalize various id shapes ---------- */
-const norm = (v: any) => (typeof v === "string" ? v : v?.id || v?.playerId || v?.uid || null);
-
-/* ---------- TOURNAMENTS ---------- */
+/* ------------ TOURNAMENT ------------ */
 function computeStatusFromTournament(t: any, userId: string) {
   if (!t) return { phase: "idle" as const, sig: "idle" };
 
-  // tables first
+  // If tables are used, seated players are “match_ready”
   const tables = Array.isArray(t.tables) ? t.tables : [];
   for (const tb of tables) {
     const tableNum = tb?.number ?? tb?.id ?? tb?.tableNumber ?? null;
@@ -92,9 +85,7 @@ function computeStatusFromTournament(t: any, userId: string) {
       Array.isArray(tb?.currentPlayers) ? tb.currentPlayers.map(norm) :
       Array.isArray(tb?.currentPlayerIds) ? tb.currentPlayerIds.map(norm) : [];
     if (current.some((p: any) => p === userId)) {
-      const pairKey = current.join('-');
-      let sig = `T-${tableNum ?? 'x'}-${pairKey}`;
-      // ping awareness for tables (if you ever seat via tables)
+      let sig = `TBL-${tableNum ?? 'x'}-${current.join('-')}`;
       if ((t as any).lastPingAt && (t as any).lastPingTable === tableNum) {
         sig += `-P${(t as any).lastPingAt}`;
       }
@@ -102,7 +93,7 @@ function computeStatusFromTournament(t: any, userId: string) {
     }
   }
 
-  // bracket order
+  // Bracket “current” match = first undecided in the first round that still has undecided matches
   const rounds: any[][] = Array.isArray(t.rounds) ? t.rounds : [];
   if (!rounds.length) return { phase: "idle" as const, sig: "idle" };
 
@@ -112,53 +103,52 @@ function computeStatusFromTournament(t: any, userId: string) {
   const round = rounds[rIdx];
   const mIdx = round.findIndex(m => !m?.winner);
   const cur = mIdx >= 0 ? round[mIdx] : null;
-  const a = norm(cur?.a);
-  const b = norm(cur?.b);
-  let sig = `R${rIdx + 1}-M${mIdx + 1}-${a ?? 'x'}-${b ?? 'x'}`;
+  const a = norm(cur?.a); const b = norm(cur?.b);
 
-  // fold Ping into signature when it targets this current match
+  let sig = `R${rIdx+1}-M${mIdx+1}-${a ?? 'x'}-${b ?? 'x'}`;
   if ((t as any).lastPingAt !== undefined && (t as any).lastPingR === rIdx && (t as any).lastPingM === mIdx) {
     sig += `-P${(t as any).lastPingAt}`;
   }
 
+  // If I'm in the current match, I'm “up_next”
   if (a === userId || b === userId) {
     return { phase: "up_next" as const, bracketRoundName: `Round ${rIdx + 1}`, sig };
   }
+
+  // Otherwise, if I'm later in the same round, I'm “queued”
   const later = round.some((m, i) => i > mIdx && (norm(m?.a) === userId || norm(m?.b) === userId));
   if (later) return { phase: "queued" as const, sig };
+
   return { phase: "idle" as const, sig };
 }
 
-/* ---------- LISTS ---------- */
+/* ------------- LISTS ------------- */
 function computeStatusFromList(l: any, userId: string) {
   if (!l) return { phase: "idle" as const, sig: "idle" };
 
+  // Seated => match_ready
   const tables = Array.isArray(l.tables) ? l.tables : [];
-  for (let i = 0; i < tables.length; i++) {
+  for (let i=0;i<tables.length;i++) {
     const tb = tables[i];
-    const a = norm(tb?.a);
-    const b = norm(tb?.b);
+    const a = norm(tb?.a); const b = norm(tb?.b);
     if (a === userId || b === userId) {
-      let sig = `LT${i + 1}-${a ?? 'x'}-${b ?? 'x'}`;
+      let sig = `LT${i+1}-${a ?? 'x'}-${b ?? 'x'}`;
       if ((l as any).lastPingAt !== undefined && (l as any).lastPingTable === i) {
         sig += `-P${(l as any).lastPingAt}`;
       }
-      return { phase: "match_ready" as const, tableNumber: i + 1, sig };
+      return { phase: "match_ready" as const, tableNumber: i+1, sig };
     }
   }
 
-  const queue =
-    (Array.isArray(l.queue) && l.queue.length ? l.queue :
-     Array.isArray(l.waitlist) && l.waitlist.length ? l.waitlist :
-     Array.isArray(l.line) && l.line.length ? l.line : null);
-
-  if (queue) {
-    const arr = queue.map((p: any) => norm(p)).filter(Boolean);
+  // Queue => up_next if #1
+  const queue = Array.isArray(l.queue) ? l.queue : Array.isArray(l.waitlist) ? l.waitlist : Array.isArray(l.line) ? l.line : [];
+  if (Array.isArray(queue) && queue.length) {
+    const arr = queue.map(norm).filter(Boolean);
     const idx = arr.indexOf(userId);
     if (idx >= 0) {
-      const position = idx + 1;
-      if (position === 1) return { phase: "up_next" as const, position, sig: `LQ1-${arr.join('-')}` };
-      return { phase: "queued" as const, position, sig: `LQ${position}-${arr.join('-')}` };
+      const pos = idx + 1;
+      if (pos === 1) return { phase: "up_next" as const, position: 1, sig: `LQ1-${arr.join('-')}` };
+      return { phase: "queued" as const, position: pos, sig: `LQ${pos}-${arr.join('-')}` };
     }
   }
 

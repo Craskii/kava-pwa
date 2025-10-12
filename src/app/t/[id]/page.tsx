@@ -21,15 +21,8 @@ import {
 } from '../../../lib/storage';
 import { startSmartPoll } from '../../../lib/poll';
 
-/* ---------- helpers used locally ---------- */
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
+/* ---------- helpers ---------- */
+function shuffle<T>(arr: T[]): T[] { const a=[...arr]; for (let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]];} return a;}
 function nextPow2(n: number) { return Math.pow(2, Math.ceil(Math.log2(Math.max(1, n)))); }
 function seedLocal(t: Tournament): Tournament {
   const ids = shuffle(t.players.map(p => p.id));
@@ -42,18 +35,11 @@ function seedLocal(t: Tournament): Tournament {
 function buildNextRoundFromSync(t: Tournament, roundIndex: number) {
   const cur = t.rounds[roundIndex];
   const winners = cur.map(m => m.winner);
-  if (winners.some(w => !w)) return; // wait until all decided
-
-  if (winners.length === 1 && winners[0]) { // champion
-    t.status = 'completed';
-    return;
-  }
+  if (winners.some(w => !w)) return;
+  if (winners.length === 1 && winners[0]) { t.status = 'completed'; return; }
   const next: Match[] = [];
-  for (let i = 0; i < winners.length; i += 2) {
-    next.push({ a: winners[i], b: winners[i + 1], reports: {} });
-  }
-  if (t.rounds[roundIndex + 1]) t.rounds[roundIndex + 1] = next;
-  else t.rounds.push(next);
+  for (let i = 0; i < winners.length; i += 2) next.push({ a: winners[i], b: winners[i + 1], reports: {} });
+  if (t.rounds[roundIndex + 1]) t.rounds[roundIndex + 1] = next; else t.rounds.push(next);
 }
 
 export default function Lobby() {
@@ -63,19 +49,14 @@ export default function Lobby() {
   const [busy, setBusy] = useState(false);
   const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
 
-  const me = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); }
-    catch { return null; }
-  }, []);
-  useEffect(() => {
-    if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' }));
-  }, [me]);
+  const me = useMemo(() => { try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); } catch { return null; } }, []);
+  useEffect(() => { if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' })); }, [me]);
 
-  // 🔔 mount alerts scoped to this tournament
+  // 🔔 banners only
   useQueueAlerts({
     tournamentId: id,
-    upNextMessage: (s) => s?.bracketRoundName ? `You're up in ${s.bracketRoundName}!` : "You're up next — good luck! :)",
-    matchReadyMessage: () => "You're up!"
+    upNextMessage: (s) => s?.bracketRoundName ? `You're up next in ${s.bracketRoundName}!` : "You're up next — be ready!",
+    matchReadyMessage: () => "OK — you're up on the table!"
   });
 
   // load + smart poll
@@ -96,134 +77,86 @@ export default function Lobby() {
     return () => poll.stop();
   }, [id]);
 
-  if (!t) {
-    return (
-      <main style={wrap}>
-        <div style={container}>
-          <BackButton href="/" />
-          <p>Loading…</p>
-        </div>
-      </main>
-    );
-  }
-
+  if (!t) return (<main style={wrap}><div style={container}><BackButton href="/" /><p>Loading…</p></div></main>);
   const isHost = me?.id === t.hostId;
 
-  // ---- generic update with a single conflict retry ----
+  // ---- generic update + bump ----
   async function update(mut: (x: Tournament) => void) {
     if (busy) return;
     setBusy(true);
-
-    const base: Tournament = {
-      ...t,
-      players: [...t.players],
-      pending: [...t.pending],
-      rounds: t.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
-    };
-
+    const base: Tournament = { ...t, players:[...t.players], pending:[...t.pending], rounds: t.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))) };
     const first = structuredClone(base);
     mut(first);
     try {
       const saved = await saveTournamentRemote(first);
-      setT(saved);
-      pollRef.current?.bump();
-      bumpAlerts();
-      setBusy(false);
-      return;
+      setT(saved); pollRef.current?.bump(); bumpAlerts();
     } catch {
       try {
         const latest = await getTournamentRemote(t.id);
         if (!latest) throw new Error('fetch-latest-failed');
-        const second: Tournament = {
-          ...latest,
-          players: [...latest.players],
-          pending: [...latest.pending],
-          rounds: latest.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
-        };
+        const second: Tournament = { ...latest, players:[...latest.players], pending:[...latest.pending], rounds: latest.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))) };
         mut(second);
         const saved = await saveTournamentRemote(second);
-        setT(saved);
-        pollRef.current?.bump();
-        bumpAlerts();
+        setT(saved); pollRef.current?.bump(); bumpAlerts();
       } catch (e) {
-        console.error(e);
-        alert('Could not save changes.');
-      } finally {
-        setBusy(false);
+        console.error(e); alert('Could not save changes.');
       }
-    }
+    } finally { setBusy(false); }
   }
 
   // ---- leave/delete ----
   async function leaveTournament() {
     if (!me || busy) return;
-
     if (me.id === t.hostId) {
       if (!confirm("You're the host. Leave & delete this tournament?")) return;
       setBusy(true);
-      try { await deleteTournamentRemote(t.id); r.push('/'); r.refresh(); }
-      finally { setBusy(false); }
+      try { await deleteTournamentRemote(t.id); r.push('/'); r.refresh(); } finally { setBusy(false); }
       return;
     }
     await update(x => {
       x.players = x.players.filter(p => p.id !== me.id);
       x.pending = x.pending.filter(p => p.id !== me.id);
-      x.rounds = x.rounds.map(round =>
-        round.map(m => ({
-          ...m,
-          a: m.a === me.id ? undefined : m.a,
-          b: m.b === me.id ? undefined : m.b,
-          winner: m.winner === me.id ? undefined : m.winner,
-          reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== me.id)),
-        }))
-      );
+      x.rounds = x.rounds.map(round => round.map(m => ({
+        ...m,
+        a: m.a === me.id ? undefined : m.a,
+        b: m.b === me.id ? undefined : m.b,
+        winner: m.winner === me.id ? undefined : m.winner,
+        reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== me.id)),
+      })));
     });
     r.push('/'); r.refresh();
   }
 
-  // ---- start (instant local + robust persist) ----
+  // ---- start ----
   async function startTournament() {
     if (busy || t.status !== 'setup') return;
     const local = seedLocal(t);
-    setT(local); // instant
+    setT(local);
     setBusy(true);
     try {
       const saved = await saveTournamentRemote(local);
-      setT(saved);
-      pollRef.current?.bump();
-      bumpAlerts();
-    } catch (e) {
-      console.error(e);
-      // one retry with latest
+      setT(saved); pollRef.current?.bump(); bumpAlerts();
+    } catch {
       try {
         const latest = await getTournamentRemote(t.id);
         if (!latest) throw new Error('no-latest');
         const reseeded = seedLocal(latest);
         const saved = await saveTournamentRemote(reseeded);
-        setT(saved);
-        pollRef.current?.bump();
-        bumpAlerts();
-      } catch (ee) {
-        console.error(ee);
+        setT(saved); pollRef.current?.bump(); bumpAlerts();
+      } catch {
         alert('Could not start bracket.');
       }
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   }
 
-  // ---- host sets winner (with auto-advance) ----
+  // ---- host sets winner => auto-advance ----
   function hostSetWinner(roundIdx: number, matchIdx: number, winnerId?: string) {
     update(x => {
       const m = x.rounds?.[roundIdx]?.[matchIdx];
       if (!m) return;
       m.winner = winnerId;
       if (winnerId) buildNextRoundFromSync(x, roundIdx);
-      // clear any ping marker for this match since it moved on
-      (x as any).lastPingAt = undefined;
-      (x as any).lastPingR = undefined;
-      (x as any).lastPingM = undefined;
-      (x as any).lastPingPlayer = undefined;
+      (x as any).lastPingAt = undefined; (x as any).lastPingR = undefined; (x as any).lastPingM = undefined;
     });
   }
 
@@ -254,9 +187,7 @@ export default function Lobby() {
             <div style={subhead}>
               {t.code ? <>Private code: <b>{t.code}</b></> : 'Public tournament'} • {t.players.length} {t.players.length === 1 ? 'player' : 'players'}
             </div>
-            {iAmChampion && (
-              <div style={champ}>🎉 <b>Congratulations!</b> You won the tournament!</div>
-            )}
+            {iAmChampion && <div style={champ}>🎉 <b>Congratulations!</b> You won the tournament!</div>}
           </div>
           <div style={{ textAlign: 'right' }}>
             <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end', alignItems:'center' }}>
@@ -266,18 +197,14 @@ export default function Lobby() {
           </div>
         </header>
 
-        {/* How it works */}
         <section style={notice}>
-          <b>How it works:</b> Tap <i>Start</i> to seed a single-elimination bracket.
-          Players can self-report (<i>I won / I lost</i>). When all matches in a round have winners,
-          the next round is created automatically until a champion is decided.
-          Hosts can override winners with the <i>A wins / B wins / Clear</i> buttons.
+          <b>How it works:</b> Tap <i>Start</i> to seed a single-elimination bracket. Players can self-report.
+          When all matches in a round have winners, the next round is created automatically. Hosts can override.
         </section>
 
         {isHost && (
           <div style={card}>
             <h3 style={{ marginTop: 0 }}>Host Controls</h3>
-
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
               <input
                 defaultValue={t.name}
@@ -307,6 +234,7 @@ export default function Lobby() {
               <button style={{ ...btnGhost, ...lock }} onClick={addTestPlayer}>+ Add test player</button>
             </div>
 
+            {/* Pending approvals */}
             <div style={{ marginTop: 8 }}>
               <h4 style={{ margin: '6px 0' }}>Pending approvals ({t.pending?.length || 0})</h4>
               {(t.pending?.length || 0) === 0 ? (
@@ -325,10 +253,6 @@ export default function Lobby() {
                 </ul>
               )}
             </div>
-
-            <p style={{ opacity: .75, fontSize: 12, marginTop: 8 }}>
-              Start randomizes the bracket and handles BYEs automatically. Late approvals fill BYEs; if none, a play-in is added at the bottom.
-            </p>
           </div>
         )}
 
@@ -343,8 +267,7 @@ export default function Lobby() {
                     const aName = t.players.find(p => p.id === m.a)?.name || (m.a ? '??' : 'BYE');
                     const bName = t.players.find(p => p.id === m.b)?.name || (m.b ? '??' : 'BYE');
                     const w = m.winner;
-
-                    const iPlay = me && (m.a === me.id || m.b === me.id);
+                    const iPlay = me && (m.a === me?.id || m.b === me?.id);
                     const canReport = iPlay && !w && t.status === 'active';
 
                     return (
@@ -357,17 +280,11 @@ export default function Lobby() {
                             <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)} disabled={busy}>B wins</button>
                             <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)} disabled={busy}>Clear</button>
 
-                            {/* 🔔 Ping A */}
+                            {/* PING A */}
                             <button
                               style={btnPing}
                               onClick={() => {
-                                update(x => {
-                                  (x as any).lastPingAt = Date.now();
-                                  (x as any).lastPingR = rIdx;
-                                  (x as any).lastPingM = i;
-                                  (x as any).lastPingPlayer = 'A';
-                                });
-                                bumpAlerts();
+                                update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; });
                               }}
                               disabled={busy}
                               title={`Ping ${aName}`}
@@ -375,17 +292,11 @@ export default function Lobby() {
                               Ping A 🔔
                             </button>
 
-                            {/* 🔔 Ping B */}
+                            {/* PING B */}
                             <button
                               style={btnPing}
                               onClick={() => {
-                                update(x => {
-                                  (x as any).lastPingAt = Date.now();
-                                  (x as any).lastPingR = rIdx;
-                                  (x as any).lastPingM = i;
-                                  (x as any).lastPingPlayer = 'B';
-                                });
-                                bumpAlerts();
+                                update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; });
                               }}
                               disabled={busy}
                               title={`Ping ${bName}`}
@@ -428,7 +339,7 @@ const header: React.CSSProperties = { display: 'flex', justifyContent: 'space-be
 const h1: React.CSSProperties = { margin: '8px 0 4px', fontSize: 24 };
 const subhead: React.CSSProperties = { opacity: .75, fontSize: 14 };
 const champ: React.CSSProperties = { marginTop: 8, padding: '10px 12px', borderRadius: 10, background: '#14532d', border: '1px solid #166534' };
-const notice: React.CSSProperties = { background: 'rgba(14,165,233,.12)', border: '1px solid rgba(14,165,233,.25)', borderRadius: 12, padding: '10px 12px', margin: '8px 0 14px' };
+const notice: React.CSSProperties = { background: 'rgba(14,165,233,.12)', border: '1px solid rgba(14,165,233,.25)', borderRadius: 12, padding: 10, margin: '8px 0 14px' };
 const card: React.CSSProperties = { background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 14, padding: 14 };
 const btn: React.CSSProperties = { padding: '10px 14px', borderRadius: 10, border: 'none', background: '#0ea5e9', color: '#fff', fontWeight: 700, cursor: 'pointer' };
 const btnGhost: React.CSSProperties = { padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.25)', background: 'transparent', color: '#fff', cursor: 'pointer' };
