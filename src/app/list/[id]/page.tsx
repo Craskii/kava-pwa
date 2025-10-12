@@ -5,7 +5,7 @@ export const runtime = 'edge';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
-import { useQueueAlerts, bumpAlerts } from '@/lib/alerts';
+import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts'; // <-- updated path
 import {
   getListRemote, listJoin, listLeave, listILost, listSetTables,
   ListGame, Player, uid
@@ -15,7 +15,6 @@ export default function ListLobby() {
   const [g, setG] = useState<ListGame | null>(null);
   const [busy, setBusy] = useState(false);
   const [nameField, setNameField] = useState('');
-  const pollRef = useRef<any>(null);
 
   const id = typeof window !== 'undefined'
     ? decodeURIComponent(window.location.pathname.split('/').pop() || '')
@@ -34,9 +33,8 @@ export default function ListLobby() {
     matchReadyMessage: () => "OK — you're up on the table!"
   });
 
-  // track my seating to trigger immediate bump when it changes
-  const lastSeating = useRef<string>(''); // "table-<i>-<a>-<b>" or ""
-
+  // Track my seating to bump alerts when I get seated
+  const lastSeating = useRef<string>('');
   function detectMySeatingChanged(next: ListGame | null) {
     if (!next) return false;
     const i = next.tables.findIndex(t => t.a === me.id || t.b === me.id);
@@ -54,16 +52,38 @@ export default function ListLobby() {
   async function loadOnce() {
     if (!id) return;
     const next = await getListRemote(id);
-    // set, then if I just got seated or seat changed, bump alerts immediately
     setG(next);
     if (detectMySeatingChanged(next)) bumpAlerts();
   }
 
+  // 🔴 Replace 1s polling with SSE stream
   useEffect(() => {
+    if (!id) return;
+    let es: EventSource | null = null;
+
+    // initial load for SSR/refresh
     loadOnce();
-    clearInterval(pollRef.current);
-    pollRef.current = setInterval(loadOnce, 1000);
-    return () => clearInterval(pollRef.current);
+
+    try {
+      es = new EventSource(`/api/list/${encodeURIComponent(id)}/stream`);
+      es.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data?._deleted) {
+            setG(null);
+            return;
+          }
+          setG(data);
+          if (detectMySeatingChanged(data)) bumpAlerts();
+        } catch {}
+      };
+      es.onerror = () => {
+        // On iOS, SSE may drop in background; no-op here (Alerts hook also wakes on focus)
+      };
+    } catch (err) {
+      console.error('SSE error', err);
+    }
+    return () => { if (es) es.close(); };
   }, [id]);
 
   const iAmHost = g && me?.id === g.hostId;
@@ -76,12 +96,11 @@ export default function ListLobby() {
     setBusy(true);
     try {
       const p: Player = { id: uid(), name: nm };
-      const updated = await listJoin(g, p);   // queues + auto-seats
-      setG({ ...updated });
-      setNameField('');
+      const updated = await listJoin(g, p);
+      setG({ ...updated }); // local optimistic
       bumpAlerts();
     } catch { alert('Could not add player.'); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setNameField(''); }
   }
 
   async function onAddMe() {

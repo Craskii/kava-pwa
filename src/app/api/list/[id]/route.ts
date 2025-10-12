@@ -1,7 +1,9 @@
+// src/app/api/list/[id]/route.ts
 export const runtime = "edge";
 
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
+import { pushListUpdate } from "./stream/route";
 
 /* KV */
 type KVListResult = { keys: { name: string }[]; cursor?: string; list_complete?: boolean };
@@ -54,21 +56,25 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
   return NextResponse.json(doc, { headers: { "x-l-version": String(v) } });
 }
 
-/* POST — ensureCode */
+/* POST — ensure code (does not bump version) */
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
   const raw = await env.KAVA_TOURNAMENTS.get(listKey(id));
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const doc = JSON.parse(raw) as ListGame;
+
   if (!doc.code) {
     const code = await uniqueCode(env);
     doc.code = code;
     await env.KAVA_TOURNAMENTS.put(listKey(id), JSON.stringify(doc));
     await env.KAVA_TOURNAMENTS.put(`code:${code}`, JSON.stringify({ type: "list", id }));
-    const v = await getVersion(env, id); // don’t bump version for code-only
+    const v = await getVersion(env, id); // same version
+    // Push the updated snapshot to listeners (optional for code-only change)
+    pushListUpdate(id, doc);
     return NextResponse.json(doc, { headers: { "x-l-version": String(v) } });
   }
+
   const v = await getVersion(env, id);
   return NextResponse.json(doc, { headers: { "x-l-version": String(v) } });
 }
@@ -91,6 +97,10 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   await env.KAVA_TOURNAMENTS.put(listKey(id), JSON.stringify(body));
   const nextV = curV + 1;
   await setVersion(env, id, nextV);
+
+  // **Instant push** to all connected listeners via SSE
+  pushListUpdate(id, body);
+
   return new NextResponse(null, { status: 204, headers: { "x-l-version": String(nextV) } });
 }
 
@@ -103,8 +113,11 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
   if (raw) {
     try { const doc = JSON.parse(raw) as ListGame; if (doc.code) await env.KAVA_TOURNAMENTS.delete(`code:${doc.code}`); } catch {}
   }
-
   await env.KAVA_TOURNAMENTS.delete(listKey(id));
   await env.KAVA_TOURNAMENTS.delete(verKey(id));
+
+  // Notify clients this list is gone (they can handle 404 on next fetch)
+  pushListUpdate(id, { _deleted: true, id });
+
   return new NextResponse(null, { status: 204 });
 }
