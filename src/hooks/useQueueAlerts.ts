@@ -1,122 +1,124 @@
-// src/hooks/useQueueAlerts.ts
 'use client';
 
 import { useEffect, useRef } from 'react';
-import {
-  getAlertsEnabled,
-  subscribeAlertsChange,
-  bumpAlertsSignal,
-  showSystemNotification,
-} from '@/lib/alerts';
+import { getAlertsEnabled, subscribeAlertsChange, bumpAlerts } from '@/lib/alerts';
+import { ensureNotificationPermission, showSystemNotification } from '@/lib/notifications';
 
-const DING = '/sounds/up-next.mp3';
+type Status =
+  | { phase: 'idle'; sig: string }
+  | { phase: 'up_next'; sig: string; bracketRoundName?: string; position?: number }
+  | { phase: 'queued'; sig: string; position?: number }
+  | { phase: 'match_ready'; sig: string; tableNumber?: number; bracketRoundName?: string };
 
-let unlockedAudio = false;
-let audioEl: HTMLAudioElement | null = null;
-function ensureAudio() {
-  if (typeof window === 'undefined') return null;
-  if (!audioEl) {
-    audioEl = document.createElement('audio');
-    audioEl.src = DING;
-    audioEl.preload = 'auto';
-    audioEl.crossOrigin = 'anonymous';
-  }
-  return audioEl;
-}
-
-function playDing() {
-  try {
-    const a = ensureAudio();
-    if (!a) return;
-    // iOS requires a prior user gesture on the page at least once
-    a.play().then(() => {
-      a.pause();
-      a.currentTime = 0;
-      unlockedAudio = true;
-    }).catch(() => {});
-  } catch {}
-}
-export function bumpAlerts() {
-  // public bump for pages
-  bumpAlertsSignal();
-}
-
-type QueueOpts = {
-  listId?: string;
+type Opts = {
   tournamentId?: string;
-  upNextMessage?: string | (() => string);
-  matchReadyMessage?: string | (() => string);
+  listId?: string;
+  upNextMessage?: ((s?: Status) => string) | string;
+  matchReadyMessage?: ((s?: Status) => string) | string;
 };
 
-export function useQueueAlerts(opts: QueueOpts) {
-  const { listId, tournamentId } = opts;
-  const getMsg = (v?: string | (() => string)) =>
-    typeof v === 'function' ? (v as any)() : v;
+function msg(m?: Opts['upNextMessage'], s?: Status, fallback: string = "You're up!") {
+  if (!m) return fallback;
+  if (typeof m === 'function') return m(s);
+  return m;
+}
 
-  const lastSig = useRef<string>('');
+/** Polls /api/me/status and fires banners when phase → up_next or match_ready. */
+export function useQueueAlerts(opts: Opts) {
+  const { tournamentId, listId } = opts;
+  const timerRef = useRef<number | null>(null);
+  const lastSigRef = useRef<string>('');
+
+  // Persist lastSig per scope to avoid duplicates across navigations
+  useEffect(() => {
+    const key = scopeKey(tournamentId, listId);
+    try { lastSigRef.current = sessionStorage.getItem(key) || ''; } catch {}
+  }, [tournamentId, listId]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
+    let stopped = false;
+    let inflight: AbortController | null = null;
 
-    // unlock audio on first interaction
-    const unlock = () => { playDing(); window.removeEventListener('pointerdown', unlock); };
-    window.addEventListener('pointerdown', unlock, { once: true });
+    async function tick(immediate = false) {
+      if (stopped) return;
+      if (!getAlertsEnabled()) return; // short-circuit when OFF
 
-    let stop = false;
+      // ask permission once (non-blocking)
+      ensureNotificationPermission();
 
-    async function check() {
-      if (stop || !getAlertsEnabled()) return;
+      const userId = getUserId();
+      if (!userId) return;
 
-      const qs = new URLSearchParams();
-      const me = JSON.parse(localStorage.getItem('kava_me') || 'null');
-      if (!me?.id) return;
-      qs.set('userId', me.id);
-      if (listId) qs.set('listId', listId);
+      const qs = new URLSearchParams({ userId });
       if (tournamentId) qs.set('tournamentId', tournamentId);
+      if (listId) qs.set('listId', listId);
 
-      const res = await fetch(`/api/me/status?${qs}`, { cache: 'no-store' }).catch(() => null);
-      if (!res?.ok) return;
-      const s = await res.json();
+      inflight?.abort();
+      inflight = new AbortController();
 
-      // s.sig must change to notify
-      if (s?.sig && s.sig !== lastSig.current) {
-        lastSig.current = s.sig;
+      try {
+        const res = await fetch(`/api/me/status?${qs.toString()}`, {
+          cache: 'no-store',
+          signal: inflight.signal,
+        });
+        if (!res.ok) return;
+        const s = (await res.json()) as Status;
+        const sig = String(s?.sig || '');
+        const key = scopeKey(tournamentId, listId);
 
-        // phase -> message
-        let body = '';
-        if (s.phase === 'up_next') {
-          body = getMsg(opts.upNextMessage) || (tournamentId ? `You're up next in ${s.bracketRoundName || 'the bracket'}!` : `You're up!`);
-        } else if (s.phase === 'match_ready') {
-          body = getMsg(opts.matchReadyMessage) || (listId ? `OK — you're up on the table!` : `It's your match now!`);
-        }
-
-        if (body) {
-          // banner (iOS silent), plus local ding if unlocked
-          showSystemNotification('Kava', body);
-          if (unlockedAudio) {
-            try { await ensureAudio()?.play(); ensureAudio()!.currentTime = 0; } catch {}
+        if (sig && sig !== lastSigRef.current) {
+          // phase change => maybe notify
+          if (s.phase === 'match_ready') {
+            const text = msg(opts.matchReadyMessage, s, "OK — you're up on the table!");
+            showSystemNotification('Ready to play', text);
+          } else if (s.phase === 'up_next') {
+            const text = msg(opts.upNextMessage, s,
+              s?.bracketRoundName ? `You're up next in ${s.bracketRoundName}!` : "You're up next — be ready!");
+            showSystemNotification('Heads up!', text);
           }
+          lastSigRef.current = sig;
+          try { sessionStorage.setItem(key, sig); } catch {}
         }
+      } catch {
+        // ignore
+      } finally {
+        inflight = null;
+      }
+
+      // cadence: 750ms when alerts are ON
+      if (!stopped) {
+        window.clearTimeout(timerRef.current!);
+        timerRef.current = window.setTimeout(tick, immediate ? 750 : 750) as unknown as number;
       }
     }
 
-    // poll with backoff + bump handling
-    let t: any = null;
-    const loop = async (delay = 1200) => {
-      await check();
-      if (!stop) t = setTimeout(() => loop(1200), delay);
-    };
-    loop(100);
+    // start polling
+    tick(true);
 
-    const off1 = subscribeAlertsChange(() => check());
-    const onBump = () => check();
-    window.addEventListener('kava:alerts-bump', onBump as any);
+    // react to ON/OFF or bumps
+    const unsub = subscribeAlertsChange(() => tick(true));
 
     return () => {
-      stop = true;
-      if (t) clearTimeout(t);
-      off1();
-      window.removeEventListener('kava:alerts-bump', onBump as any);
+      stopped = true;
+      unsub();
+      if (timerRef.current) window.clearTimeout(timerRef.current);
+      inflight?.abort();
     };
-  }, [listId, tournamentId, opts.upNextMessage, opts.matchReadyMessage]);
+  }, [tournamentId, listId, opts.upNextMessage, opts.matchReadyMessage]);
 }
+
+function getUserId(): string | null {
+  try {
+    const me = JSON.parse(localStorage.getItem('kava_me') || 'null');
+    return me?.id || null;
+  } catch { return null; }
+}
+
+function scopeKey(tId?: string, lId?: string) {
+  if (tId) return `alerts_sig_t_${tId}`;
+  if (lId) return `alerts_sig_l_${lId}`;
+  return `alerts_sig_global`;
+}
+
+/** Expose bump for pages that want to force a re-check after they mutate state */
+export { bumpAlerts };

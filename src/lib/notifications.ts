@@ -1,31 +1,28 @@
-// src/lib/notifications.ts
-// Small helpers for permission + system banners – no sound on iOS banners.
+'use client';
 
-import { getAlertsEnabled, setAlertsEnabled } from "./alerts";
+/**
+ * Small helpers around the Notifications API (banners).
+ * iOS Safari shows banner silently; sound must be in-app (user gesture).
+ */
 
 export async function ensureNotificationPermission(): Promise<NotificationPermission> {
-  if (typeof window === "undefined" || !("Notification" in window)) return "denied";
-  const cur = Notification.permission;
-  if (cur === "granted" || cur === "denied") return cur;
+  if (typeof window === 'undefined' || !('Notification' in window)) return 'denied';
+  if (Notification.permission === 'granted') return 'granted';
+  if (Notification.permission === 'denied') return 'denied';
   try {
-    const req = await Notification.requestPermission();
-    return req;
+    const p = await Notification.requestPermission();
+    return p;
   } catch {
-    return "denied";
+    return 'denied';
   }
 }
 
-export function showSystemNotification(title: string, body?: string) {
+/** Shows a system notification (banner) if allowed. Works best when the PWA/tab is backgrounded. */
+export function showSystemNotification(title: string, body?: string): void {
+  if (typeof window === 'undefined' || !('Notification' in window)) return;
+  if (Notification.permission !== 'granted') return;
   try {
-    if (typeof window === "undefined" || !("Notification" in window)) return;
-    if (Notification.permission !== "granted") return;
-    // Note: iOS shows a silent banner; Android/desktop may play system sound.
-    new Notification(title, { body, tag: "kava-alert", renotify: true });
-  } catch {
-    /* noop */
-  }
+    // Using a service worker is ideal, but simple Notification also works in-page
+    new Notification(title, { body, silent: true }); // iOS: will be silent anyway
+  } catch {}
 }
-
-/** Convenience re-exports so components don’t need to know the alerts store names */
-export const getAlertsOn = getAlertsEnabled;
-export const setAlertsOn = setAlertsEnabled;
