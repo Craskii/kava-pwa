@@ -1,49 +1,78 @@
-// src/app/api/tournaments/route.ts
-export const runtime = "edge";
-import { NextResponse } from "next/server";
-import { getEnv } from "../_kv";
+export const runtime = 'edge';
+
+import { NextResponse } from 'next/server';
+import { getEnv } from '../_kv';
 
 type Tournament = {
-  id: string; hostId: string; players: { id: string; name: string }[];
-  createdAt: number; updatedAt: number; name: string; code?: string;
+  id: string;
+  hostId: string;
+  players?: { id: string; name: string }[];
+  createdAt?: number;
+  updatedAt?: number;
+  name?: string;
+  code?: string;
 };
 
 export async function GET(req: Request) {
-  const env = getEnv();
-  const u = new URL(req.url);
-  const userId = u.searchParams.get("userId");
-  if (!userId) return NextResponse.json({ error: "Missing userId" }, { status: 400 });
+  try {
+    const env = getEnv();
 
-  if (!env.KAVA_TOURNAMENTS) {
-    return NextResponse.json({ error: "KV binding KAVA_TOURNAMENTS is not available" }, { status: 500 });
-  }
-
-  let cursor: string | undefined = undefined;
-  const hosting: Tournament[] = [];
-  const playing: Tournament[] = [];
-
-  while (true) {
-    const res = await env.KAVA_TOURNAMENTS.list({ prefix: "t:", limit: 1000, cursor });
-    for (const k of res.keys) {
-      const raw = await env.KAVA_TOURNAMENTS.get(k.name);
-      if (!raw) continue;
-      const t = JSON.parse(raw) as Tournament;
-      if (t.hostId === userId) hosting.push(t);
-      else if ((t.players || []).some(p => p.id === userId)) playing.push(t);
+    // Binding present?
+    const kv: KVNamespace | undefined = (env as any).KAVA_TOURNAMENTS;
+    if (!kv) {
+      return NextResponse.json(
+        { error: 'KV binding KAVA_TOURNAMENTS is not available' },
+        { status: 500 }
+      );
     }
-    if (!res.list_complete && res.cursor) { cursor = res.cursor; }
-    else break;
+
+    const u = new URL(req.url);
+    const userId = u.searchParams.get('userId');
+    if (!userId) {
+      return NextResponse.json({ error: 'Missing userId' }, { status: 400 });
+    }
+
+    const hosting: Tournament[] = [];
+    const playing: Tournament[] = [];
+
+    // List everything under prefix t:
+    let cursor: string | undefined = undefined;
+    do {
+      const l = await kv.list({ prefix: 't:', limit: 100, cursor });
+      for (const k of l.keys) {
+        const raw = await kv.get(k.name);
+        if (!raw) continue;
+        let t: Tournament | undefined;
+        try {
+          t = JSON.parse(raw);
+        } catch {
+          continue;
+        }
+        if (!t) continue;
+        if (t.hostId === userId) hosting.push(t);
+        else if ((t.players || []).some((p) => p.id === userId)) playing.push(t);
+      }
+      cursor = l.list_complete ? undefined : l.cursor;
+    } while (cursor);
+
+    const sortByCreated = (a: Tournament, b: Tournament) =>
+      (b.createdAt || 0) - (a.createdAt || 0);
+    hosting.sort(sortByCreated);
+    playing.sort(sortByCreated);
+
+    const listVersion = Math.max(
+      0,
+      ...hosting.map((t) => t.updatedAt || 0),
+      ...playing.map((t) => t.updatedAt || 0)
+    );
+
+    return NextResponse.json({ hosting, playing, listVersion });
+  } catch (err: any) {
+    // Always JSON, with details so you can see the actual error
+    const msg =
+      (err && (err.stack || err.message)) ||
+      String(err) ||
+      'Internal Server Error';
+    return NextResponse.json({ error: msg }, { status: 500 });
   }
-
-  const byCreated = (a: Tournament, b: Tournament) => (b.createdAt || 0) - (a.createdAt || 0);
-  hosting.sort(byCreated);
-  playing.sort(byCreated);
-
-  const listVersion = Math.max(
-    0,
-    ...hosting.map(t => t.updatedAt || 0),
-    ...playing.map(t => t.updatedAt || 0)
-  );
-
-  return NextResponse.json({ hosting, playing, listVersion });
 }
