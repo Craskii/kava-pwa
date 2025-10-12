@@ -11,7 +11,6 @@ export default function LaunchReminder() {
     try {
       const enabled = getAlertsEnabled();
       const dismissed = localStorage.getItem("kava_alerts_prompt_dismissed") === "1";
-      // Show if not enabled and not dismissed
       setShow(!enabled && !dismissed);
     } catch {
       setShow(false);
@@ -21,14 +20,11 @@ export default function LaunchReminder() {
   if (!show) return null;
 
   async function onEnable() {
-    try {
-      const p = await ensureNotificationPermission();
-      if (p === "granted") {
-        setAlertsEnabled(true);
-        setShow(false);
-      }
-    } catch {
-      // ignore
+    const p = await ensureNotificationPermission();
+    if (p === "granted") {
+      setAlertsEnabled(true);
+      try { localStorage.setItem("kava_alerts_prompt_dismissed", "1"); } catch {}
+      setShow(false);
     }
   }
 
@@ -38,15 +34,9 @@ export default function LaunchReminder() {
   }
 
   const box: React.CSSProperties = {
-    position: "fixed",
-    left: 12, right: 12, bottom: 12,
-    zIndex: 9999,
-    background: "rgba(17,17,17,.92)",
-    border: "1px solid rgba(255,255,255,.15)",
-    borderRadius: 12,
-    padding: "12px 14px",
-    color: "#fff",
-    backdropFilter: "blur(6px)"
+    position: "fixed", left: 12, right: 12, bottom: 12, zIndex: 9999,
+    background: "rgba(17,17,17,.92)", border: "1px solid rgba(255,255,255,.15)",
+    borderRadius: 12, padding: "12px 14px", color: "#fff", backdropFilter: "blur(6px)"
   };
   const row: React.CSSProperties = { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" };
   const btn: React.CSSProperties = { padding: "8px 12px", borderRadius: 10, border: "1px solid rgba(255,255,255,.25)", background: "transparent", color: "#fff", fontWeight: 700, cursor: "pointer" };
@@ -57,9 +47,7 @@ export default function LaunchReminder() {
       <div style={row}>
         <div style={{maxWidth: 420}}>
           <div style={{fontWeight: 700, marginBottom: 4}}>Turn on alerts</div>
-          <div style={{opacity:.85, fontSize: 14}}>
-            Enable notifications so we can banner you when you’re up next.
-          </div>
+          <div style={{opacity:.85, fontSize: 14}}>Enable notifications so we can banner you when you’re up next.</div>
         </div>
         <div style={{display:"flex", gap:8}}>
           <button style={btn} onClick={onDismiss}>Later</button>

@@ -1,11 +1,14 @@
+// src/app/t/[id]/page.tsx
 'use client';
 export const runtime = 'edge';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
+
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '@/components/AlertsToggle';
 
-// ✅ Use the hook from hooks, bumpAlerts from lib
+// ✅ alerts hook from hooks, bumpAlerts from lib (avoid import cycles)
 import { useQueueAlerts } from '@/hooks/useQueueAlerts';
 import { bumpAlerts } from '@/lib/alerts';
 
@@ -21,10 +24,25 @@ import {
 } from '../../../lib/storage';
 import { startSmartPoll } from '../../../lib/poll';
 
-/* … keep the remainder of your file unchanged … */
+/* ---------- minimal types (kept local to avoid external type drift) ---------- */
+type Player = { id: string; name: string };
+type Match = { a?: string; b?: string; winner?: string; reports?: Record<string, 'win'|'loss'> };
+type Tournament = {
+  id: string;
+  name: string;
+  code?: string;
+  hostId: string;
+  status: 'setup' | 'active' | 'completed';
+  players: Player[];
+  pending: Player[];
+  rounds: Match[][];
+  // optional ping fields
+  lastPingAt?: number;
+  lastPingR?: number;
+  lastPingM?: number;
+};
 
-
-/* ---------- helpers ---------- */
+/* ---------- utils ---------- */
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -38,7 +56,7 @@ function shuffle<T>(arr: T[]): T[] {
 function normalizeMatch(m: Match): Match | null {
   const a = m.a;
   const b = m.b;
-  if (!a && !b) return null; // drop
+  if (!a && !b) return null;                          // drop
   if (a && !b) return { ...m, winner: a, reports: m.reports ?? {} }; // auto-advance A
   if (!a && b) return { ...m, winner: b, reports: m.reports ?? {} }; // auto-advance B
   return { ...m, reports: m.reports ?? {} };
@@ -50,13 +68,12 @@ function seedLocal(t: Tournament): Tournament {
   const first: Match[] = [];
   for (let i = 0; i < ids.length; i += 2) {
     const a = ids[i];
-    const b = ids[i + 1]; // maybe undefined if odd
+    const b = ids[i + 1]; // may be undefined if odd
     const nm = normalizeMatch({ a, b, reports: {} });
     if (nm) first.push(nm);
   }
-
   const seeded: Tournament = { ...t, rounds: [first], status: 'active' };
-  // Cascade if everything auto-advanced
+  // Cascade if everything auto-advanced (e.g., many byes)
   buildNextRoundFromSync(seeded, 0);
   return seeded;
 }
@@ -65,7 +82,7 @@ function seedLocal(t: Tournament): Tournament {
 function buildNextRoundFromSync(t: Tournament, roundIndex: number) {
   const cur = t.rounds[roundIndex] || [];
 
-  // Normalize current round each time (handles later edits)
+  // Normalize current round (handles later edits, clears double-byes)
   const normalized: Match[] = [];
   for (const m of cur) {
     const nm = normalizeMatch(m);
@@ -100,6 +117,7 @@ function buildNextRoundFromSync(t: Tournament, roundIndex: number) {
   if (next.every(m => !!m.winner)) buildNextRoundFromSync(t, roundIndex + 1);
 }
 
+/* ---------- component ---------- */
 export default function Lobby() {
   const { id } = useParams<{ id: string }>();
   const r = useRouter();
@@ -107,10 +125,13 @@ export default function Lobby() {
   const [busy, setBusy] = useState(false);
   const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
 
-  const me = useMemo(() => { try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); } catch { return null; } }, []);
+  const me = useMemo(() => {
+    try { return JSON.parse(localStorage.getItem('kava_me') || 'null') as Player | null; }
+    catch { return null; }
+  }, []);
   useEffect(() => { if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' })); }, [me]);
 
-  // 🔔 banners only
+  // 🔔 banners only (texts safe if undefined state arrives)
   useQueueAlerts({
     tournamentId: id,
     upNextMessage: (s) => s?.bracketRoundName
@@ -119,12 +140,12 @@ export default function Lobby() {
     matchReadyMessage: () => "OK — you're up on the table!"
   });
 
-  // load + smart poll
+  // Load + smart poll, keyed by id
   useEffect(() => {
     if (!id) return;
     pollRef.current?.stop();
     const poll = startSmartPoll(async () => {
-      const res = await fetch(`/api/tournament/${id}`, { cache: 'no-store' });
+      const res = await fetch(`/api/tournament/${encodeURIComponent(id)}`, { cache: 'no-store' });
       if (res.ok) {
         const v = res.headers.get('x-t-version') || '';
         const next = await res.json();
@@ -137,21 +158,25 @@ export default function Lobby() {
     return () => poll.stop();
   }, [id]);
 
-  if (!t) return (
-    <main style={wrap}>
-      <div style={container}>
-        <BackButton href="/" />
-        <p>Loading…</p>
-      </div>
-    </main>
-  );
+  if (!t) {
+    return (
+      <main style={wrap}>
+        <div style={container}>
+          <BackButton href="/" />
+          <p>Loading…</p>
+        </div>
+      </main>
+    );
+  }
 
   const isHost = me?.id === t.hostId;
 
-  // ---- generic update + poll + alerts bump ----
+  /* ---- generic update + poll + alerts bump ---- */
   async function update(mut: (x: Tournament) => void) {
     if (busy) return;
     setBusy(true);
+
+    // make a structured copy safe to mutate
     const base: Tournament = {
       ...t,
       players: [...t.players],
@@ -165,6 +190,7 @@ export default function Lobby() {
       const saved = await saveTournamentRemote(first);
       setT(saved); pollRef.current?.bump(); bumpAlerts();
     } catch {
+      // conflict: fetch latest then re-apply
       try {
         const latest = await getTournamentRemote(t.id);
         if (!latest) throw new Error('fetch-latest-failed');
@@ -181,10 +207,12 @@ export default function Lobby() {
         console.error(e);
         alert('Could not save changes.');
       }
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+    }
   }
 
-  // ---- leave/delete ----
+  /* ---- leave/delete ---- */
   async function leaveTournament() {
     if (!me || busy) return;
 
@@ -195,6 +223,7 @@ export default function Lobby() {
       finally { setBusy(false); }
       return;
     }
+
     await update(x => {
       x.players = x.players.filter(p => p.id !== me.id);
       x.pending = x.pending.filter(p => p.id !== me.id);
@@ -211,11 +240,11 @@ export default function Lobby() {
     r.push('/'); r.refresh();
   }
 
-  // ---- start ----
+  /* ---- start ---- */
   async function startTournament() {
     if (busy || t.status !== 'setup') return;
     const local = seedLocal(t);
-    setT(local); // instant
+    setT(local); // instant optimistic
     setBusy(true);
     try {
       const saved = await saveTournamentRemote(local);
@@ -237,13 +266,14 @@ export default function Lobby() {
     }
   }
 
-  // ---- host sets winner => auto-advance ----
+  /* ---- host sets winner => auto-advance ---- */
   function hostSetWinner(roundIdx: number, matchIdx: number, winnerId?: string) {
     update(x => {
       const m = x.rounds?.[roundIdx]?.[matchIdx];
       if (!m) return;
       m.winner = winnerId;
       if (winnerId) buildNextRoundFromSync(x, roundIdx);
+      // clear last ping markers so alerts lib won’t re-ping stale match
       (x as any).lastPingAt = undefined; (x as any).lastPingR = undefined; (x as any).lastPingM = undefined;
     });
   }

@@ -1,18 +1,27 @@
 "use client";
 
 import { useEffect } from "react";
+import { installAlertsStorageSync, getAlertsEnabled } from "@/lib/alerts";
 import { useQueueAlerts } from "@/hooks/useQueueAlerts";
 
 /**
- * Mount once at the app root to keep the alerts machinery alive
- * (storage sync, audio warm-up, background poll kick, etc).
- * The hook no-ops unless a page passes options elsewhere.
+ * Mount once at the app root to:
+ *  - keep alerts hook alive
+ *  - sync the Alerts toggle across tabs/pages
  */
 export default function AlertsGlobal() {
-  // The hook internally guards when called with no options.
-  useQueueAlerts();
+  useQueueAlerts(); // safe no-op until a page configures messages
+
   useEffect(() => {
-    // nothing else — just ensuring client execution
+    // keep the UI toggles on other pages in sync
+    const off = installAlertsStorageSync(() => {
+      // nothing else needed here; page-level toggles read from localStorage on render
+      // and the hook reacts to bumps.
+    });
+    // prime cache
+    getAlertsEnabled();
+    return off;
   }, []);
+
   return null;
 }

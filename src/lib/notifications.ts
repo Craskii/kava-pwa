@@ -1,18 +1,31 @@
 // src/lib/notifications.ts
-'use client';
+// Small helpers for permission + system banners – no sound on iOS banners.
 
-import {
-  areAlertsOn, setAlertsOn, enableAlerts, showBanner, ensurePermission
-} from './alerts';
-
-export function getAlertsEnabled() { return areAlertsOn(); }
-export function setAlertsEnabled(next: boolean) { setAlertsOn(next); }
+import { getAlertsEnabled, setAlertsEnabled } from "./alerts";
 
 export async function ensureNotificationPermission(): Promise<NotificationPermission> {
-  return await ensurePermission();
+  if (typeof window === "undefined" || !("Notification" in window)) return "denied";
+  const cur = Notification.permission;
+  if (cur === "granted" || cur === "denied") return cur;
+  try {
+    const req = await Notification.requestPermission();
+    return req;
+  } catch {
+    return "denied";
+  }
 }
 
-// For “Test Banner”
 export function showSystemNotification(title: string, body?: string) {
-  showBanner(body ?? title, body ? title : 'Kava');
+  try {
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+    // Note: iOS shows a silent banner; Android/desktop may play system sound.
+    new Notification(title, { body, tag: "kava-alert", renotify: true });
+  } catch {
+    /* noop */
+  }
 }
+
+/** Convenience re-exports so components don’t need to know the alerts store names */
+export const getAlertsOn = getAlertsEnabled;
+export const setAlertsOn = setAlertsEnabled;

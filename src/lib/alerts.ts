@@ -1,68 +1,79 @@
 // src/lib/alerts.ts
-'use client';
+// Central "alerts enabled" state + a small "bump" broadcaster to wake the alerts hook.
 
-/**
- * Global alerts state + utilities (no imports from hooks here!)
- * Hooks may import from this file, but this file never imports hooks.
- */
+const LS_KEY = "kava_alerts_enabled";
+const BUMP_EVENT = "kava-alerts-bump";
 
-const LS_KEY = 'kava_alerts_on';
-const CHAN = 'kava-alerts';
-
-let bc: BroadcastChannel | null = null;
-function channel() {
-  if (typeof window === 'undefined') return null;
-  try {
-    if (!bc) bc = new BroadcastChannel(CHAN);
-  } catch {
-    // older Safari may not support BroadcastChannel
-  }
-  return bc;
-}
+let cachedEnabled: boolean | null = null;
 
 export function getAlertsEnabled(): boolean {
-  if (typeof window === 'undefined') return false;
-  try { return localStorage.getItem(LS_KEY) === '1'; } catch { return false; }
+  try {
+    if (cachedEnabled === null) {
+      const raw = localStorage.getItem(LS_KEY);
+      cachedEnabled = raw === "1";
+    }
+    return !!cachedEnabled;
+  } catch {
+    return false;
+  }
 }
 
 export function setAlertsEnabled(on: boolean) {
-  if (typeof window === 'undefined') return;
-  try { localStorage.setItem(LS_KEY, on ? '1' : '0'); } catch {}
-  try { channel()?.postMessage({ type: 'alerts-changed', on }); } catch {}
-  try { window.dispatchEvent(new CustomEvent('kava:alerts-changed', { detail: { on } })); } catch {}
+  try {
+    localStorage.setItem(LS_KEY, on ? "1" : "0");
+    cachedEnabled = on;
+    // cross-tab sync
+    try {
+      localStorage.setItem("__alerts_sync__", String(Date.now()));
+      localStorage.removeItem("__alerts_sync__");
+    } catch {}
+    // same-tab listeners
+    window.dispatchEvent(new CustomEvent("kava-alerts-toggle", { detail: { on } }));
+  } catch {}
 }
 
-export async function ensureNotificationPermission(): Promise<NotificationPermission> {
-  if (typeof window === 'undefined' || typeof Notification === 'undefined') return 'default';
-  if (Notification.permission === 'granted') return 'granted';
-  try { return await Notification.requestPermission(); } catch { return 'default'; }
+/**
+ * Wake up the global alerts loop immediately (e.g., after state-changing actions).
+ * Pages listening for this event should poll /api/me/status right away.
+ */
+export function bumpAlerts() {
+  try {
+    window.dispatchEvent(new Event(BUMP_EVENT));
+  } catch {}
 }
 
-export function subscribeAlertsChange(cb: () => void): () => void {
-  if (typeof window === 'undefined') return () => {};
-  const onStorage = (e: StorageEvent) => { if (e.key === LS_KEY) cb(); };
-  const onDom = () => cb();
-  const c = channel();
-  const onMsg = () => cb();
-
-  window.addEventListener('storage', onStorage);
-  window.addEventListener('kava:alerts-changed', onDom as EventListener);
-  c?.addEventListener?.('message', onMsg as any);
-
-  return () => {
-    window.removeEventListener('storage', onStorage);
-    window.removeEventListener('kava:alerts-changed', onDom as EventListener);
-    c?.removeEventListener?.('message', onMsg as any);
-  };
+/** Allow other modules to subscribe if needed */
+export function onAlertsBump(fn: () => void) {
+  const handler = () => fn();
+  window.addEventListener(BUMP_EVENT, handler);
+  return () => window.removeEventListener(BUMP_EVENT, handler);
 }
 
-export function bumpAlertsSignal() {
-  try { channel()?.postMessage({ type: 'alerts-bump' }); } catch {}
-  try { window.dispatchEvent(new CustomEvent('kava:alerts-bump')); } catch {}
-}
+/** Utility used by the global component to live-sync the toggle across tabs */
+export function installAlertsStorageSync(onChange: (on: boolean) => void) {
+  try {
+    // storage event = other tab toggled
+    const storageHandler = (e: StorageEvent) => {
+      if (e.key === LS_KEY) {
+        const on = e.newValue === "1";
+        cachedEnabled = on;
+        onChange(on);
+      }
+    };
+    window.addEventListener("storage", storageHandler);
 
-export function showSystemNotification(title: string, body: string) {
-  if (typeof window === 'undefined' || typeof Notification === 'undefined') return;
-  if (Notification.permission !== 'granted') return;
-  try { new Notification(title, { body, icon: '/icon-192.png' }); } catch {}
+    // in-tab toggle event
+    const localHandler = (e: Event) => {
+      const on = getAlertsEnabled();
+      onChange(on);
+    };
+    window.addEventListener("kava-alerts-toggle", localHandler as any);
+
+    return () => {
+      window.removeEventListener("storage", storageHandler);
+      window.removeEventListener("kava-alerts-toggle", localHandler as any);
+    };
+  } catch {
+    return () => {};
+  }
 }
