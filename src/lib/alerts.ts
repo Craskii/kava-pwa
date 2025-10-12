@@ -3,7 +3,7 @@
 
 /**
  * Cross-page Alerts state + helpers
- * (and re-exports of the existing hooks so older imports keep working)
+ * (and re-exports of existing hooks so older imports keep working)
  */
 
 import {
@@ -15,7 +15,7 @@ import {
 // --- public re-exports (back-compat) ---
 export { useQueueAlerts, useTournamentAlerts, bumpFromHooks as bumpAlerts };
 
-// --- new lightweight global store for ON/OFF + banner helpers ---
+// --- lightweight global store for ON/OFF + banner helpers ---
 
 const LS_KEY = 'kava_alerts_on';
 const CHAN = 'kava-alerts';
@@ -26,7 +26,7 @@ function channel() {
   try {
     if (!bc) bc = new BroadcastChannel(CHAN);
   } catch {
-    // BroadcastChannel may not exist on older iOS PWAs; we fall back to DOM events.
+    // Older iOS may lack BroadcastChannel; we'll also emit a DOM event.
   }
   return bc;
 }
@@ -45,9 +45,11 @@ export function setAlertsOn(next: boolean) {
   try {
     localStorage.setItem(LS_KEY, next ? '1' : '0');
   } catch {}
+
   try {
     channel()?.postMessage({ type: 'alerts-changed', on: next });
   } catch {}
+
   try {
     window.dispatchEvent(new CustomEvent('kava:alerts-changed', { detail: { on: next } }));
   } catch {}
@@ -94,8 +96,11 @@ export function subscribeAlerts(cb: () => void): () => void {
   };
 }
 
-export function bumpAlerts() {
-  // keep the old name working too
+/**
+ * Global “bump” signal for immediately re-checking status on all tabs.
+ * Name it bumpSignal internally to avoid clashing with the hook’s bumpAlerts export.
+ */
+export function bumpSignal() {
   try {
     channel()?.postMessage({ type: 'alerts-bump' });
   } catch {}
