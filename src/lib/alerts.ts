@@ -11,7 +11,7 @@ type UseQueueAlertsOpts = {
 let audio: HTMLAudioElement | null = null;
 function ensureAudio() {
   if (!audio) {
-    audio = new Audio('/ding.mp3');
+    audio = new Audio('/ding.mp3'); // your sound file
     audio.preload = 'auto';
   }
   return audio!;
@@ -19,11 +19,17 @@ function ensureAudio() {
 
 function notifyBanner(title: string, body: string) {
   try {
-    if (Notification.permission === 'granted') new Notification(title, { body });
+    if (Notification?.permission === 'granted') {
+      new Notification(title, { body });
+    }
   } catch {}
 }
 
-function chooseMessage(phase: string, opts: UseQueueAlertsOpts, status: any): string | null {
+function chooseMessage(
+  phase: string,
+  opts: UseQueueAlertsOpts,
+  status: any
+): string | null {
   if (phase === 'up_next') {
     if (typeof opts.upNextMessage === 'function') return opts.upNextMessage(status);
     return opts.upNextMessage ?? "You're up next — good luck! :)";
@@ -35,12 +41,12 @@ function chooseMessage(phase: string, opts: UseQueueAlertsOpts, status: any): st
   return null;
 }
 
-/** Small helper other code can call to force an immediate poll. */
+/** anyone can call to force an immediate poll */
 export function bumpAlerts() {
   try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
 }
 
-/** Main polling hook */
+/** Main polling hook (singleton per scope) with burst mode */
 export function useQueueAlerts(opts: UseQueueAlertsOpts = {}) {
   const key = JSON.stringify({ t: opts.tournamentId || null, l: opts.listId || null });
   // @ts-ignore
@@ -51,6 +57,8 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts = {}) {
   window.__alerts[key] = true;
 
   let lastSig: string | null = null;
+  let timer: any = null;
+  let burstUntil = 0;
 
   async function check() {
     try {
@@ -84,17 +92,35 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts = {}) {
     } catch {}
   }
 
-  let timer: any = null;
-  function start() {
-    if (timer) clearInterval(timer);
-    const gap = document.visibilityState === 'visible' ? 3000 : 15000;
-    timer = setInterval(check, gap);
+  function intervalMs() {
+    // burst for 10s after any bump
+    const now = Date.now();
+    if (now < burstUntil) return 500;
+    return document.visibilityState === 'visible' ? 1000 : 5000;
   }
-  start();
 
-  document.addEventListener('visibilitychange', start);
-  window.addEventListener('alerts:bump', check);
-  setTimeout(check, 500);
+  function restartTimer() {
+    if (timer) clearInterval(timer);
+    timer = setInterval(check, intervalMs());
+  }
+
+  // on visibility change, reseat cadence
+  function onVis() { restartTimer(); }
+
+  // on bump, enter burst mode and run an immediate check
+  function onBump() {
+    burstUntil = Date.now() + 10_000;
+    restartTimer();
+    check();
+  }
+
+  document.addEventListener('visibilitychange', onVis);
+  window.addEventListener('alerts:bump', onBump);
+
+  // kick off
+  burstUntil = Date.now() + 5_000; // start snappy for first few seconds
+  restartTimer();
+  setTimeout(check, 200);
 
   window.addEventListener('beforeunload', () => { clearInterval(timer); });
 }

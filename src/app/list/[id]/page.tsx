@@ -5,7 +5,7 @@ export const runtime = 'edge';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
-import { useQueueAlerts } from '../../../lib/alerts';
+import { useQueueAlerts, bumpAlerts } from '@/lib/alerts';
 import {
   getListRemote, listJoin, listLeave, listILost, listSetTables,
   ListGame, Player, uid
@@ -27,29 +27,44 @@ export default function ListLobby() {
   }, []);
   useEffect(() => { localStorage.setItem('kava_me', JSON.stringify(me)); }, [me]);
 
-  // 🔔 Mount alerts for this list
+  // 🔔 alerts on this list
   useQueueAlerts({
     listId: id,
     upNextMessage: "You're up!",
-    matchReadyMessage: () => "You're up!"
+    matchReadyMessage: () => "OK — you're up on the table!"
   });
+
+  // track my seating to trigger immediate bump when it changes
+  const lastSeating = useRef<string>(''); // "table-<i>-<a>-<b>" or ""
+
+  function detectMySeatingChanged(next: ListGame | null) {
+    if (!next) return false;
+    const i = next.tables.findIndex(t => t.a === me.id || t.b === me.id);
+    if (i < 0) {
+      if (lastSeating.current !== '') { lastSeating.current = ''; return true; }
+      return false;
+    }
+    const a = next.tables[i].a ?? 'x';
+    const b = next.tables[i].b ?? 'x';
+    const key = `table-${i}-${a}-${b}`;
+    if (key !== lastSeating.current) { lastSeating.current = key; return true; }
+    return false;
+  }
 
   async function loadOnce() {
     if (!id) return;
     const next = await getListRemote(id);
+    // set, then if I just got seated or seat changed, bump alerts immediately
     setG(next);
+    if (detectMySeatingChanged(next)) bumpAlerts();
   }
+
   useEffect(() => {
     loadOnce();
     clearInterval(pollRef.current);
     pollRef.current = setInterval(loadOnce, 1000);
     return () => clearInterval(pollRef.current);
   }, [id]);
-
-  // helper to nudge the alerts hook immediately after any change
-  function bumpAlerts() {
-    try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
-  }
 
   const iAmHost = g && me?.id === g.hostId;
 
