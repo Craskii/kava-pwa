@@ -1,7 +1,4 @@
-﻿export const runtime = "edge";
-export const dynamic = "force-dynamic";
-
-export default function NotFound() {
+﻿export default function NotFound() {
   return (
     <main style={{
       minHeight: "100vh", background: "#0b0b0b", color: "#fff",
