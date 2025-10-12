@@ -1,57 +1,151 @@
+// src/app/join/page.tsx
+'use client';
 export const runtime = 'edge';
-import { NextResponse } from 'next/server';
-import { getEnv } from '../_kv';
 
-type Player = { id: string; name: string };
-type Tournament = {
-  id: string;
-  hostId: string;
-  name: string;
-  code?: string;
-  status?: 'setup' | 'active' | 'completed';
-  players: Player[];
-  pending?: Player[];
-  createdAt?: number;
-  updatedAt?: number;
-};
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useSearchParams, useRouter } from 'next/navigation';
+import BackButton from '../components/BackButton';
 
-export async function POST(req: Request) {
+type Me = { id: string; name: string };
+
+function getMe(): Me {
   try {
-    const env = getEnv();
-    const { code, player } = (await req.json()) as { code?: string; player?: Player };
-    if (!code) return NextResponse.json({ error: 'Missing code' }, { status: 400 });
-    if (!player?.id || !player?.name)
-      return NextResponse.json({ error: 'Missing player' }, { status: 400 });
-
-    const mapKey = `code:${code.toUpperCase()}`;
-    const mapped = await env.KAVA_TOURNAMENTS.get(mapKey);
-    if (!mapped) return NextResponse.json({ error: 'Invalid code' }, { status: 404 });
-
-    const { id } = JSON.parse(mapped) as { id: string };
-
-    const tKey = `t:${id}`;
-    const raw = await env.KAVA_TOURNAMENTS.get(tKey);
-    if (!raw) return NextResponse.json({ error: 'Not found' }, { status: 404 });
-
-    const t = JSON.parse(raw) as Tournament;
-    t.pending ||= [];
-
-    // already a player?
-    if ((t.players || []).some((p) => p.id === player.id)) {
-      return NextResponse.json({ id: t.id, status: 'joined' });
-    }
-    // already pending?
-    if ((t.pending || []).some((p) => p.id === player.id)) {
-      return NextResponse.json({ id: t.id, status: 'pending' });
-    }
-
-    // push into pending
-    t.pending!.push({ id: player.id, name: player.name });
-    t.updatedAt = Date.now();
-    await env.KAVA_TOURNAMENTS.put(tKey, JSON.stringify(t));
-
-    return NextResponse.json({ id: t.id, status: 'pending' });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message || 'Join failed' }, { status: 500 });
-  }
+    const saved = JSON.parse(localStorage.getItem('kava_me') || 'null');
+    if (saved?.id && saved?.name) return saved;
+  } catch {}
+  const me = { id: crypto.randomUUID(), name: '' };
+  localStorage.setItem('kava_me', JSON.stringify(me));
+  return me;
 }
+
+export default function Join() {
+  const r = useRouter();
+  const sp = useSearchParams();
+  const codeFromUrl = sp?.get('code')?.trim()?.toUpperCase() || '';
+
+  const [me, setMe] = useState<Me>({ id: '', name: '' });
+  const [code, setCode] = useState(codeFromUrl);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => { setMe(getMe()); }, []);
+  useEffect(() => {
+    if (me.id) localStorage.setItem('kava_me', JSON.stringify(me));
+  }, [me]);
+
+  async function doJoin() {
+    setErr(null);
+    const cleanCode = (code || '').toUpperCase().replace(/\s+/g, '');
+    const cleanName = (me.name || '').trim();
+    if (!cleanName) { setErr('Please enter your name.'); return; }
+    if (!/^[A-Z0-9]{5}$/.test(cleanCode)) { setErr('Please enter a valid 5-digit code.'); return; }
+
+    setBusy(true);
+    try {
+      const res = await fetch('/api/join', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({ code: cleanCode, player: { id: me.id, name: cleanName } }),
+      });
+      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
+      const data = await res.json(); // { id, status }
+      r.replace(`/t/${data.id}`);
+    } catch (e: any) {
+      setErr(e?.message || 'Join failed.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === 'Enter' && !busy) doJoin();
+  }
+
+  return (
+    <main style={wrap}>
+      <div style={rowTop}><BackButton href="/" /></div>
+
+      <section style={panel}>
+        <h2 style={{ margin: '0 0 10px' }}>Join a tournament</h2>
+
+        <input
+          value={me.name}
+          onChange={(e) => setMe((m) => ({ ...m, name: e.target.value }))}
+          onKeyDown={onKeyDown}
+          placeholder="Your name"
+          style={input}
+          disabled={busy}
+        />
+
+        <input
+          value={code}
+          onChange={(e) => setCode(e.target.value.toUpperCase())}
+          onKeyDown={onKeyDown}
+          placeholder="5-digit code"
+          style={input}
+          disabled={busy}
+          inputMode="latin-prose"
+          autoCapitalize="characters"
+        />
+
+        <button onClick={doJoin} disabled={busy} style={btnPrimary}>
+          {busy ? 'Joining…' : 'Join'}
+        </button>
+
+        {err && <div style={errorBox}>{err}</div>}
+
+        <Link href="/" style={homeLink}>Home</Link>
+      </section>
+    </main>
+  );
+}
+
+/* ---------- styles (matches your old dark UI) ---------- */
+const wrap: React.CSSProperties = {
+  minHeight: '100vh',
+  background: '#0b0f15',
+  color: '#fff',
+  fontFamily: 'system-ui',
+  padding: 16,
+};
+const rowTop: React.CSSProperties = { marginBottom: 10 };
+const panel: React.CSSProperties = {
+  maxWidth: 1000,
+  margin: '0 auto',
+  background: 'rgba(15, 20, 28, 0.9)',
+  border: '1px solid rgba(255,255,255,.08)',
+  borderRadius: 12,
+  padding: 12,
+  display: 'grid',
+  gap: 10,
+};
+const input: React.CSSProperties = {
+  width: '100%',
+  padding: '14px 12px',
+  borderRadius: 10,
+  border: '1px solid #2a2f36',
+  background: '#151a21',
+  color: '#fff',
+  outline: 'none',
+};
+const btnPrimary: React.CSSProperties = {
+  width: 80,
+  padding: '10px 12px',
+  borderRadius: 10,
+  border: 'none',
+  background: '#0ea5e9',
+  color: '#fff',
+  fontWeight: 800,
+  cursor: 'pointer',
+};
+const errorBox: React.CSSProperties = {
+  marginTop: 6,
+  padding: '10px 12px',
+  borderRadius: 10,
+  background: 'rgba(255, 80, 80, .1)',
+  border: '1px solid rgba(255, 80, 80, .35)',
+  fontSize: 13,
+};
+const homeLink: React.CSSProperties = { color: '#60a5fa', width: 'fit-content' };
