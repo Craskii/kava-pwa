@@ -3,74 +3,211 @@
 export const runtime = 'edge';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import BackButton from '@/components/BackButton';
 
-type TournamentRow = { id: string; name: string; status?: string; players?: any[] };
+/** Minimal types that match your API shape */
+type Player = { id: string; name: string };
+type TournamentRow = {
+  id: string;
+  name: string;
+  hostId: string;
+  status?: 'setup' | 'active' | 'completed';
+  players?: Player[];
+  code?: string | null;
+};
 
-export default function MyTournamentsPage() {
+export default function MyTournaments() {
+  const me = useMemo<Player>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('kava_me') || 'null') || {
+        id: crypto.randomUUID(),
+        name: 'Player',
+      };
+    } catch {
+      return { id: crypto.randomUUID(), name: 'Player' };
+    }
+  }, []);
+  useEffect(() => {
+    localStorage.setItem('kava_me', JSON.stringify(me));
+  }, [me]);
+
   const [rows, setRows] = useState<TournamentRow[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let stop = false;
+    let alive = true;
     (async () => {
       try {
         const res = await fetch('/api/tournaments', { cache: 'no-store' });
-        if (!res.ok) throw new Error(await res.text());
-        const data = await res.json();
-        if (!stop) setRows(Array.isArray(data) ? data : []);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as TournamentRow[];
+        if (alive) setRows(data);
       } catch (e: any) {
-        if (!stop) setErr('Could not load tournaments.');
-        console.error(e);
+        if (alive) setError(e?.message || 'Failed to load');
       }
     })();
-    return () => { stop = true; };
+    return () => {
+      alive = false;
+    };
   }, []);
+
+  const hosting = (rows || []).filter((t) => t.hostId === me.id);
+  const playing = (rows || []).filter(
+    (t) => t.hostId !== me.id && (t.players || []).some((p) => p.id === me.id)
+  );
 
   return (
     <main style={wrap}>
       <div style={container}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
-          <BackButton href="/" />
-          <Link href="/create" style={btnPrimary}>+ Create game</Link>
-        </div>
-
+        <BackButton href="/" />
         <h1 style={h1}>My tournaments</h1>
 
-        {err && <div style={notice}>{err}</div>}
-
-        {rows === null ? (
-          <div>Loading…</div>
-        ) : rows.length === 0 ? (
-          <div style={empty}>No tournaments yet. Create one to get started.</div>
-        ) : (
-          <ul style={list}>
-            {rows.map(t => (
-              <li key={t.id} style={row}>
-                <div>
-                  <div style={{fontWeight:700}}>{t.name || 'Untitled tournament'}</div>
-                  <div style={{opacity:.75,fontSize:13}}>
-                    {t.status || 'setup'}{typeof t.players?.length === 'number' ? ` • ${t.players.length} players` : ''}
-                  </div>
-                </div>
-                <Link href={`/t/${encodeURIComponent(t.id)}`} style={btn}>Open</Link>
-              </li>
-            ))}
-          </ul>
+        {error && (
+          <div style={errorBox}>
+            Couldn’t load tournaments. <span style={{ opacity: 0.8 }}>{error}</span>
+          </div>
         )}
+
+        {/* Hosting */}
+        <section style={card}>
+          <div style={rowHead}>
+            <b>Hosting</b>
+            <span style={hint}>Live</span>
+          </div>
+          {hosting.length === 0 ? (
+            <div style={muted}>You’re not hosting any tournaments yet.</div>
+          ) : (
+            <ul style={list}>
+              {hosting.map((t) => (
+                <li key={t.id} style={row}>
+                  <div>
+                    <div style={titleLine}>
+                      <span>{t.name}</span>
+                      {t.status === 'active' && <span style={livePill}>Live</span>}
+                      {t.status === 'completed' && <span style={donePill}>Done</span>}
+                    </div>
+                    <div style={sub}>
+                      {t.players?.length ?? 0} players •{' '}
+                      {t.code ? (
+                        <>
+                          Private code: <b>{t.code}</b>
+                        </>
+                      ) : (
+                        'Public'
+                      )}
+                    </div>
+                  </div>
+                  <Link href={`/t/${t.id}`} style={goBtn} prefetch>
+                    Open
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {/* Playing */}
+        <section style={card}>
+          <div style={rowHead}>
+            <b>Playing</b>
+          </div>
+          {playing.length === 0 ? (
+            <div style={muted}>You’re not in any tournaments yet.</div>
+          ) : (
+            <ul style={list}>
+              {playing.map((t) => (
+                <li key={t.id} style={row}>
+                  <div>
+                    <div style={titleLine}>
+                      <span>{t.name}</span>
+                      {t.status === 'active' && <span style={livePill}>Live</span>}
+                      {t.status === 'completed' && <span style={donePill}>Done</span>}
+                    </div>
+                    <div style={sub}>
+                      {t.players?.length ?? 0} players •{' '}
+                      {t.code ? 'Private' : 'Public'}
+                    </div>
+                  </div>
+                  <Link href={`/t/${t.id}`} style={goBtn} prefetch>
+                    Open
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       </div>
     </main>
   );
 }
 
-/* styles (match your app style) */
-const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', fontFamily:'system-ui', padding:24 };
-const container: React.CSSProperties = { maxWidth:900, margin:'0 auto', display:'grid', gap:14 };
-const h1: React.CSSProperties = { margin:'8px 0 4px', fontSize:24 };
-const notice: React.CSSProperties = { background:'rgba(14,165,233,.12)', border:'1px solid rgba(14,165,233,.25)', borderRadius:12, padding:'10px 12px' };
-const empty: React.CSSProperties = { opacity:.8 };
-const list: React.CSSProperties = { listStyle:'none', padding:0, margin:0, display:'grid', gap:10 };
-const row: React.CSSProperties = { display:'flex', justifyContent:'space-between', alignItems:'center', background:'rgba(255,255,255,.06)', border:'1px solid rgba(255,255,255,.12)', borderRadius:12, padding:'12px 14px' };
-const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', textDecoration:'none', fontWeight:700 };
-const btnPrimary: React.CSSProperties = { ...btn, border:'none', background:'#0ea5e9' };
+/* ===== styles (matches your old look) ===== */
+const wrap: React.CSSProperties = {
+  minHeight: '100vh',
+  background: '#0b0b0b',
+  color: '#fff',
+  fontFamily: 'system-ui',
+  padding: 24,
+};
+const container: React.CSSProperties = {
+  maxWidth: 980,
+  margin: '0 auto',
+  display: 'grid',
+  gap: 14,
+};
+const h1: React.CSSProperties = { margin: '4px 0 8px', fontSize: 20 };
+const card: React.CSSProperties = {
+  background: 'rgba(255,255,255,0.06)',
+  border: '1px solid rgba(255,255,255,0.12)',
+  borderRadius: 14,
+  padding: 14,
+};
+const rowHead: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  marginBottom: 8,
+};
+const hint: React.CSSProperties = { opacity: 0.7, fontSize: 12 };
+const list: React.CSSProperties = { listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 };
+const row: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  borderRadius: 10,
+  background: '#111',
+  padding: '10px 12px',
+  border: '1px solid rgba(255,255,255,.12)',
+};
+const titleLine: React.CSSProperties = { display: 'flex', gap: 8, alignItems: 'center' };
+const sub: React.CSSProperties = { opacity: 0.75, fontSize: 12, marginTop: 2 };
+const muted: React.CSSProperties = { opacity: 0.75 };
+const livePill: React.CSSProperties = {
+  padding: '2px 8px',
+  borderRadius: 999,
+  background: 'rgba(16,185,129,.22)',
+  border: '1px solid rgba(16,185,129,.45)',
+  fontSize: 12,
+};
+const donePill: React.CSSProperties = {
+  padding: '2px 8px',
+  borderRadius: 999,
+  background: 'rgba(148,163,184,.18)',
+  border: '1px solid rgba(148,163,184,.4)',
+  fontSize: 12,
+};
+const goBtn: React.CSSProperties = {
+  padding: '8px 12px',
+  borderRadius: 10,
+  background: '#0ea5e9',
+  color: '#fff',
+  textDecoration: 'none',
+  fontWeight: 700,
+  border: 'none',
+};
+const errorBox: React.CSSProperties = {
+  background: 'rgba(239,68,68,.12)',
+  border: '1px solid rgba(239,68,68,.35)',
+  borderRadius: 12,
+  padding: '8px 10px',
+};
