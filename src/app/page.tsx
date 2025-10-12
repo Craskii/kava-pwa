@@ -1,46 +1,136 @@
 // src/app/page.tsx
 export const runtime = 'edge';
-export const dynamic = 'force-dynamic'; // avoid prerender crashes if you read request-time info
 
 import Link from "next/link";
 
-type HomeSearch = {
-  listId?: string;
-  tournamentId?: string;
-  [k: string]: string | undefined;
-};
-
-export default function HomePage({
-  searchParams,
-}: {
-  searchParams?: HomeSearch; // <<< make optional
-}) {
-  const listId = searchParams?.listId ?? "";
-  const tournamentId = searchParams?.tournamentId ?? "";
-
+export default function Home() {
   return (
     <main style={wrap}>
-      <h1 style={{ margin: "8px 0 12px" }}>Kava</h1>
+      <div style={center}>
+        <div style={brandRow}>
+          <img src="/icon-192.png" alt="" width={24} height={24} style={{borderRadius:6}} />
+          <h1 style={title}>Kava Tournaments</h1>
+        </div>
 
-      <div style={card}>
-        <p style={{ margin: 0, opacity: .85 }}>
-          Welcome! This page renders safely even when <code>searchParams</code> is undefined.
-          {listId && <> &nbsp;listId=<code>{listId}</code></>}
-          {tournamentId && <> &nbsp;tournamentId=<code>{tournamentId}</code></>}
+        <nav style={nav}>
+          <BigButton href="/me">👤 My tournaments</BigButton>
+          <BigButton href="/me">📄 My lists</BigButton>
+          <BigButton href="/create" primary>➕ Create game</BigButton>
+          <BigButton href="/join">🔐 Join with code</BigButton>
+          <BigButton href="/nearby">📍 Find nearby</BigButton>
+        </nav>
+
+        <div style={installHint}>
+          <a href="/manifest.webmanifest" style={installBtn}>Install Kava Tournaments</a>
+        </div>
+
+        <p style={blurb}>
+          Create brackets and list games, manage queues, and send “you’re up next”
+          alerts.
         </p>
 
-        <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
-          <Link href="/lists" style={btn}>My lists</Link>
-          <Link href="/me" style={btnGhost}>My tournaments</Link>
-          <Link href="/nearby" style={btnGhost}>Nearby</Link>
-        </div>
+        <div style={foot}>v0 · PWA ready · Works offline</div>
       </div>
     </main>
   );
 }
 
-/* styles */
-const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui' };
-const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginTop:12 };
-const btn: React.CSSProperties = { padding:'8px 12px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, textDecoration:'none' };
-const btnGhost: React.CSSProperties = { padding:'8px 12px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', textDecoration:'none' };
+/* ---------- components ---------- */
+function BigButton({
+  href,
+  children,
+  primary = false,
+}: {
+  href: string;
+  children: React.ReactNode;
+  primary?: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      style={{
+        ...bigBtn,
+        ...(primary ? bigBtnPrimary : {}),
+      }}
+    >
+      {children}
+    </Link>
+  );
+}
+
+/* ---------- styles ---------- */
+const wrap: React.CSSProperties = {
+  minHeight: "100vh",
+  background: "#0b0b0b",
+  color: "#fff",
+  fontFamily: "system-ui",
+  padding: 24,
+  display: "grid",
+  placeItems: "center",
+};
+
+const center: React.CSSProperties = {
+  width: "100%",
+  maxWidth: 720,
+  margin: "0 auto",
+  textAlign: "center",
+};
+
+const brandRow: React.CSSProperties = {
+  display: "flex",
+  gap: 10,
+  alignItems: "center",
+  justifyContent: "center",
+  marginBottom: 18,
+};
+
+const title: React.CSSProperties = {
+  margin: 0,
+  fontSize: 20,
+  fontWeight: 700,
+};
+
+const nav: React.CSSProperties = {
+  display: "grid",
+  gap: 12,
+  margin: "0 auto",
+};
+
+const bigBtn: React.CSSProperties = {
+  display: "block",
+  padding: "16px 18px",
+  background: "rgba(255,255,255,0.06)",
+  border: "1px solid rgba(255,255,255,0.12)",
+  color: "#fff",
+  textDecoration: "none",
+  borderRadius: 14,
+  fontWeight: 700,
+};
+
+const bigBtnPrimary: React.CSSProperties = {
+  background: "#0ea5e9",
+  border: "none",
+};
+
+const installHint: React.CSSProperties = { marginTop: 18 };
+const installBtn: React.CSSProperties = {
+  display: "inline-block",
+  padding: "12px 14px",
+  borderRadius: 12,
+  background: "#0ea5e9",
+  color: "#fff",
+  textDecoration: "none",
+  fontWeight: 700,
+};
+
+const blurb: React.CSSProperties = {
+  marginTop: 18,
+  opacity: 0.85,
+  lineHeight: 1.4,
+};
+
+const foot: React.CSSProperties = {
+  marginTop: 22,
+  opacity: 0.6,
+  fontSize: 12,
+};
