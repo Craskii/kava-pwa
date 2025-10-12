@@ -1,104 +1,70 @@
 // src/lib/alerts.ts
 'use client';
 
-type UseQueueAlertsOpts = {
-  tournamentId?: string;
-  listId?: string;
-  upNextMessage?: string | ((s: any) => string);
-  matchReadyMessage?: string | ((s: any) => string);
-};
+const LS_KEY = 'kava_alerts_on';
+const CHAN = 'kava-alerts';
 
-function showBanner(body: string) {
+let bc: BroadcastChannel | null = null;
+function channel() {
+  if (typeof window === 'undefined') return null;
   try {
-    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      new Notification('Kava', { body });
-    }
-  } catch {}
+    if (!bc) bc = new BroadcastChannel(CHAN);
+  } catch { /* iOS 15 PWA may not support BC; we fall back to DOM events */ }
+  return bc;
 }
 
-/** let any page tell the poller “check right now” */
+export function areAlertsOn(): boolean {
+  if (typeof window === 'undefined') return false;
+  try { return localStorage.getItem(LS_KEY) === '1'; } catch { return false; }
+}
+
+export function setAlertsOn(next: boolean) {
+  if (typeof window === 'undefined') return;
+  try { localStorage.setItem(LS_KEY, next ? '1' : '0'); } catch {}
+  try { channel()?.postMessage({ type: 'alerts-changed', on: next }); } catch {}
+  try { window.dispatchEvent(new CustomEvent('kava:alerts-changed', { detail: { on: next } })); } catch {}
+}
+
+export async function ensurePermission(): Promise<NotificationPermission> {
+  if (typeof window === 'undefined' || typeof Notification === 'undefined') return 'default';
+  if (Notification.permission === 'granted') return 'granted';
+  try { return await Notification.requestPermission(); } catch { return 'default'; }
+}
+
+export async function enableAlerts(): Promise<boolean> {
+  const p = await ensurePermission();
+  const ok = p === 'granted';
+  setAlertsOn(ok);
+  return ok;
+}
+
+export function disableAlerts() { setAlertsOn(false); }
+
+export function subscribeAlerts(cb: () => void): () => void {
+  if (typeof window === 'undefined') return () => {};
+  const onStorage = (e: StorageEvent) => { if (e.key === LS_KEY) cb(); };
+  const c = channel();
+  const onMsg = () => cb();
+  const onDom = () => cb();
+
+  window.addEventListener('storage', onStorage);
+  window.addEventListener('kava:alerts-changed', onDom as EventListener);
+  c?.addEventListener?.('message', onMsg as any);
+
+  return () => {
+    window.removeEventListener('storage', onStorage);
+    window.removeEventListener('kava:alerts-changed', onDom as EventListener);
+    c?.removeEventListener?.('message', onMsg as any);
+  };
+}
+
 export function bumpAlerts() {
-  try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+  try { channel()?.postMessage({ type: 'alerts-bump' }); } catch {}
+  try { window.dispatchEvent(new CustomEvent('kava:alerts-bump')); } catch {}
 }
 
-function chooseMessage(phase: string, opts: UseQueueAlertsOpts, status: any): string | null {
-  if (phase === 'match_ready') {
-    if (typeof opts.matchReadyMessage === 'function') return opts.matchReadyMessage(status);
-    return opts.matchReadyMessage ?? "OK — you're up on the table!";
-  }
-  if (phase === 'up_next') {
-    if (typeof opts.upNextMessage === 'function') return opts.upNextMessage(status);
-    return opts.upNextMessage ?? "You're up next — be ready!";
-  }
-  return null;
-}
-
-/** Singleton poller per-scope with burst mode for instant banners */
-export function useQueueAlerts(opts: UseQueueAlertsOpts = {}) {
-  const key = JSON.stringify({ t: opts.tournamentId || null, l: opts.listId || null });
-  // @ts-ignore
-  if (!window.__alerts) window.__alerts = {};
-  // @ts-ignore
-  if (window.__alerts[key]) return;
-  // @ts-ignore
-  window.__alerts[key] = true;
-
-  let lastSig: string | null = null;
-  let timer: any = null;
-  let burstUntil = 0;
-
-  async function check() {
-    try {
-      let url = '/api/me/status';
-      const me = JSON.parse(localStorage.getItem('kava_me') || 'null');
-      const qs = new URLSearchParams();
-      if (me?.id) qs.set('userId', me.id);
-      if (opts.tournamentId) qs.set('tournamentId', opts.tournamentId);
-      if (opts.listId) qs.set('listId', opts.listId);
-      const q = qs.toString();
-      if (q) url += `?${q}`;
-
-      const res = await fetch(url, { cache: 'no-store' });
-      if (!res.ok) return;
-      const status = await res.json();
-      const phase = status?.phase;
-      const sig = status?.sig;
-      if (!phase || !sig) return;
-
-      if (sig !== lastSig) {
-        lastSig = sig;
-        const msg = chooseMessage(phase, opts, status);
-        if (msg) showBanner(msg);
-      }
-    } catch {}
-  }
-
-  function cadenceMs() {
-    const now = Date.now();
-    if (now < burstUntil) return 500;                     // 0.5s during burst
-    return document.visibilityState === 'visible' ? 1000  // 1s in foreground
-                                                  : 5000; // 5s in background
-  }
-
-  function restart() {
-    if (timer) clearInterval(timer);
-    timer = setInterval(check, cadenceMs());
-  }
-
-  function onVisibility() { restart(); }
-  function onBump() {
-    burstUntil = Date.now() + 10_000; // 10s of fast checks after a bump
-    restart();
-    check();
-  }
-
-  document.addEventListener('visibilitychange', onVisibility);
-  window.addEventListener('alerts:bump', onBump);
-
-  // start “snappy” at first
-  burstUntil = Date.now() + 5_000;
-  restart();
-  setTimeout(check, 200);
-
-  window.addEventListener('beforeunload', () => { clearInterval(timer); });
+export function showBanner(body: string, title = 'Kava') {
+  if (typeof window === 'undefined' || typeof Notification === 'undefined') return;
+  if (Notification.permission !== 'granted') return;
+  try { new Notification(title, { body, icon: '/icon-192.png' }); } catch {}
 }

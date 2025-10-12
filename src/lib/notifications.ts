@@ -1,31 +1,18 @@
-export type AlertEvent = "UP_NEXT" | "MATCH_READY";
+// src/lib/notifications.ts
+'use client';
 
-const STORAGE_KEY = "alerts.enabled.v1";
+import {
+  areAlertsOn, setAlertsOn, enableAlerts, showBanner, ensurePermission
+} from './alerts';
 
-export function getAlertsEnabled(): boolean {
-  if (typeof window === "undefined") return false;
-  return localStorage.getItem(STORAGE_KEY) === "1";
-}
-export function setAlertsEnabled(enabled: boolean) {
-  if (typeof window === "undefined") return;
-  localStorage.setItem(STORAGE_KEY, enabled ? "1" : "0");
-}
+export function getAlertsEnabled() { return areAlertsOn(); }
+export function setAlertsEnabled(next: boolean) { setAlertsOn(next); }
 
 export async function ensureNotificationPermission(): Promise<NotificationPermission> {
-  if (typeof window === "undefined" || !("Notification" in window)) return "denied";
-  if (Notification.permission !== "default") return Notification.permission;
-  return await Notification.requestPermission();
+  return await ensurePermission();
 }
 
-export function showSystemNotification(title: string, body: string) {
-  if (typeof window === "undefined" || !("Notification" in window)) return;
-  if (Notification.permission !== "granted") return;
-  new Notification(title, {
-    body,
-    requireInteraction: true,
-    vibrate: [80, 40, 80],
-    icon: "/icons/icon-192x192.png",
-    badge: "/icons/icon-192x192.png",
-    tag: "queue-alert",
-  });
+// For “Test Banner”
+export function showSystemNotification(title: string, body?: string) {
+  showBanner(body ?? title, body ? title : 'Kava');
 }
