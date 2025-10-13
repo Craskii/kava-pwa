@@ -1,20 +1,23 @@
 // src/app/api/_kv.ts
-export const runtime = 'edge';
+import { getRequestContext } from "@cloudflare/next-on-pages";
 
-// Look for bindings across all places next-on-pages has used
-export function getEnv(): { KAVA_TOURNAMENTS?: KVNamespace } {
-  const g: any = globalThis as any;
+export type Env = {
+  KAVA_TOURNAMENTS: KVNamespace;
+};
 
-  const candidates = [
-    g?.ENV,         // common
-    g?.env,         // lowercased
-    g?.__ENV__,     // older
-    g?.__env__,     // older/lowercase
-    g               // sometimes hoisted onto globalThis
-  ];
+// Cloudflare's global KV type (kept minimal here)
+export type KVNamespace = {
+  get(key: string): Promise<string | null>;
+  put(key: string, value: string): Promise<void>;
+  delete(key: string): Promise<void>;
+  list(input?: { prefix?: string; limit?: number; cursor?: string }): Promise<{
+    keys: { name: string }[];
+    cursor?: string;
+    list_complete?: boolean;
+  }>;
+};
 
-  for (const c of candidates) {
-    if (c?.KAVA_TOURNAMENTS) return { KAVA_TOURNAMENTS: c.KAVA_TOURNAMENTS };
-  }
-  return {};
+export function getEnv(): Env {
+  const { env } = getRequestContext<{ env: Env }>();
+  return env;
 }

@@ -1,28 +1,31 @@
-'use client';
+export type AlertEvent = "UP_NEXT" | "MATCH_READY";
 
-/**
- * Small helpers around the Notifications API (banners).
- * iOS Safari shows banner silently; sound must be in-app (user gesture).
- */
+const STORAGE_KEY = "alerts.enabled.v1";
 
-export async function ensureNotificationPermission(): Promise<NotificationPermission> {
-  if (typeof window === 'undefined' || !('Notification' in window)) return 'denied';
-  if (Notification.permission === 'granted') return 'granted';
-  if (Notification.permission === 'denied') return 'denied';
-  try {
-    const p = await Notification.requestPermission();
-    return p;
-  } catch {
-    return 'denied';
-  }
+export function getAlertsEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  return localStorage.getItem(STORAGE_KEY) === "1";
+}
+export function setAlertsEnabled(enabled: boolean) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(STORAGE_KEY, enabled ? "1" : "0");
 }
 
-/** Shows a system notification (banner) if allowed. Works best when the PWA/tab is backgrounded. */
-export function showSystemNotification(title: string, body?: string): void {
-  if (typeof window === 'undefined' || !('Notification' in window)) return;
-  if (Notification.permission !== 'granted') return;
-  try {
-    // Using a service worker is ideal, but simple Notification also works in-page
-    new Notification(title, { body, silent: true }); // iOS: will be silent anyway
-  } catch {}
+export async function ensureNotificationPermission(): Promise<NotificationPermission> {
+  if (typeof window === "undefined" || !("Notification" in window)) return "denied";
+  if (Notification.permission !== "default") return Notification.permission;
+  return await Notification.requestPermission();
+}
+
+export function showSystemNotification(title: string, body: string) {
+  if (typeof window === "undefined" || !("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+  new Notification(title, {
+    body,
+    requireInteraction: true,
+    vibrate: [80, 40, 80],
+    icon: "/icons/icon-192x192.png",
+    badge: "/icons/icon-192x192.png",
+    tag: "queue-alert",
+  });
 }

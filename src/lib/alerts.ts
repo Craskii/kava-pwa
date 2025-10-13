@@ -1,63 +1,104 @@
+// src/lib/alerts.ts
 'use client';
 
-/**
- * Central alerts store (client-only).
- * - Keeps a single source of truth for "alerts on/off"
- * - Notifies listeners (pages/components/hooks) when state changes or when we "bump" (force re-check)
- * - Re-exports banner helpers for backwards compatibility with older imports
- */
+type UseQueueAlertsOpts = {
+  tournamentId?: string;
+  listId?: string;
+  upNextMessage?: string | ((s: any) => string);
+  matchReadyMessage?: string | ((s: any) => string);
+};
 
-type Listener = () => void;
-
-const LS_KEY = 'alerts_on';
-
-let _enabled: boolean = false;
-let _booted = false;
-const listeners: Listener[] = [];
-
-function boot() {
-  if (_booted) return;
-  _booted = true;
+function showBanner(body: string) {
   try {
-    const raw = typeof window !== 'undefined' ? localStorage.getItem(LS_KEY) : null;
-    _enabled = raw === '1';
+    if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      new Notification('Kava', { body });
+    }
   } catch {}
 }
 
-export function getAlertsEnabled(): boolean {
-  boot();
-  return _enabled;
+/** let any page tell the poller “check right now” */
+export function bumpAlerts() {
+  try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
 }
 
-export function setAlertsEnabled(v: boolean): void {
-  boot();
-  _enabled = v;
-  try { localStorage.setItem(LS_KEY, v ? '1' : '0'); } catch {}
-  emit();
-}
-
-function emit() {
-  // notify listeners
-  for (const l of [...listeners]) {
-    try { l(); } catch {}
+function chooseMessage(phase: string, opts: UseQueueAlertsOpts, status: any): string | null {
+  if (phase === 'match_ready') {
+    if (typeof opts.matchReadyMessage === 'function') return opts.matchReadyMessage(status);
+    return opts.matchReadyMessage ?? "OK — you're up on the table!";
   }
+  if (phase === 'up_next') {
+    if (typeof opts.upNextMessage === 'function') return opts.upNextMessage(status);
+    return opts.upNextMessage ?? "You're up next — be ready!";
+  }
+  return null;
 }
 
-/** Subscribe to on/off changes or manual bumps. Returns unsubscribe fn. */
-export function subscribeAlertsChange(fn: Listener): () => void {
-  boot();
-  listeners.push(fn);
-  return () => {
-    const i = listeners.indexOf(fn);
-    if (i >= 0) listeners.splice(i, 1);
-  };
-}
+/** Singleton poller per-scope with burst mode for instant banners */
+export function useQueueAlerts(opts: UseQueueAlertsOpts = {}) {
+  const key = JSON.stringify({ t: opts.tournamentId || null, l: opts.listId || null });
+  // @ts-ignore
+  if (!window.__alerts) window.__alerts = {};
+  // @ts-ignore
+  if (window.__alerts[key]) return;
+  // @ts-ignore
+  window.__alerts[key] = true;
 
-/** Force all listeners to re-check (used after state changes or local, optimistic UI updates). */
-export function bumpAlerts(): void {
-  boot();
-  emit();
-}
+  let lastSig: string | null = null;
+  let timer: any = null;
+  let burstUntil = 0;
 
-/* ---- Back-compat re-exports so older imports keep working ---- */
-export { ensureNotificationPermission, showSystemNotification } from './notifications';
+  async function check() {
+    try {
+      let url = '/api/me/status';
+      const me = JSON.parse(localStorage.getItem('kava_me') || 'null');
+      const qs = new URLSearchParams();
+      if (me?.id) qs.set('userId', me.id);
+      if (opts.tournamentId) qs.set('tournamentId', opts.tournamentId);
+      if (opts.listId) qs.set('listId', opts.listId);
+      const q = qs.toString();
+      if (q) url += `?${q}`;
+
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) return;
+      const status = await res.json();
+      const phase = status?.phase;
+      const sig = status?.sig;
+      if (!phase || !sig) return;
+
+      if (sig !== lastSig) {
+        lastSig = sig;
+        const msg = chooseMessage(phase, opts, status);
+        if (msg) showBanner(msg);
+      }
+    } catch {}
+  }
+
+  function cadenceMs() {
+    const now = Date.now();
+    if (now < burstUntil) return 500;                     // 0.5s during burst
+    return document.visibilityState === 'visible' ? 1000  // 1s in foreground
+                                                  : 5000; // 5s in background
+  }
+
+  function restart() {
+    if (timer) clearInterval(timer);
+    timer = setInterval(check, cadenceMs());
+  }
+
+  function onVisibility() { restart(); }
+  function onBump() {
+    burstUntil = Date.now() + 10_000; // 10s of fast checks after a bump
+    restart();
+    check();
+  }
+
+  document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('alerts:bump', onBump);
+
+  // start “snappy” at first
+  burstUntil = Date.now() + 5_000;
+  restart();
+  setTimeout(check, 200);
+
+  window.addEventListener('beforeunload', () => { clearInterval(timer); });
+}

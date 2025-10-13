@@ -1,62 +1,46 @@
-export const runtime = 'edge';
-import { NextResponse } from 'next/server';
+// src/app/api/tournaments/route.ts
+export const runtime = "edge";
+import { NextResponse } from "next/server";
+import { getEnv } from "../_kv";
 
 type Tournament = {
-  id: string; hostId: string;
-  players?: { id: string; name: string }[];
-  createdAt?: number; updatedAt?: number;
-  name?: string; code?: string;
+  id: string; hostId: string; players: { id: string; name: string }[];
+  createdAt: number; updatedAt: number; name: string; code?: string;
 };
 
-export async function GET(
-  req: Request,
-  ctx: { env?: { KAVA_TOURNAMENTS?: KVNamespace } }
-) {
-  try {
-    const kv = ctx?.env?.KAVA_TOURNAMENTS;
-    if (!kv) {
-      return NextResponse.json(
-        { error: 'KV binding KAVA_TOURNAMENTS is not available' },
-        { status: 500 }
-      );
+export async function GET(req: Request) {
+  const env = getEnv();
+  const u = new URL(req.url);
+  const userId = u.searchParams.get("userId");
+  if (!userId) return NextResponse.json({ error: "Missing userId" }, { status: 400 });
+
+  let cursor: string | undefined = undefined;
+  const hosting: Tournament[] = [];
+  const playing: Tournament[] = [];
+
+  while (true) {
+    const res = await env.KAVA_TOURNAMENTS.list({ prefix: "t:", limit: 1000, cursor });
+    for (const k of res.keys) {
+      const raw = await env.KAVA_TOURNAMENTS.get(k.name);
+      if (!raw) continue;
+      const t = JSON.parse(raw) as Tournament;
+      if (t.hostId === userId) hosting.push(t);
+      else if ((t.players || []).some(p => p.id === userId)) playing.push(t);
     }
-
-    const u = new URL(req.url);
-    const userId = u.searchParams.get('userId');
-    if (!userId) return NextResponse.json({ error: 'Missing userId' }, { status: 400 });
-
-    const hosting: Tournament[] = [];
-    const playing: Tournament[] = [];
-
-    let cursor: string | undefined = undefined;
-    do {
-      const l = await kv.list({ prefix: 't:', limit: 100, cursor });
-      for (const k of l.keys) {
-        const raw = await kv.get(k.name);
-        if (!raw) continue;
-        let t: Tournament | undefined;
-        try { t = JSON.parse(raw); } catch { continue; }
-        if (!t) continue;
-        if (t.hostId === userId) hosting.push(t);
-        else if ((t.players || []).some(p => p.id === userId)) playing.push(t);
-      }
-      cursor = l.list_complete ? undefined : l.cursor;
-    } while (cursor);
-
-    hosting.sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
-    playing.sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
-
-    const listVersion = Math.max(
-      0,
-      ...hosting.map(t => t.updatedAt || 0),
-      ...playing.map(t => t.updatedAt || 0)
-    );
-
-    return NextResponse.json({ hosting, playing, listVersion });
-  } catch (err: any) {
-    return NextResponse.json(
-      { error: err?.message || String(err) || 'Internal Server Error' },
-      { status: 500 }
-    );
+    if (!res.list_complete && res.cursor) { cursor = res.cursor; }
+    else break;
   }
+
+  const sortByCreated = (a: Tournament, b: Tournament) => (b.createdAt || 0) - (a.createdAt || 0);
+  hosting.sort(sortByCreated);
+  playing.sort(sortByCreated);
+
+  // listVersion = max updatedAt from the included tournaments
+  const listVersion = Math.max(
+    0,
+    ...hosting.map(t => t.updatedAt || 0),
+    ...playing.map(t => t.updatedAt || 0)
+  );
+
+  return NextResponse.json({ hosting, playing, listVersion });
 }

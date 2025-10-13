@@ -1,19 +1,16 @@
 'use client';
-
 import { useEffect } from 'react';
-import { useQueueAlerts } from '@/hooks/useQueueAlerts';
+import { useQueueAlerts } from '@/lib/alerts';
 
-/**
- * Mount once in layout to keep background polling alive,
- * even on home screen. Global scope only (no ids).
- */
+// Mounts a global poller with no IDs, letting the server
+// pick the most relevant context for the user (latest list or tournament).
 export default function AlertsGlobal() {
-  useQueueAlerts({
-    upNextMessage: () => "You're up next — be ready!",
-    matchReadyMessage: () => "OK — you're up on the table!",
-  });
-
-  // nothing to render
-  useEffect(() => {}, []);
+  useEffect(() => {
+    // No IDs => /api/me/status fallback logic kicks in
+    useQueueAlerts({
+      upNextMessage: "You're up!",
+      matchReadyMessage: () => "You're up!"
+    });
+  }, []);
   return null;
 }

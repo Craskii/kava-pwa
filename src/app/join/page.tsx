@@ -1,151 +1,91 @@
 // src/app/join/page.tsx
-'use client';
-export const runtime = 'edge';
+"use client";
 
-import { useEffect, useState } from 'react';
-import Link from 'next/link';
-import { useSearchParams, useRouter } from 'next/navigation';
-import BackButton from '../components/BackButton';
+import { useRouter } from "next/navigation";
+import { useState, useMemo } from "react";
+import BackButton from "../../components/BackButton";
+import { uid } from "../../lib/storage";
 
-type Me = { id: string; name: string };
-
-function getMe(): Me {
-  try {
-    const saved = JSON.parse(localStorage.getItem('kava_me') || 'null');
-    if (saved?.id && saved?.name) return saved;
-  } catch {}
-  const me = { id: crypto.randomUUID(), name: '' };
-  localStorage.setItem('kava_me', JSON.stringify(me));
-  return me;
-}
-
-export default function Join() {
+export default function JoinPage() {
   const r = useRouter();
-  const sp = useSearchParams();
-  const codeFromUrl = sp?.get('code')?.trim()?.toUpperCase() || '';
-
-  const [me, setMe] = useState<Me>({ id: '', name: '' });
-  const [code, setCode] = useState(codeFromUrl);
+  const [name, setName] = useState("");
+  const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  useEffect(() => { setMe(getMe()); }, []);
-  useEffect(() => {
-    if (me.id) localStorage.setItem('kava_me', JSON.stringify(me));
-  }, [me]);
+  const me = useMemo(() => {
+    try { return JSON.parse(localStorage.getItem("kava_me") || "null"); }
+    catch { return null; }
+  }, []);
 
-  async function doJoin() {
+  function ensureMe(n: string) {
+    let m = me as { id: string; name: string } | null;
+    if (!m) m = { id: uid(), name: n || "Player" };
+    else if (n && m.name !== n) m = { ...m, name: n };
+    localStorage.setItem("kava_me", JSON.stringify(m));
+    return m!;
+  }
+
+  async function onJoin() {
+    if (busy) return;
     setErr(null);
-    const cleanCode = (code || '').toUpperCase().replace(/\s+/g, '');
-    const cleanName = (me.name || '').trim();
-    if (!cleanName) { setErr('Please enter your name.'); return; }
-    if (!/^[A-Z0-9]{5}$/.test(cleanCode)) { setErr('Please enter a valid 5-digit code.'); return; }
+
+    const n = name.trim() || "Player";
+    const c = code.replace(/[^0-9]/g, "").slice(0, 5);
+    if (c.length !== 5) { setErr("Enter the 5-digit code."); return; }
 
     setBusy(true);
     try {
-      const res = await fetch('/api/join', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        cache: 'no-store',
-        body: JSON.stringify({ code: cleanCode, player: { id: me.id, name: cleanName } }),
+      const m = ensureMe(n); // <-- make sure server gets the chosen name
+      const res = await fetch("/api/join", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ code: c, player: m }), // server adds to pending
+        cache: "no-store",
       });
-      if (!res.ok) throw new Error((await res.text()) || `HTTP ${res.status}`);
-      const data = await res.json(); // { id, status }
-      r.replace(`/t/${data.id}`);
-    } catch (e: any) {
-      setErr(e?.message || 'Join failed.');
+      if (!res.ok) throw new Error(await res.text());
+
+      // Success: go to “My tournaments” (your spec)
+      r.push("/me");
+      r.refresh();
+    } catch (e) {
+      console.error(e);
+      setErr("Could not join. Check the code.");
     } finally {
       setBusy(false);
     }
   }
 
-  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === 'Enter' && !busy) doJoin();
-  }
-
   return (
-    <main style={wrap}>
-      <div style={rowTop}><BackButton href="/" /></div>
-
-      <section style={panel}>
-        <h2 style={{ margin: '0 0 10px' }}>Join a tournament</h2>
-
-        <input
-          value={me.name}
-          onChange={(e) => setMe((m) => ({ ...m, name: e.target.value }))}
-          onKeyDown={onKeyDown}
-          placeholder="Your name"
-          style={input}
-          disabled={busy}
-        />
-
-        <input
-          value={code}
-          onChange={(e) => setCode(e.target.value.toUpperCase())}
-          onKeyDown={onKeyDown}
-          placeholder="5-digit code"
-          style={input}
-          disabled={busy}
-          inputMode="latin-prose"
-          autoCapitalize="characters"
-        />
-
-        <button onClick={doJoin} disabled={busy} style={btnPrimary}>
-          {busy ? 'Joining…' : 'Join'}
-        </button>
-
-        {err && <div style={errorBox}>{err}</div>}
-
-        <Link href="/" style={homeLink}>Home</Link>
-      </section>
+    <main style={{ minHeight:"100vh", background:"#0b1220", color:"#fff", padding:16 }}>
+      <BackButton href="/" />
+      <h1>Join a tournament</h1>
+      <input
+        value={name}
+        onChange={e=>setName(e.target.value)}
+        placeholder="Your name"
+        style={input}
+        disabled={busy}
+      />
+      <input
+        value={code}
+        onChange={e=>setCode(e.target.value.replace(/[^0-9]/g, "").slice(0,5))}
+        placeholder="5-digit code"
+        inputMode="numeric"
+        style={{ ...input, marginTop:8 }}
+        disabled={busy}
+      />
+      <button onClick={onJoin} disabled={busy} style={{ ...btn, opacity: busy ? .7 : 1, pointerEvents: busy ? "none" : "auto" }}>
+        {busy ? "Joining…" : "Join"}
+      </button>
+      {err && <p style={{ color:"#fca5a5", marginTop:8 }}>{err}</p>}
     </main>
   );
 }
 
-/* ---------- styles (matches your old dark UI) ---------- */
-const wrap: React.CSSProperties = {
-  minHeight: '100vh',
-  background: '#0b0f15',
-  color: '#fff',
-  fontFamily: 'system-ui',
-  padding: 16,
-};
-const rowTop: React.CSSProperties = { marginBottom: 10 };
-const panel: React.CSSProperties = {
-  maxWidth: 1000,
-  margin: '0 auto',
-  background: 'rgba(15, 20, 28, 0.9)',
-  border: '1px solid rgba(255,255,255,.08)',
-  borderRadius: 12,
-  padding: 12,
-  display: 'grid',
-  gap: 10,
-};
 const input: React.CSSProperties = {
-  width: '100%',
-  padding: '14px 12px',
-  borderRadius: 10,
-  border: '1px solid #2a2f36',
-  background: '#151a21',
-  color: '#fff',
-  outline: 'none',
+  width:"100%", padding:"12px 14px", borderRadius:10, border:"1px solid #333", background:"#111", color:"#fff"
 };
-const btnPrimary: React.CSSProperties = {
-  width: 80,
-  padding: '10px 12px',
-  borderRadius: 10,
-  border: 'none',
-  background: '#0ea5e9',
-  color: '#fff',
-  fontWeight: 800,
-  cursor: 'pointer',
+const btn: React.CSSProperties = {
+  marginTop:10, padding:"12px 16px", borderRadius:12, background:"#0ea5e9", border:"none", color:"#fff", fontWeight:700, cursor:"pointer"
 };
-const errorBox: React.CSSProperties = {
-  marginTop: 6,
-  padding: '10px 12px',
-  borderRadius: 10,
-  background: 'rgba(255, 80, 80, .1)',
-  border: '1px solid rgba(255, 80, 80, .35)',
-  fontSize: 13,
-};
-const homeLink: React.CSSProperties = { color: '#60a5fa', width: 'fit-content' };
