@@ -1,7 +1,6 @@
 export const runtime = 'edge';
 
 import { NextResponse } from 'next/server';
-import { getEnv } from '../_kv';
 
 type Tournament = {
   id: string;
@@ -13,12 +12,12 @@ type Tournament = {
   code?: string;
 };
 
-export async function GET(req: Request) {
+export async function GET(
+  req: Request,
+  ctx: { env?: { KAVA_TOURNAMENTS?: KVNamespace } }
+) {
   try {
-    const env = getEnv();
-
-    // Binding present?
-    const kv: KVNamespace | undefined = (env as any).KAVA_TOURNAMENTS;
+    const kv = ctx?.env?.KAVA_TOURNAMENTS;
     if (!kv) {
       return NextResponse.json(
         { error: 'KV binding KAVA_TOURNAMENTS is not available' },
@@ -35,7 +34,6 @@ export async function GET(req: Request) {
     const hosting: Tournament[] = [];
     const playing: Tournament[] = [];
 
-    // List everything under prefix t:
     let cursor: string | undefined = undefined;
     do {
       const l = await kv.list({ prefix: 't:', limit: 100, cursor });
@@ -50,7 +48,7 @@ export async function GET(req: Request) {
         }
         if (!t) continue;
         if (t.hostId === userId) hosting.push(t);
-        else if ((t.players || []).some((p) => p.id === userId)) playing.push(t);
+        else if ((t.players || []).some(p => p.id === userId)) playing.push(t);
       }
       cursor = l.list_complete ? undefined : l.cursor;
     } while (cursor);
@@ -62,17 +60,13 @@ export async function GET(req: Request) {
 
     const listVersion = Math.max(
       0,
-      ...hosting.map((t) => t.updatedAt || 0),
-      ...playing.map((t) => t.updatedAt || 0)
+      ...hosting.map(t => t.updatedAt || 0),
+      ...playing.map(t => t.updatedAt || 0)
     );
 
     return NextResponse.json({ hosting, playing, listVersion });
   } catch (err: any) {
-    // Always JSON, with details so you can see the actual error
-    const msg =
-      (err && (err.stack || err.message)) ||
-      String(err) ||
-      'Internal Server Error';
+    const msg = (err && (err.stack || err.message)) || String(err) || 'Internal Server Error';
     return NextResponse.json({ error: msg }, { status: 500 });
   }
 }
