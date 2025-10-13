@@ -1,15 +1,11 @@
 export const runtime = 'edge';
-
 import { NextResponse } from 'next/server';
 
 type Tournament = {
-  id: string;
-  hostId: string;
+  id: string; hostId: string;
   players?: { id: string; name: string }[];
-  createdAt?: number;
-  updatedAt?: number;
-  name?: string;
-  code?: string;
+  createdAt?: number; updatedAt?: number;
+  name?: string; code?: string;
 };
 
 export async function GET(
@@ -27,9 +23,7 @@ export async function GET(
 
     const u = new URL(req.url);
     const userId = u.searchParams.get('userId');
-    if (!userId) {
-      return NextResponse.json({ error: 'Missing userId' }, { status: 400 });
-    }
+    if (!userId) return NextResponse.json({ error: 'Missing userId' }, { status: 400 });
 
     const hosting: Tournament[] = [];
     const playing: Tournament[] = [];
@@ -49,10 +43,8 @@ export async function GET(
       cursor = l.list_complete ? undefined : l.cursor;
     } while (cursor);
 
-    const byCreated = (a: Tournament, b: Tournament) =>
-      (b.createdAt || 0) - (a.createdAt || 0);
-    hosting.sort(byCreated);
-    playing.sort(byCreated);
+    hosting.sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+    playing.sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
 
     const listVersion = Math.max(
       0,
@@ -62,7 +54,9 @@ export async function GET(
 
     return NextResponse.json({ hosting, playing, listVersion });
   } catch (err: any) {
-    const msg = (err && (err.stack || err.message)) || String(err) || 'Internal Server Error';
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json(
+      { error: err?.message || String(err) || 'Internal Server Error' },
+      { status: 500 }
+    );
   }
 }
