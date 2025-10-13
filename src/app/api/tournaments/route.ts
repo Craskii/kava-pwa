@@ -41,11 +41,7 @@ export async function GET(
         const raw = await kv.get(k.name);
         if (!raw) continue;
         let t: Tournament | undefined;
-        try {
-          t = JSON.parse(raw);
-        } catch {
-          continue;
-        }
+        try { t = JSON.parse(raw); } catch { continue; }
         if (!t) continue;
         if (t.hostId === userId) hosting.push(t);
         else if ((t.players || []).some(p => p.id === userId)) playing.push(t);
@@ -53,10 +49,10 @@ export async function GET(
       cursor = l.list_complete ? undefined : l.cursor;
     } while (cursor);
 
-    const sortByCreated = (a: Tournament, b: Tournament) =>
+    const byCreated = (a: Tournament, b: Tournament) =>
       (b.createdAt || 0) - (a.createdAt || 0);
-    hosting.sort(sortByCreated);
-    playing.sort(sortByCreated);
+    hosting.sort(byCreated);
+    playing.sort(byCreated);
 
     const listVersion = Math.max(
       0,
