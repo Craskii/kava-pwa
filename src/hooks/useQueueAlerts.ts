@@ -59,6 +59,18 @@ function showInAppBanner(text: string) {
   setTimeout(() => { document.getElementById(id)?.remove(); }, 6000);
 }
 
+function fireBannerAdvanced(status: any, text: string) {
+  try {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      const isList = status?.source === 'list';
+      const title = isList ? 'Queue update' : 'Match update';
+      new Notification(title, { body: text, tag: 'kava-alert', renotify: true });
+      return;
+    }
+  } catch {}
+  showInAppBanner(text);
+}
+
 function resolveMessage(msg: string | ((s:any)=>string) | undefined, status: any, fallback: string) {
   if (!msg) return fallback;
   return typeof msg === 'function' ? msg(status) : msg;
@@ -71,21 +83,6 @@ async function fetchStatus(base: { tournamentId?: string; listId?: string; userI
   const res = await fetch(`/api/me/status?${params}`, { cache: 'no-store' });
   if (!res.ok) return { phase: 'idle', sig: 'idle' };
   return res.json();
-}
-
-async function askPermission() {
-  if (!('Notification' in window)) return;
-  try { if (Notification.permission === 'default') await Notification.requestPermission(); } catch {}
-}
-
-function fireBanner(text: string) {
-  try {
-    if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification(text);
-      return;
-    }
-  } catch {}
-  showInAppBanner(text);
 }
 
 /** single-window lock: prevent two banners within a short window */
@@ -106,7 +103,6 @@ function shouldSkipCheck(): boolean {
   return false;
 }
 
-/** Normalize table number */
 function getTableNumber(status: any): number | null {
   const raw =
     status?.table?.number ??
@@ -115,12 +111,9 @@ function getTableNumber(status: any): number | null {
     status?.tableId ??
     status?.table ??
     null;
-
   if (raw == null) return null;
   const n = Number(raw);
   if (!Number.isFinite(n)) return null;
-
-  // if backend sends 0/1 for tables, show 1/2 to the user
   return n === 0 || n === 1 ? n + 1 : n;
 }
 
@@ -137,7 +130,6 @@ function isFirstInQueue(status: any): boolean {
     status?.place ??
     status?.rank ??
     null;
-
   if (p == null) return Boolean(status?.queueTop || status?.isNext || status?.upNext);
   const n = Number(p);
   if (!Number.isFinite(n)) return false;
@@ -157,9 +149,8 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
 
     const status = await fetchStatus({ userId, tournamentId, listId });
 
-    // Rich signature so we don't miss transitions
     const sigParts = [
-      status?.source ?? 'x',      // list / tournament if API provided
+      status?.source ?? 'x',      // list/tournament if API provided
       status?.phase ?? 'idle',
       String(status?.position ?? status?.queuePosition ?? ''),
       String(getTableNumber(status) ?? ''),
@@ -178,7 +169,6 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
     try { prevSig = localStorage.getItem(LS_KEY_LAST_SIG) || ''; } catch {}
     if (prevSig !== nextSig) return;
 
-    // cross-tab spacing
     try {
       const lastFire = Number(localStorage.getItem(LS_KEY_LAST_FIRE) || 0);
       const now = Date.now();
@@ -186,24 +176,25 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
       localStorage.setItem(LS_KEY_LAST_FIRE, String(now));
     } catch {}
 
-    // Decide the banner
     if (isOnTable(status)) {
       const tableNo = getTableNumber(status);
       const fallback = tableNo ? `Your in table (#${tableNo})` : `Your in table`;
       const msg = resolveMessage(opts.matchReadyMessage, status, fallback);
-      fireBanner(msg);
+      fireBannerAdvanced(status, msg);
     } else if (isFirstInQueue(status)) {
       const isList = !!listId || status?.source === 'list';
       const fallback = isList ? 'your up next get ready!!' : "You're up next — be ready!";
       const msg = resolveMessage(opts.upNextMessage, status, fallback);
-      fireBanner(msg);
+      fireBannerAdvanced(status, msg);
     }
   }, [userId, tournamentId, listId, opts.matchReadyMessage, opts.upNextMessage]);
 
   useEffect(() => {
     if (!userId) return;
 
-    askPermission();
+    // request notif permission once
+    try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch {}
+
     manualCheck();
 
     const onVis = () => { if (document.visibilityState === 'visible') manualCheck(); };
@@ -216,7 +207,7 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
     };
     window.addEventListener('storage', onStorage);
 
-    // Tournaments: SSE
+    // tournament: SSE
     let es: EventSource | null = null;
     if (tournamentId) {
       try {
@@ -226,7 +217,7 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
       } catch {}
     }
 
-    // Lists: fast poll + try attaching to SSE if you add it later
+    // list: fast poll (800ms). If you add SSE at /api/list/:id/stream it will attach.
     let int: any = null;
     if (listId) {
       int = setInterval(manualCheck, 800);
@@ -234,7 +225,6 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
         const esList = new EventSource(`/api/list/${encodeURIComponent(listId)}/stream`);
         esList.onmessage = () => manualCheck();
         esList.onerror = () => {};
-        // ensure closed on cleanup
         es = esList;
       } catch {}
     }
@@ -248,13 +238,5 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
     };
   }, [userId, tournamentId, listId, manualCheck]);
 
-  const ensurePermissions = useCallback(async () => {
-    await askPermission();
-    if (!('Notification' in window) || Notification.permission === 'granted') {
-      try { localStorage.setItem(LS_KEY_ENABLED, '1'); } catch {}
-      bumpAlerts();
-    }
-  }, []);
-
-  return { ensurePermissions };
+  return { ensurePermissions: () => {} };
 }

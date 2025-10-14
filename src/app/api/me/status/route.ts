@@ -76,7 +76,7 @@ const norm = (v: any) => (typeof v === 'string' ? v : v?.id || v?.playerId || v?
 function computeStatusFromTournament(t: any, userId: string) {
   if (!t) return { source: 'tournament' as const, tournamentId: null, phase: "idle" as const, sig: "idle" };
 
-  // If tables are used, seated players are “match_ready”
+  // Table = seated -> match_ready
   const tables = Array.isArray(t.tables) ? t.tables : [];
   for (const tb of tables) {
     const tableNum = tb?.number ?? tb?.id ?? tb?.tableNumber ?? null;
@@ -86,9 +86,7 @@ function computeStatusFromTournament(t: any, userId: string) {
       Array.isArray(tb?.currentPlayerIds) ? tb.currentPlayerIds.map(norm) : [];
     if (current.some((p: any) => p === userId)) {
       let sig = `TBL-${tableNum ?? 'x'}-${current.join('-')}`;
-      if ((t as any).lastPingAt && (t as any).lastPingTable === tableNum) {
-        sig += `-P${(t as any).lastPingAt}`;
-      }
+      if ((t as any).lastPingAt && (t as any).lastPingTable === tableNum) sig += `-P${(t as any).lastPingAt}`;
       return {
         source: 'tournament' as const,
         tournamentId: t?.id ?? null,
@@ -99,7 +97,7 @@ function computeStatusFromTournament(t: any, userId: string) {
     }
   }
 
-  // Bracket “current” match = first undecided in the first round that still has undecided matches
+  // Current bracket match
   const rounds: any[][] = Array.isArray(t.rounds) ? t.rounds : [];
   if (!rounds.length) return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: "idle" as const, sig: "idle" };
 
@@ -116,7 +114,6 @@ function computeStatusFromTournament(t: any, userId: string) {
     sig += `-P${(t as any).lastPingAt}`;
   }
 
-  // If I'm in the current match, I'm “up_next”
   if (a === userId || b === userId) {
     return {
       source: 'tournament' as const,
@@ -127,7 +124,6 @@ function computeStatusFromTournament(t: any, userId: string) {
     };
   }
 
-  // Otherwise, if I'm later in the same round, I'm “queued”
   const later = round.some((m, i) => i > mIdx && (norm(m?.a) === userId || norm(m?.b) === userId));
   if (later) return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: "queued" as const, sig };
 
@@ -145,9 +141,7 @@ function computeStatusFromList(l: any, userId: string) {
     const a = norm(tb?.a); const b = norm(tb?.b);
     if (a === userId || b === userId) {
       let sig = `LT${i+1}-${a ?? 'x'}-${b ?? 'x'}`;
-      if ((l as any).lastPingAt !== undefined && (l as any).lastPingTable === i) {
-        sig += `-P${(l as any).lastPingAt}`;
-      }
+      if ((l as any).lastPingAt !== undefined && (l as any).lastPingTable === i) sig += `-P${(l as any).lastPingAt}`;
       return {
         source: 'list' as const,
         listId: l?.id ?? null,
@@ -159,7 +153,9 @@ function computeStatusFromList(l: any, userId: string) {
   }
 
   // Queue => up_next if #1
-  const queue = Array.isArray(l.queue) ? l.queue : Array.isArray(l.waitlist) ? l.waitlist : Array.isArray(l.line) ? l.line : [];
+  const queue = Array.isArray(l.queue) ? l.queue :
+                Array.isArray(l.waitlist) ? l.waitlist :
+                Array.isArray(l.line) ? l.line : [];
   if (Array.isArray(queue) && queue.length) {
     const arr = queue.map(norm).filter(Boolean);
     const idx = arr.indexOf(userId);
