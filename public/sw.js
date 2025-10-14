@@ -1,36 +1,26 @@
 // public/sw.js
-
-// Activate the new SW immediately and take control of open pages
 self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', (event) => {
-  event.waitUntil(self.clients.claim());
-});
+self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
 
-// Allow the page to tell the SW to activate right away
 self.addEventListener('message', (event) => {
-  if (event?.data?.type === 'SKIP_WAITING') {
-    self.skipWaiting();
-  }
+  if (event?.data?.type === 'SKIP_WAITING') self.skipWaiting();
 });
 
-/**
- * Web Push handler (optional).
- * We ONLY show a notification if the server supplies text.
- * This prevents any old hard-coded "You're up!" from appearing.
- * Example payload:
- *   { "title": "Queue update", "body": "your up next get ready!!" }
- */
+// Block generic "You're up!" so only our custom texts appear
+function isBanned(text) {
+  if (!text) return false;
+  const t = String(text).trim().toLowerCase();
+  return t === "you're up!" || t === "you're up" || t === "you’re up!" || t === "you’re up";
+}
+
 self.addEventListener('push', (event) => {
   let data = {};
-  try {
-    data = event.data?.json() || {};
-  } catch (err) {
-    // If it wasn't JSON, ignore silently
-  }
-
+  try { data = event.data?.json() || {}; } catch {}
   const title = data.title || null;
   const body  = data.body  || null;
   const options = data.options || {};
+
+  if (isBanned(title) || isBanned(body)) return; // ignore generic pushes
 
   if (title || body) {
     event.waitUntil(
@@ -38,29 +28,21 @@ self.addEventListener('push', (event) => {
         body: body || '',
         tag: 'kava-alert',
         renotify: true,
-        // You can pass icon/badge via data.options if needed
         ...options,
       })
     );
   }
 });
 
-// (Optional) Click behavior: focus an open client or open the app
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const targetUrl = (event.notification?.data && event.notification.data.url) || '/';
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientsArr) => {
-      const hadWindow = clientsArr.some((client) => {
-        if (client.url.includes(self.origin) && 'focus' in client) {
-          client.focus();
-          return true;
-        }
-        return false;
-      });
-      if (!hadWindow && self.clients.openWindow) {
-        return self.clients.openWindow(targetUrl);
+      for (const client of clientsArr) {
+        if ('focus' in client) { client.focus(); return; }
       }
+      if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
     })
   );
 });

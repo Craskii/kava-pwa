@@ -143,7 +143,6 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
 
     const status = await fetchStatus({ userId, tournamentId, listId });
 
-    // richer signature -> less missed transitions
     const sigParts = [
       status?.source ?? 'x',
       status?.phase ?? 'idle',
@@ -170,7 +169,7 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
       localStorage.setItem(LS_KEY_LAST_FIRE, String(now));
     } catch {}
 
-    // 1) On table -> "Your in table (#n)"
+    // (1) Seated / on table
     if (isOnTable(status)) {
       const tableNo = getTableNumber(status);
       const fallback = tableNo ? `Your in table (#${tableNo})` : `Your in table`;
@@ -179,24 +178,21 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
       return;
     }
 
-    // 2) Phase says up_next
+    // (2) Up next
     if (status?.phase === 'up_next') {
       if (status?.source === 'list' || !!listId) {
-        // List wording (your requested text)
         fireBannerAdvanced(status, 'your up next get ready!!');
       } else {
-        // Tournament wording with round name
         const roundName =
           status?.bracketRoundName ||
           status?.roundName ||
-          (status?.roundNumber != null ? `Round ${status.roundNumber}` : null) ||
-          'this round';
+          (status?.roundNumber != null ? `Round ${status.roundNumber}` : 'this round');
         fireBannerAdvanced(status, `your up now in ${roundName}!`);
       }
       return;
     }
 
-    // 3) Fallback: first in queue but phase missing
+    // (3) Fallback: first in queue, no explicit phase
     if (isFirstInQueue(status)) {
       const isList = !!listId || status?.source === 'list';
       const fallback = isList ? 'your up next get ready!!' : "You're up next — be ready!";
@@ -227,7 +223,7 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
     };
     window.addEventListener('storage', onStorage);
 
-    // tournaments: SSE
+    // Tournament: SSE
     let es: EventSource | null = null;
     if (tournamentId) {
       try {
@@ -237,7 +233,7 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
       } catch {}
     }
 
-    // lists: fast poll + optional SSE if present
+    // List: fast poll + try SSE if present
     let int: any = null;
     if (listId) {
       int = setInterval(manualCheck, 800);

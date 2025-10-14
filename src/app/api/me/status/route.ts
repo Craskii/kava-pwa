@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(computeStatusFromList(l, userId), { status: 200 });
     }
 
-    // Fallbacks so global poller works from any page:
+    // Global fallbacks so a poll from any page works:
     const mineL = await fetchMineLists(req, userId);
     const latestL = pickLatest([...mineL.playing, ...mineL.hosting]);
     if (latestL) {

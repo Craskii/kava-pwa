@@ -107,13 +107,16 @@ export default function Lobby() {
   const me = useMemo(() => { try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); } catch { return null; } }, []);
   useEffect(() => { if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' })); }, [me]);
 
-  // 🔔 banners only
+  // 🔔 banners only — custom texts
   useQueueAlerts({
-    tournamentId: id,
-    upNextMessage: (s) => s?.bracketRoundName
-      ? `You're up next in ${s.bracketRoundName}!`
-      : "You're up next — be ready!",
-    matchReadyMessage: () => "OK — you're up on the table!"
+    tournamentId: String(id),
+    upNextMessage: (s: any) => `your up now in ${s?.bracketRoundName || 'this round'}!`,
+    matchReadyMessage: (s: any) => {
+      const raw = s?.tableNumber ?? s?.table?.number ?? null;
+      const n = Number(raw);
+      const shown = Number.isFinite(n) ? (n === 0 || n === 1 ? n + 1 : n) : null;
+      return shown ? `Your in table (#${shown})` : 'Your in table';
+    },
   });
 
   // load + smart poll
@@ -153,7 +156,7 @@ export default function Lobby() {
       ...t,
       players: [...t.players],
       pending: [...t.pending],
-      rounds: t.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
+      rounds: t.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } })) ),
     };
 
     const first = structuredClone(base);
@@ -169,7 +172,7 @@ export default function Lobby() {
           ...latest,
           players: [...latest.players],
           pending: [...latest.pending],
-          rounds: latest.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
+          rounds: latest.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } })) ),
         };
         mut(second);
         const saved = await saveTournamentRemote(second);

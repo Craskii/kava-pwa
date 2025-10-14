@@ -1,18 +1,29 @@
-// src/app/sw-register.tsx
 'use client';
 import { useEffect } from 'react';
 
 const SW_URL = '/sw.js';
-const SW_VERSION = 'v7'; // bump when shipping alerts changes
+const SW_VERSION = 'v8'; // bump when you change alerts/SW
 
 export default function SWRegister() {
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
 
+    const desiredUrl = new URL(`${SW_URL}?v=${SW_VERSION}`, location.origin).toString();
+
+    // Unregister any other SWs (e.g., old Workbox)
+    navigator.serviceWorker.getRegistrations().then((regs) => {
+      regs.forEach((reg) => {
+        const url = (reg as any)?.active?.scriptURL || reg?.scope;
+        if (url && !url.startsWith(desiredUrl) && !url.endsWith('/sw.js') && !url.includes('v=' + SW_VERSION)) {
+          reg.unregister().catch(() => {});
+        }
+      });
+    });
+
     navigator.serviceWorker
-      .register(`${SW_URL}?v=${SW_VERSION}`)
-      .then(reg => {
-        if (reg.waiting) reg.waiting?.postMessage({ type: 'SKIP_WAITING' });
+      .register(desiredUrl)
+      .then((reg) => {
+        if (reg.waiting) reg.waiting.postMessage({ type: 'SKIP_WAITING' });
         reg.addEventListener('updatefound', () => {
           const nw = reg.installing;
           if (!nw) return;
@@ -26,7 +37,7 @@ export default function SWRegister() {
       .catch(() => {});
 
     navigator.serviceWorker.addEventListener('controllerchange', () => {
-      // new SW is active
+      // new SW active
     });
   }, []);
 

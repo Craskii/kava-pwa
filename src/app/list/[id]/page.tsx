@@ -5,7 +5,7 @@ export const runtime = 'edge';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
-import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts'; // <-- updated path
+import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
 import {
   getListRemote, listJoin, listLeave, listILost, listSetTables,
   ListGame, Player, uid
@@ -28,9 +28,14 @@ export default function ListLobby() {
 
   // 🔔 alerts on this list
   useQueueAlerts({
-    listId: id,
-    upNextMessage: "You're up!",
-    matchReadyMessage: () => "OK — you're up on the table!"
+    listId: id, // ← important: pass the computed id here
+    upNextMessage: 'your up next get ready!!',
+    matchReadyMessage: (s: any) => {
+      const raw = s?.tableNumber ?? s?.table?.number ?? null;
+      const n = Number(raw);
+      const shown = Number.isFinite(n) ? (n === 0 || n === 1 ? n + 1 : n) : null;
+      return shown ? `Your in table (#${shown})` : 'Your in table';
+    },
   });
 
   // Track my seating to bump alerts when I get seated
@@ -61,7 +66,7 @@ export default function ListLobby() {
     if (!id) return;
     let es: EventSource | null = null;
 
-    // initial load for SSR/refresh
+    // initial load
     loadOnce();
 
     try {
@@ -77,9 +82,7 @@ export default function ListLobby() {
           if (detectMySeatingChanged(data)) bumpAlerts();
         } catch {}
       };
-      es.onerror = () => {
-        // On iOS, SSE may drop in background; no-op here (Alerts hook also wakes on focus)
-      };
+      es.onerror = () => { /* iOS may drop SSE in bg; hook wakes on focus */ };
     } catch (err) {
       console.error('SSE error', err);
     }
@@ -97,7 +100,7 @@ export default function ListLobby() {
     try {
       const p: Player = { id: uid(), name: nm };
       const updated = await listJoin(g, p);
-      setG({ ...updated }); // local optimistic
+      setG({ ...updated });
       bumpAlerts();
     } catch { alert('Could not add player.'); }
     finally { setBusy(false); setNameField(''); }

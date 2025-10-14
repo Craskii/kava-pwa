@@ -24,11 +24,13 @@ export function bumpAlerts() {
 function chooseMessage(phase: string, opts: UseQueueAlertsOpts, status: any): string | null {
   if (phase === 'match_ready') {
     if (typeof opts.matchReadyMessage === 'function') return opts.matchReadyMessage(status);
-    return opts.matchReadyMessage ?? "OK — you're up on the table!";
+    // default: seated
+    return opts.matchReadyMessage ?? 'Your in table';
   }
   if (phase === 'up_next') {
     if (typeof opts.upNextMessage === 'function') return opts.upNextMessage(status);
-    return opts.upNextMessage ?? "You're up next — be ready!";
+    // default: first in queue (list) or next match (tournament)
+    return opts.upNextMessage ?? 'your up next get ready!!';
   }
   return null;
 }
@@ -53,8 +55,8 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts = {}) {
       const me = JSON.parse(localStorage.getItem('kava_me') || 'null');
       const qs = new URLSearchParams();
       if (me?.id) qs.set('userId', me.id);
-      if (opts.tournamentId) qs.set('tournamentId', opts.tournamentId);
-      if (opts.listId) qs.set('listId', opts.listId);
+      if (opts.tournamentId) qs.set('tournamentId', String(opts.tournamentId));
+      if (opts.listId) qs.set('listId', String(opts.listId));
       const q = qs.toString();
       if (q) url += `?${q}`;
 

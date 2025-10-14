@@ -1,3 +1,4 @@
+// src/components/AlertsGlobal.tsx
 'use client';
 import { useEffect } from 'react';
 import { useQueueAlerts } from '@/lib/alerts';
@@ -8,8 +9,9 @@ export default function AlertsGlobal() {
   useEffect(() => {
     // No IDs => /api/me/status fallback logic kicks in
     useQueueAlerts({
-      upNextMessage: "You're up!",
-      matchReadyMessage: () => "You're up!"
+      // Explicit safe defaults (no "You're up")
+      upNextMessage: 'your up next get ready!!',
+      matchReadyMessage: 'Your in table',
     });
   }, []);
   return null;
