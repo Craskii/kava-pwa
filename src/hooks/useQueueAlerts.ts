@@ -62,8 +62,7 @@ function showInAppBanner(text: string) {
 function fireBannerAdvanced(status: any, text: string) {
   try {
     if ('Notification' in window && Notification.permission === 'granted') {
-      const isList = status?.source === 'list';
-      const title = isList ? 'Queue update' : 'Match update';
+      const title = status?.source === 'list' ? 'Queue update' : 'Match update';
       new Notification(title, { body: text, tag: 'kava-alert', renotify: true });
       return;
     }
@@ -85,7 +84,6 @@ async function fetchStatus(base: { tournamentId?: string; listId?: string; userI
   return res.json();
 }
 
-/** single-window lock: prevent two banners within a short window */
 function acquireWindowLock(ms = 1500): boolean {
   const now = Date.now();
   const until = window.__kavaAlertLockUntil || 0;
@@ -93,8 +91,6 @@ function acquireWindowLock(ms = 1500): boolean {
   window.__kavaAlertLockUntil = now + ms;
   return true;
 }
-
-/** tiny throttle for status checks */
 function shouldSkipCheck(): boolean {
   const now = Date.now();
   const last = window.__kavaLastCheckAt || 0;
@@ -116,13 +112,11 @@ function getTableNumber(status: any): number | null {
   if (!Number.isFinite(n)) return null;
   return n === 0 || n === 1 ? n + 1 : n;
 }
-
 function isOnTable(status: any): boolean {
   if (status?.phase === 'match_ready' || status?.phase === 'on_table' || status?.phase === 'seated') return true;
   if (getTableNumber(status) != null) return true;
   return Boolean(status?.tableAssigned || status?.hasTable);
 }
-
 function isFirstInQueue(status: any): boolean {
   const p =
     status?.position ??
@@ -149,8 +143,9 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
 
     const status = await fetchStatus({ userId, tournamentId, listId });
 
+    // richer signature -> less missed transitions
     const sigParts = [
-      status?.source ?? 'x',      // list/tournament if API provided
+      status?.source ?? 'x',
       status?.phase ?? 'idle',
       String(status?.position ?? status?.queuePosition ?? ''),
       String(getTableNumber(status) ?? ''),
@@ -159,7 +154,6 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
 
     let prevSig = '';
     try { prevSig = localStorage.getItem(LS_KEY_LAST_SIG) || ''; } catch {}
-
     if (!nextSig || nextSig === prevSig) return;
 
     try { localStorage.setItem(LS_KEY_LAST_SIG, nextSig); } catch {}
@@ -170,30 +164,56 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
     if (prevSig !== nextSig) return;
 
     try {
-      const lastFire = Number(localStorage.getItem(LS_KEY_LAST_FIRE) || 0);
+      const last = Number(localStorage.getItem(LS_KEY_LAST_FIRE) || 0);
       const now = Date.now();
-      if (now - lastFire < 1200) return;
+      if (now - last < 1200) return;
       localStorage.setItem(LS_KEY_LAST_FIRE, String(now));
     } catch {}
 
+    // 1) On table -> "Your in table (#n)"
     if (isOnTable(status)) {
       const tableNo = getTableNumber(status);
       const fallback = tableNo ? `Your in table (#${tableNo})` : `Your in table`;
       const msg = resolveMessage(opts.matchReadyMessage, status, fallback);
       fireBannerAdvanced(status, msg);
-    } else if (isFirstInQueue(status)) {
+      return;
+    }
+
+    // 2) Phase says up_next
+    if (status?.phase === 'up_next') {
+      if (status?.source === 'list' || !!listId) {
+        // List wording (your requested text)
+        fireBannerAdvanced(status, 'your up next get ready!!');
+      } else {
+        // Tournament wording with round name
+        const roundName =
+          status?.bracketRoundName ||
+          status?.roundName ||
+          (status?.roundNumber != null ? `Round ${status.roundNumber}` : null) ||
+          'this round';
+        fireBannerAdvanced(status, `your up now in ${roundName}!`);
+      }
+      return;
+    }
+
+    // 3) Fallback: first in queue but phase missing
+    if (isFirstInQueue(status)) {
       const isList = !!listId || status?.source === 'list';
       const fallback = isList ? 'your up next get ready!!' : "You're up next — be ready!";
       const msg = resolveMessage(opts.upNextMessage, status, fallback);
       fireBannerAdvanced(status, msg);
+      return;
     }
   }, [userId, tournamentId, listId, opts.matchReadyMessage, opts.upNextMessage]);
 
   useEffect(() => {
     if (!userId) return;
 
-    // request notif permission once
-    try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch {}
+    try {
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission();
+      }
+    } catch {}
 
     manualCheck();
 
@@ -207,7 +227,7 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
     };
     window.addEventListener('storage', onStorage);
 
-    // tournament: SSE
+    // tournaments: SSE
     let es: EventSource | null = null;
     if (tournamentId) {
       try {
@@ -217,7 +237,7 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
       } catch {}
     }
 
-    // list: fast poll (800ms). If you add SSE at /api/list/:id/stream it will attach.
+    // lists: fast poll + optional SSE if present
     let int: any = null;
     if (listId) {
       int = setInterval(manualCheck, 800);
