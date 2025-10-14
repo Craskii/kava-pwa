@@ -84,7 +84,7 @@ function fireBanner(text: string) {
       new Notification(text);
       return;
     }
-  } catch { /* fall back below */ }
+  } catch {}
   showInAppBanner(text);
 }
 
@@ -106,7 +106,7 @@ function shouldSkipCheck(): boolean {
   return false;
 }
 
-/** Try to extract a human table number from various shapes (0- or 1-based) */
+/** Normalize various backend shapes into simple booleans/values */
 function getTableNumber(status: any): number | null {
   const raw =
     status?.table?.number ??
@@ -117,12 +117,39 @@ function getTableNumber(status: any): number | null {
     null;
 
   if (raw == null) return null;
-
   const n = Number(raw);
   if (!Number.isFinite(n)) return null;
 
-  // If backend is 0-based, promote to 1-based (show 1 or 2)
+  // if backend sends 0/1 for tables, show 1/2 to the user
   return n === 0 || n === 1 ? n + 1 : n;
+}
+
+function isOnTable(status: any): boolean {
+  // treat any of these as "on table"
+  if (status?.phase === 'match_ready' || status?.phase === 'on_table' || status?.phase === 'seated') return true;
+  if (getTableNumber(status) != null) return true;
+  return Boolean(status?.tableAssigned || status?.hasTable);
+}
+
+function isFirstInQueue(status: any): boolean {
+  // support multiple shapes: 0-based or 1-based, and string/number
+  const p =
+    status?.position ??
+    status?.queuePosition ??
+    status?.place ??
+    status?.rank ??
+    null;
+
+  if (p == null) {
+    // some APIs send "queueTop: true"
+    return Boolean(status?.queueTop || status?.isNext || status?.upNext);
+  }
+
+  const n = Number(p);
+  if (!Number.isFinite(n)) return false;
+
+  // 0 → first (0-based), 1 → first (1-based)
+  return n === 0 || n === 1;
 }
 
 export function useQueueAlerts(opts: UseQueueAlertsOpts) {
@@ -138,25 +165,27 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
 
     const status = await fetchStatus({ userId, tournamentId, listId });
 
-    // Compare-and-set signature BEFORE firing (dedupe across callers)
-    const nextSig = String(status?.sig || 'idle');
+    // Build a richer signature so we don't miss transitions:
+    const sigParts = [
+      status?.phase ?? 'idle',
+      String(status?.position ?? status?.queuePosition ?? ''),
+      String(getTableNumber(status) ?? ''),
+    ];
+    const nextSig = sigParts.join('|');
+
     let prevSig = '';
     try { prevSig = localStorage.getItem(LS_KEY_LAST_SIG) || ''; } catch {}
 
     if (!nextSig || nextSig === prevSig) return;
 
-    // Store immediately so any concurrent caller sees the new value
     try { localStorage.setItem(LS_KEY_LAST_SIG, nextSig); } catch {}
-
-    // Per-window lock so two callers in same tab don't both fire
     if (!acquireWindowLock()) return;
 
-    // As a final guard, re-read after a microtask (in case another tab raced)
     await Promise.resolve();
     try { prevSig = localStorage.getItem(LS_KEY_LAST_SIG) || ''; } catch {}
     if (prevSig !== nextSig) return;
 
-    // Global spacing across tabs
+    // cross-tab spacing
     try {
       const lastFire = Number(localStorage.getItem(LS_KEY_LAST_FIRE) || 0);
       const now = Date.now();
@@ -164,17 +193,15 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
       localStorage.setItem(LS_KEY_LAST_FIRE, String(now));
     } catch {}
 
-    if (status?.phase === 'match_ready') {
+    // Decide the banner
+    if (isOnTable(status)) {
       const tableNo = getTableNumber(status);
       const fallback = tableNo ? `Your in table (#${tableNo})` : `Your in table`;
       const msg = resolveMessage(opts.matchReadyMessage, status, fallback);
       fireBanner(msg);
-
-    } else if (status?.phase === 'up_next') {
+    } else if (isFirstInQueue(status)) {
       const isList = !!listId;
-      const fallback = isList
-        ? 'your up next get ready!!'
-        : "You're up next — be ready!";
+      const fallback = isList ? 'your up next get ready!!' : "You're up next — be ready!";
       const msg = resolveMessage(opts.upNextMessage, status, fallback);
       fireBanner(msg);
     }
@@ -196,29 +223,29 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
     };
     window.addEventListener('storage', onStorage);
 
-    // SSE for tournaments
+    // Tournaments already use SSE
     let es: EventSource | null = null;
     if (tournamentId) {
       try {
         es = new EventSource(`/api/tournament/${encodeURIComponent(tournamentId)}/stream`);
         es.onmessage = () => manualCheck();
-        es.onerror = () => { /* ignore */ };
+        es.onerror = () => {};
       } catch {}
     }
 
-    // Poll for lists (until SSE added)
+    // Lists: make it snappy (800ms, no early backoff)
+    // If you add SSE at /api/list/:id/stream later, we’ll subscribe too.
     let int: any = null;
     if (listId) {
-      let runs = 0;
-      int = setInterval(() => {
-        manualCheck();
-        runs++;
-        // back off after a minute
-        if (runs === 40) {
-          clearInterval(int);
-          int = setInterval(manualCheck, 4000);
-        }
-      }, 1500);
+      int = setInterval(manualCheck, 800);
+      // try to subscribe to SSE if backend exists
+      try {
+        const esList = new EventSource(`/api/list/${encodeURIComponent(listId)}/stream`);
+        esList.onmessage = () => manualCheck();
+        esList.onerror = () => {};
+        // close both on cleanup
+        es = esList;
+      } catch {}
     }
 
     return () => {
