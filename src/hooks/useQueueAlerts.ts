@@ -106,7 +106,7 @@ function shouldSkipCheck(): boolean {
   return false;
 }
 
-/** Normalize various backend shapes into simple booleans/values */
+/** Normalize table number */
 function getTableNumber(status: any): number | null {
   const raw =
     status?.table?.number ??
@@ -125,14 +125,12 @@ function getTableNumber(status: any): number | null {
 }
 
 function isOnTable(status: any): boolean {
-  // treat any of these as "on table"
   if (status?.phase === 'match_ready' || status?.phase === 'on_table' || status?.phase === 'seated') return true;
   if (getTableNumber(status) != null) return true;
   return Boolean(status?.tableAssigned || status?.hasTable);
 }
 
 function isFirstInQueue(status: any): boolean {
-  // support multiple shapes: 0-based or 1-based, and string/number
   const p =
     status?.position ??
     status?.queuePosition ??
@@ -140,15 +138,9 @@ function isFirstInQueue(status: any): boolean {
     status?.rank ??
     null;
 
-  if (p == null) {
-    // some APIs send "queueTop: true"
-    return Boolean(status?.queueTop || status?.isNext || status?.upNext);
-  }
-
+  if (p == null) return Boolean(status?.queueTop || status?.isNext || status?.upNext);
   const n = Number(p);
   if (!Number.isFinite(n)) return false;
-
-  // 0 → first (0-based), 1 → first (1-based)
   return n === 0 || n === 1;
 }
 
@@ -165,8 +157,9 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
 
     const status = await fetchStatus({ userId, tournamentId, listId });
 
-    // Build a richer signature so we don't miss transitions:
+    // Rich signature so we don't miss transitions
     const sigParts = [
+      status?.source ?? 'x',      // list / tournament if API provided
       status?.phase ?? 'idle',
       String(status?.position ?? status?.queuePosition ?? ''),
       String(getTableNumber(status) ?? ''),
@@ -200,7 +193,7 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
       const msg = resolveMessage(opts.matchReadyMessage, status, fallback);
       fireBanner(msg);
     } else if (isFirstInQueue(status)) {
-      const isList = !!listId;
+      const isList = !!listId || status?.source === 'list';
       const fallback = isList ? 'your up next get ready!!' : "You're up next — be ready!";
       const msg = resolveMessage(opts.upNextMessage, status, fallback);
       fireBanner(msg);
@@ -223,7 +216,7 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
     };
     window.addEventListener('storage', onStorage);
 
-    // Tournaments already use SSE
+    // Tournaments: SSE
     let es: EventSource | null = null;
     if (tournamentId) {
       try {
@@ -233,17 +226,15 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
       } catch {}
     }
 
-    // Lists: make it snappy (800ms, no early backoff)
-    // If you add SSE at /api/list/:id/stream later, we’ll subscribe too.
+    // Lists: fast poll + try attaching to SSE if you add it later
     let int: any = null;
     if (listId) {
       int = setInterval(manualCheck, 800);
-      // try to subscribe to SSE if backend exists
       try {
         const esList = new EventSource(`/api/list/${encodeURIComponent(listId)}/stream`);
         esList.onmessage = () => manualCheck();
         esList.onerror = () => {};
-        // close both on cleanup
+        // ensure closed on cleanup
         es = esList;
       } catch {}
     }

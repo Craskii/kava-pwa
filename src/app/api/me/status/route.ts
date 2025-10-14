@@ -74,7 +74,7 @@ const norm = (v: any) => (typeof v === 'string' ? v : v?.id || v?.playerId || v?
 
 /* ------------ TOURNAMENT ------------ */
 function computeStatusFromTournament(t: any, userId: string) {
-  if (!t) return { phase: "idle" as const, sig: "idle" };
+  if (!t) return { source: 'tournament' as const, tournamentId: null, phase: "idle" as const, sig: "idle" };
 
   // If tables are used, seated players are “match_ready”
   const tables = Array.isArray(t.tables) ? t.tables : [];
@@ -89,16 +89,22 @@ function computeStatusFromTournament(t: any, userId: string) {
       if ((t as any).lastPingAt && (t as any).lastPingTable === tableNum) {
         sig += `-P${(t as any).lastPingAt}`;
       }
-      return { phase: "match_ready" as const, tableNumber: Number(tableNum) || null, sig };
+      return {
+        source: 'tournament' as const,
+        tournamentId: t?.id ?? null,
+        phase: "match_ready" as const,
+        tableNumber: Number(tableNum) || null,
+        sig
+      };
     }
   }
 
   // Bracket “current” match = first undecided in the first round that still has undecided matches
   const rounds: any[][] = Array.isArray(t.rounds) ? t.rounds : [];
-  if (!rounds.length) return { phase: "idle" as const, sig: "idle" };
+  if (!rounds.length) return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: "idle" as const, sig: "idle" };
 
   const rIdx = rounds.findIndex(r => Array.isArray(r) && r.some(m => !m?.winner));
-  if (rIdx === -1) return { phase: "idle" as const, sig: "done" };
+  if (rIdx === -1) return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: "idle" as const, sig: "done" };
 
   const round = rounds[rIdx];
   const mIdx = round.findIndex(m => !m?.winner);
@@ -112,19 +118,25 @@ function computeStatusFromTournament(t: any, userId: string) {
 
   // If I'm in the current match, I'm “up_next”
   if (a === userId || b === userId) {
-    return { phase: "up_next" as const, bracketRoundName: `Round ${rIdx + 1}`, sig };
+    return {
+      source: 'tournament' as const,
+      tournamentId: t?.id ?? null,
+      phase: "up_next" as const,
+      bracketRoundName: `Round ${rIdx + 1}`,
+      sig
+    };
   }
 
   // Otherwise, if I'm later in the same round, I'm “queued”
   const later = round.some((m, i) => i > mIdx && (norm(m?.a) === userId || norm(m?.b) === userId));
-  if (later) return { phase: "queued" as const, sig };
+  if (later) return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: "queued" as const, sig };
 
-  return { phase: "idle" as const, sig };
+  return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: "idle" as const, sig };
 }
 
 /* ------------- LISTS ------------- */
 function computeStatusFromList(l: any, userId: string) {
-  if (!l) return { phase: "idle" as const, sig: "idle" };
+  if (!l) return { source: 'list' as const, listId: null, phase: "idle" as const, sig: "idle" };
 
   // Seated => match_ready
   const tables = Array.isArray(l.tables) ? l.tables : [];
@@ -136,7 +148,13 @@ function computeStatusFromList(l: any, userId: string) {
       if ((l as any).lastPingAt !== undefined && (l as any).lastPingTable === i) {
         sig += `-P${(l as any).lastPingAt}`;
       }
-      return { phase: "match_ready" as const, tableNumber: i+1, sig };
+      return {
+        source: 'list' as const,
+        listId: l?.id ?? null,
+        phase: "match_ready" as const,
+        tableNumber: i+1,
+        sig
+      };
     }
   }
 
@@ -147,10 +165,24 @@ function computeStatusFromList(l: any, userId: string) {
     const idx = arr.indexOf(userId);
     if (idx >= 0) {
       const pos = idx + 1;
-      if (pos === 1) return { phase: "up_next" as const, position: 1, sig: `LQ1-${arr.join('-')}` };
-      return { phase: "queued" as const, position: pos, sig: `LQ${pos}-${arr.join('-')}` };
+      if (pos === 1) {
+        return {
+          source: 'list' as const,
+          listId: l?.id ?? null,
+          phase: "up_next" as const,
+          position: 1,
+          sig: `LQ1-${arr.join('-')}`
+        };
+      }
+      return {
+        source: 'list' as const,
+        listId: l?.id ?? null,
+        phase: "queued" as const,
+        position: pos,
+        sig: `LQ${pos}-${arr.join('-')}`
+      };
     }
   }
 
-  return { phase: "idle" as const, sig: "idle" };
+  return { source: 'list' as const, listId: l?.id ?? null, phase: "idle" as const, sig: "idle" };
 }
