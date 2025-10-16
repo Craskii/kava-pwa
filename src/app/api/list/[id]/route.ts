@@ -1,3 +1,4 @@
+// src/app/api/list/[id]/route.ts
 export const runtime = "edge";
 
 import { NextResponse } from "next/server";
@@ -29,7 +30,6 @@ async function getV(env: Env, id: string): Promise<number> {
 async function setV(env: Env, id: string, v: number) {
   await env.KAVA_TOURNAMENTS.put(LVER(id), String(v));
 }
-
 async function readArr(env: Env, key: string): Promise<string[]> {
   const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -53,14 +53,26 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
   const id = params.id;
   const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
   const doc = JSON.parse(raw) as ListGame;
+
+  // defensive: ensure required fields exist (backfill legacy docs)
+  if (!doc.status) doc.status = "active";
+  if (!Array.isArray(doc.tables)) doc.tables = [{}, {}];
+  if (!Array.isArray(doc.players)) doc.players = [];
+  if (!Array.isArray(doc.queue)) doc.queue = [];
+
   const v = await getV(env, id);
   return new NextResponse(JSON.stringify(doc), {
-    headers: { "content-type":"application/json", "x-l-version": String(v), "Cache-Control":"public, max-age=5, stale-while-revalidate=30" }
+    headers: {
+      "content-type":"application/json",
+      "x-l-version": String(v),
+      "cache-control":"no-store"
+    }
   });
 }
 
-/* PUT */
+/* PUT (with If-Match) */
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;

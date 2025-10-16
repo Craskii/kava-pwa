@@ -4,7 +4,7 @@ export const runtime = "edge";
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
-/* ---------- KV & Types ---------- */
+/* ---------- KV ---------- */
 type KVListResult = { keys: { name: string }[]; cursor?: string; list_complete?: boolean };
 type KVNamespace = {
   get(key: string): Promise<string | null>;
@@ -14,41 +14,24 @@ type KVNamespace = {
 };
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
+/* ---------- Types ---------- */
 type Player = { id: string; name: string };
 type Report = "win" | "loss" | undefined;
 type Match = { a?: string; b?: string; winner?: string; reports?: Record<string, Report> };
 type TournamentStatus = "setup" | "active" | "completed";
-
 type Tournament = {
-  id: string;
-  name: string;
-  code: string;
-  hostId: string;
-  status: TournamentStatus;
-  createdAt: number;
-  players: Player[];
-  pending: Player[];
-  queue: string[];
-  rounds: Match[][];
+  id: string; name: string; code?: string; hostId: string; status: TournamentStatus;
+  createdAt: number; players: Player[]; pending: Player[]; queue: string[]; rounds: Match[][];
 };
-
 type Table = { a?: string; b?: string };
-
 type ListGame = {
-  id: string;
-  name: string;
-  code: string;
-  hostId: string;
-  status: "active";
-  createdAt: number;
-  tables: Table[];
-  players: Player[];
-  queue: string[];
+  id: string; name: string; code?: string; hostId: string; status: "active";
+  createdAt: number; tables: Table[]; players: Player[]; queue: string[];
 };
 
 type CreateBody = { name?: string; hostId?: string; type?: "tournament" | "list" };
 
-/* ---------- Helper Keys ---------- */
+/* ---------- Keys & helpers ---------- */
 const TKEY = (id: string) => `t:${id}`;
 const TVER = (id: string) => `tv:${id}`;
 const LKEY = (id: string) => `l:${id}`;
@@ -56,11 +39,7 @@ const LVER = (id: string) => `lv:${id}`;
 const THOST = (hostId: string) => `tidx:h:${hostId}`;
 const LHOST = (hostId: string) => `lidx:h:${hostId}`;
 
-/* ---------- Utilities ---------- */
-function random5(): string {
-  return Math.floor(10000 + Math.random() * 90000).toString(); // always 5 digits
-}
-
+function random5(): string { return Math.floor(Math.random() * 100000).toString().padStart(5, "0"); }
 async function uniqueNumericCode(env: Env): Promise<string> {
   for (let i = 0; i < 12; i++) {
     const c = random5();
@@ -69,7 +48,6 @@ async function uniqueNumericCode(env: Env): Promise<string> {
   }
   return random5();
 }
-
 async function pushId(env: Env, key: string, id: string) {
   const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
   const arr: string[] = JSON.parse(raw);
@@ -85,9 +63,7 @@ export async function POST(req: Request) {
   const env = rawEnv as unknown as Env;
 
   let body: CreateBody = {};
-  try {
-    body = await req.json();
-  } catch {}
+  try { body = await req.json(); } catch {}
 
   const name = (body.name ?? "Untitled").toString();
   const hostId = (body.hostId ?? crypto.randomUUID()).toString();
@@ -98,40 +74,26 @@ export async function POST(req: Request) {
 
   if (type === "list") {
     const listDoc: ListGame = {
-      id,
-      code,
-      name,
-      hostId,
-      status: "active",
-      createdAt: Date.now(),
-      tables: [{}, {}], // default 2 tables
-      players: [],
-      queue: [],
+      id, code, name, hostId, status: "active",
+      createdAt: Date.now(), tables: [{}, {}], players: [], queue: [],
     };
     await env.KAVA_TOURNAMENTS.put(LKEY(id), JSON.stringify(listDoc));
     await env.KAVA_TOURNAMENTS.put(LVER(id), "1");
     await env.KAVA_TOURNAMENTS.put(`code:${code}`, JSON.stringify({ type: "list", id }));
     await pushId(env, LHOST(hostId), id);
-    return NextResponse.json(listDoc); // ✅ Return full doc
+    // include hostId so the client can assert host immediately
+    return NextResponse.json({ ok: true, id, code, hostId, type: "list" });
   }
 
   const tournament: Tournament = {
-    id,
-    code,
-    name,
-    hostId,
-    status: "setup",
-    createdAt: Date.now(),
-    players: [],
-    pending: [],
-    queue: [],
-    rounds: [],
+    id, code, name, hostId, status: "setup",
+    createdAt: Date.now(), players: [], pending: [], queue: [], rounds: [],
   };
-
   await env.KAVA_TOURNAMENTS.put(TKEY(id), JSON.stringify(tournament));
   await env.KAVA_TOURNAMENTS.put(TVER(id), "1");
-  await env.KAVA_TOURNAMENTS.put(`code:${code}`, JSON.stringify({ type: "tournament", id }));
+  await env.KAVA_TOURNAMENTS.put(`code:${code}`, id); // legacy
+  await env.KAVA_TOURNAMENTS.put(`code2:${code}`, JSON.stringify({ type: "tournament", id }));
   await pushId(env, THOST(hostId), id);
 
-  return NextResponse.json(tournament); // ✅ Return full doc
+  return NextResponse.json({ ok: true, id, code, hostId, type: "tournament" });
 }
