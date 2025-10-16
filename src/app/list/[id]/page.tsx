@@ -1,8 +1,9 @@
-// src/app/list/[id]/page.tsx
 'use client';
 export const runtime = 'edge';
+export const dynamic = 'force-dynamic';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
 import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
@@ -10,25 +11,52 @@ import {
   getListRemote, listJoin, listLeave, listILost, listSetTables,
   ListGame, Player, uid
 } from '../../../lib/storage';
+import { startSmartPoll } from '../../../lib/poll';
+
+/* ---------- small helpers ---------- */
+function coerceList(x: any): ListGame | null {
+  if (!x) return null;
+  try {
+    return {
+      id: String(x.id ?? ''),
+      name: String(x.name ?? 'Untitled'),
+      code: x.code ? String(x.code) : undefined,
+      hostId: String(x.hostId ?? ''),
+      status: 'active',
+      createdAt: Number(x.createdAt ?? Date.now()),
+      tables: Array.isArray(x.tables) ? x.tables.map((t: any) => ({ a: t?.a, b: t?.b })) : [],
+      players: Array.isArray(x.players) ? x.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') })) : [],
+      queue: Array.isArray(x.queue) ? x.queue.map((id: any) => String(id)) : [],
+      v: Number(x.v ?? 0),
+    };
+  } catch { return null; }
+}
 
 export default function ListLobby() {
+  const { id } = useParams<{ id: string }>();
+  const router = useRouter();
+
+  // Always call hooks: no early returns
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+
+  // identity
+  const me = useMemo<Player>(() => {
+    try {
+      if (typeof window === 'undefined') return { id: uid(), name: 'Player' };
+      return JSON.parse(localStorage.getItem('kava_me') || 'null') || { id: uid(), name: 'Player' };
+    } catch { return { id: uid(), name: 'Player' }; }
+  }, []);
+  useEffect(() => { if (typeof window !== 'undefined') localStorage.setItem('kava_me', JSON.stringify(me)); }, [me]);
+
   const [g, setG] = useState<ListGame | null>(null);
   const [busy, setBusy] = useState(false);
   const [nameField, setNameField] = useState('');
-
-  const id = typeof window !== 'undefined'
-    ? decodeURIComponent(window.location.pathname.split('/').pop() || '')
-    : '';
-
-  const me = useMemo<Player>(() => {
-    try { return JSON.parse(localStorage.getItem('kava_me') || 'null') || { id: uid(), name: 'Player' }; }
-    catch { return { id: uid(), name: 'Player' }; }
-  }, []);
-  useEffect(() => { localStorage.setItem('kava_me', JSON.stringify(me)); }, [me]);
+  const [err, setErr] = useState<string | null>(null);
 
   // 🔔 alerts on this list
   useQueueAlerts({
-    listId: id, // ← important: pass the computed id here
+    listId: id,
     upNextMessage: 'your up next get ready!!',
     matchReadyMessage: (s: any) => {
       const raw = s?.tableNumber ?? s?.table?.number ?? null;
@@ -38,7 +66,7 @@ export default function ListLobby() {
     },
   });
 
-  // Track my seating to bump alerts when I get seated
+  /* ---- detect seat change to bump alerts ---- */
   const lastSeating = useRef<string>('');
   function detectMySeatingChanged(next: ListGame | null) {
     if (!next) return false;
@@ -54,39 +82,72 @@ export default function ListLobby() {
     return false;
   }
 
+  /* ---- initial fetch ---- */
   async function loadOnce() {
-    if (!id) return;
-    const next = await getListRemote(id);
-    setG(next);
-    if (detectMySeatingChanged(next)) bumpAlerts();
+    try {
+      const next = await getListRemote(String(id));
+      const coerced = coerceList(next);
+      setG(coerced);
+      if (detectMySeatingChanged(coerced)) bumpAlerts();
+      setErr(null);
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to load list');
+    }
   }
 
-  // 🔴 Replace 1s polling with SSE stream
+  /* ---- Live updates: SSE with safe fallback to smart poll ---- */
   useEffect(() => {
     if (!id) return;
     let es: EventSource | null = null;
+    let stopped = false;
+    let pollRef: { stop: () => void; bump: () => void } | null = null;
 
-    // initial load
-    loadOnce();
-
-    try {
-      es = new EventSource(`/api/list/${encodeURIComponent(id)}/stream`);
-      es.onmessage = (e) => {
+    const startPoll = () => {
+      if (pollRef) return;
+      pollRef = startSmartPoll(async () => {
         try {
-          const data = JSON.parse(e.data);
-          if (data?._deleted) {
-            setG(null);
-            return;
+          const next = await getListRemote(String(id));
+          const coerced = coerceList(next);
+          setG(coerced);
+          if (detectMySeatingChanged(coerced)) bumpAlerts();
+          setErr(null);
+          return coerced?.v ?? null;
+        } catch (e: any) {
+          setErr(e?.message || 'Failed to poll list');
+          return null;
+        }
+      });
+    };
+
+    const stopPoll = () => { pollRef?.stop(); pollRef = null; };
+
+    (async () => {
+      await loadOnce(); // prime
+
+      try {
+        es = new EventSource(`/api/list/${encodeURIComponent(String(id))}/stream`);
+        es.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data?._deleted) { setG(null); setErr('This list was deleted.'); return; }
+            // tolerate either {type:'snapshot', list: {...}} or the raw list
+            const doc = coerceList(data?.list ?? data?.game ?? data);
+            if (doc) { setG(doc); setErr(null); if (detectMySeatingChanged(doc)) bumpAlerts(); }
+          } catch {
+            // ignore malformed frames
           }
-          setG(data);
-          if (detectMySeatingChanged(data)) bumpAlerts();
-        } catch {}
-      };
-      es.onerror = () => { /* iOS may drop SSE in bg; hook wakes on focus */ };
-    } catch (err) {
-      console.error('SSE error', err);
-    }
-    return () => { if (es) es.close(); };
+        };
+        es.onerror = () => { /* fallback to poll */ startPoll(); };
+      } catch {
+        startPoll();
+      }
+    })();
+
+    return () => {
+      stopped = true;
+      try { es?.close(); } catch {}
+      stopPoll();
+    };
   }, [id]);
 
   const iAmHost = g && me?.id === g.hostId;
@@ -100,7 +161,8 @@ export default function ListLobby() {
     try {
       const p: Player = { id: uid(), name: nm };
       const updated = await listJoin(g, p);
-      setG({ ...updated });
+      const coerced = coerceList(updated);
+      setG(coerced);
       bumpAlerts();
     } catch { alert('Could not add player.'); }
     finally { setBusy(false); setNameField(''); }
@@ -111,18 +173,18 @@ export default function ListLobby() {
     setBusy(true);
     try {
       const updated = await listJoin(g, me);
-      setG({ ...updated });
+      setG(coerceList(updated));
       bumpAlerts();
     } catch { alert('Could not join.'); }
     finally { setBusy(false); }
   }
 
-  async function onRemovePlayer(id: string){
+  async function onRemovePlayer(pid: string){
     if (!g || busy) return;
     setBusy(true);
     try {
-      const updated = await listLeave(g, id);
-      setG({ ...updated });
+      const updated = await listLeave(g, pid);
+      setG(coerceList(updated));
       bumpAlerts();
     } catch { alert('Could not remove.'); }
     finally { setBusy(false); }
@@ -133,7 +195,7 @@ export default function ListLobby() {
     setBusy(true);
     try {
       const updated = await listJoin(g, me);
-      setG({ ...updated });
+      setG(coerceList(updated));
       bumpAlerts();
     } catch { alert('Could not join queue.'); }
     finally { setBusy(false); }
@@ -144,7 +206,7 @@ export default function ListLobby() {
     setBusy(true);
     try {
       const updated = await listLeave(g, me.id);
-      setG({ ...updated });
+      setG(coerceList(updated));
       bumpAlerts();
     } catch { alert('Could not leave.'); }
     finally { setBusy(false); }
@@ -157,7 +219,7 @@ export default function ListLobby() {
     setBusy(true);
     try {
       const updated = await listILost(g, idx, me.id);
-      setG({ ...updated });
+      setG(coerceList(updated));
       alert("It's ok — join again by pressing “Join queue”.");
       bumpAlerts();
     } catch { alert('Could not submit result.'); }
@@ -169,13 +231,31 @@ export default function ListLobby() {
     setBusy(true);
     try {
       const updated = await listSetTables(g,count);
-      setG({ ...updated });
+      setG(coerceList(updated));
       bumpAlerts();
     } catch { alert('Could not update tables.'); }
     finally { setBusy(false); }
   }
 
-  if (!g) return (<main style={wrap}><BackButton href="/lists" /><p>Loading…</p></main>);
+  // ----- UI -----
+  if (!mounted) return (<main style={wrap}><BackButton href="/lists" /><p style={muted}>Loading…</p></main>);
+  if (err && !g) {
+    return (
+      <main style={wrap}>
+        <BackButton href="/lists" />
+        <div style={errorBox}>
+          <div style={{fontWeight:700}}>Couldn’t load this list.</div>
+          <div style={{opacity:.85, fontSize:12, marginTop:6}}>{err}</div>
+          <div style={{display:'flex', gap:8, marginTop:10}}>
+            <button style={btn} onClick={loadOnce}>Retry</button>
+            <a href="/lists" style={btnGhost}>Back to My lists</a>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (!g) return (<main style={wrap}><BackButton href="/lists" /><p style={muted}>Loading…</p></main>);
 
   const myTableIndex = g.tables.findIndex(t => t.a === me.id || t.b === me.id);
   const seated = myTableIndex >= 0;
@@ -191,7 +271,7 @@ export default function ListLobby() {
         <div style={{display:'flex',alignItems:'center',gap:8}}>
           <span style={pill}>Live</span>
           <AlertsToggle />
-          <button style={btnGhostSm} onClick={()=>loadOnce()}>Refresh</button>
+          <button style={btnGhostSm} onClick={loadOnce}>Refresh</button>
         </div>
       </div>
 
@@ -256,9 +336,9 @@ export default function ListLobby() {
           <div style={{opacity:.7}}>No one in queue.</div>
         ) : (
           <ol style={{margin:0, paddingLeft:18}}>
-            {g.queue.map((id) => {
-              const name = g.players.find(p=>p.id===id)?.name || '??';
-              return <li key={id} style={{margin:'6px 0'}}>{name}</li>;
+            {g.queue.map((qid) => {
+              const name = g.players.find(p=>p.id===qid)?.name || '??';
+              return <li key={qid} style={{margin:'6px 0'}}>{name}</li>;
             })}
           </ol>
         )}
@@ -298,3 +378,4 @@ const btnMini: React.CSSProperties = { padding:'6px 10px', borderRadius:8, borde
 const chipBtn: React.CSSProperties = { padding:'4px 8px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontSize:12 };
 const input: React.CSSProperties = { width:260, maxWidth:'90vw', padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff' };
 const nameInput: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)' };
+const errorBox: React.CSSProperties = { background:'#3b0d0d', border:'1px solid #7f1d1d', borderRadius:12, padding:16, marginTop:14 };
