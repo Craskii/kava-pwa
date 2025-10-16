@@ -1,12 +1,29 @@
+// src/app/lists/page.tsx
 'use client';
 export const runtime = 'edge';
+export const dynamic = 'force-dynamic';
 
 import BackButton from '../../components/BackButton';
 import ErrorBoundary from '../../components/ErrorBoundary';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { uid, ListGame } from '../../lib/storage';
 import { startSmartPoll } from '../../lib/poll';
 
+/** Stop the platform's generic overlay from replacing our UI; still log stacks */
+function useSwallowGlobalErrors() {
+  useEffect(() => {
+    const onErr = (e: ErrorEvent) => { console.error('Global error:', e.error ?? e.message); e.preventDefault(); };
+    const onRej = (e: PromiseRejectionEvent) => { console.error('Unhandled rejection:', e.reason); e.preventDefault(); };
+    window.addEventListener('error', onErr);
+    window.addEventListener('unhandledrejection', onRej);
+    return () => {
+      window.removeEventListener('error', onErr);
+      window.removeEventListener('unhandledrejection', onRej);
+    };
+  }, []);
+}
+
+/** Coerce any server shape into a safe ListGame so render never throws */
 function coerceListGame(x: any): ListGame {
   return {
     id: String(x?.id ?? ''),
@@ -23,6 +40,8 @@ function coerceListGame(x: any): ListGame {
 }
 
 export default function MyListsPage() {
+  useSwallowGlobalErrors();
+
   // identity
   const me = useMemo(() => {
     try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); }
@@ -44,19 +63,22 @@ export default function MyListsPage() {
 
   const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
 
+  // Request helper returns a version header for smart-polling
   async function fetchMine(userId: string) {
     const res = await fetch(`/api/lists?userId=${encodeURIComponent(userId)}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
     const v = res.headers.get('x-l-version') || '';
     const json = await res.json().catch(() => ({ hosting: [], playing: [] }));
-    const hs = (Array.isArray(json.hosting) ? json.hosting : []).map(coerceListGame);
-    const ps = (Array.isArray(json.playing) ? json.playing : []).map(coerceListGame);
+    const hs: ListGame[] = (Array.isArray(json.hosting) ? json.hosting : []).map(coerceListGame);
+    const ps: ListGame[] = (Array.isArray(json.playing) ? json.playing : []).map(coerceListGame);
     return { v, hosting: hs, playing: ps };
   }
 
+  // initial load + smart poll (no fragile 1s interval)
   useEffect(() => {
     if (!me?.id) return;
-    setLoading(true); setErr(null);
+    setLoading(true);
+    setErr(null);
 
     pollRef.current?.stop();
     const poll = startSmartPoll(async () => {
@@ -66,10 +88,10 @@ export default function MyListsPage() {
         setHosting([...hosting].sort(byCreated));
         setPlaying([...playing].sort(byCreated));
         setLoading(false);
-        return v;
+        return v; // smart backoff key
       } catch (e: any) {
         setErr(e?.message || 'Failed to load lists');
-        return null;
+        return null; // keep polling but back off
       }
     });
 
@@ -77,6 +99,7 @@ export default function MyListsPage() {
     return () => poll.stop();
   }, [me?.id]);
 
+  // pause/resume the smart poller
   useEffect(() => {
     if (!pollRef.current) return;
     if (live) pollRef.current.bump();
@@ -86,14 +109,14 @@ export default function MyListsPage() {
   async function deleteList(id: string) {
     if (!confirm('Delete this list and remove all players?')) return;
     const prev = hosting;
-    setHosting(h => h.filter(x => x.id !== id));
+    setHosting(h => h.filter(x => x.id !== id)); // optimistic
     try {
       const res = await fetch(`/api/list/${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
       try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
     } catch (e:any) {
       alert(e?.message || 'Could not delete list.');
-      setHosting(prev);
+      setHosting(prev); // rollback
     }
   }
 
@@ -168,5 +191,5 @@ const tileInner: React.CSSProperties = { minWidth:0 };
 const pill: React.CSSProperties = { padding:'6px 10px', borderRadius:999, background:'rgba(16,185,129,.2)', border:'1px solid rgba(16,185,129,.35)', fontSize:12 };
 const btn: React.CSSProperties = { padding:'8px 12px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, textDecoration:'none', cursor:'pointer' };
 const btnSm: React.CSSProperties = { ...btn, padding:'6px 10px', fontWeight:600 };
-const btnGhostSm: React.CSSProperties = { padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', fontWeight:600, cursor:'pointer' };
+const btnGhostSm: React.CSS_PROPERTIES = { padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', fontWeight:600, cursor:'pointer' };
 const btnDanger: React.CSSProperties = { padding:'8px 12px', borderRadius:10, background:'transparent', color:'#ff6b6b', border:'1px solid #ff6b6b', fontWeight:700, cursor:'pointer' };
