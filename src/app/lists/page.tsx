@@ -3,13 +3,12 @@
 export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
-import BackButton from '../../components/BackButton';
-import ErrorBoundary from '../../components/ErrorBoundary';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import ErrorBoundary from '../../components/ErrorBoundary';
 import { uid, ListGame } from '../../lib/storage';
 import { startSmartPoll } from '../../lib/poll';
 
-/** Stop the platform's generic overlay from replacing our UI; still log stacks */
+/** Prevent platform overlay from replacing UI; still log stacks */
 function useSwallowGlobalErrors() {
   useEffect(() => {
     const onErr = (e: ErrorEvent) => { console.error('Global error:', e.error ?? e.message); e.preventDefault(); };
@@ -23,7 +22,7 @@ function useSwallowGlobalErrors() {
   }, []);
 }
 
-/** Coerce any server shape into a safe ListGame so render never throws */
+/** Normalize any server object into a safe ListGame */
 function coerceListGame(x: any): ListGame {
   return {
     id: String(x?.id ?? ''),
@@ -42,6 +41,11 @@ function coerceListGame(x: any): ListGame {
 export default function MyListsPage() {
   useSwallowGlobalErrors();
 
+  // render only on client to avoid hydration mismatches
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
+
   // identity
   const me = useMemo(() => {
     try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); }
@@ -55,15 +59,13 @@ export default function MyListsPage() {
     }
   }, [me]);
 
-  const [hosting, setHosting]   = useState<ListGame[]>([]);
-  const [playing, setPlaying]   = useState<ListGame[]>([]);
-  const [loading, setLoading]   = useState(true);
-  const [live, setLive]         = useState(true);
-  const [err, setErr]           = useState<string | null>(null);
-
+  const [hosting, setHosting] = useState<ListGame[]>([]);
+  const [playing, setPlaying] = useState<ListGame[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [live, setLive] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
   const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
 
-  // Request helper returns a version header for smart-polling
   async function fetchMine(userId: string) {
     const res = await fetch(`/api/lists?userId=${encodeURIComponent(userId)}`, { cache: 'no-store' });
     if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
@@ -74,7 +76,6 @@ export default function MyListsPage() {
     return { v, hosting: hs, playing: ps };
   }
 
-  // initial load + smart poll (no fragile 1s interval)
   useEffect(() => {
     if (!me?.id) return;
     setLoading(true);
@@ -88,10 +89,11 @@ export default function MyListsPage() {
         setHosting([...hosting].sort(byCreated));
         setPlaying([...playing].sort(byCreated));
         setLoading(false);
-        return v; // smart backoff key
+        return v;
       } catch (e: any) {
+        console.error('lists fetch error:', e);
         setErr(e?.message || 'Failed to load lists');
-        return null; // keep polling but back off
+        return null;
       }
     });
 
@@ -99,7 +101,6 @@ export default function MyListsPage() {
     return () => poll.stop();
   }, [me?.id]);
 
-  // pause/resume the smart poller
   useEffect(() => {
     if (!pollRef.current) return;
     if (live) pollRef.current.bump();
@@ -116,7 +117,7 @@ export default function MyListsPage() {
       try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
     } catch (e:any) {
       alert(e?.message || 'Could not delete list.');
-      setHosting(prev); // rollback
+      setHosting(prev);
     }
   }
 
@@ -124,7 +125,8 @@ export default function MyListsPage() {
     <ErrorBoundary>
       <main style={wrap}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
-          <BackButton href="/" />
+          {/* Replace BackButton with a simple link to avoid any subcomponent errors */}
+          <a href="/" style={btnGhostSm}>&larr; Back</a>
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <span style={pill}>{live ? 'Live' : 'Paused'}</span>
             <button style={btnGhostSm} onClick={()=>setLive(v=>!v)}>{live ? 'Pause' : 'Go live'}</button>
@@ -191,5 +193,5 @@ const tileInner: React.CSSProperties = { minWidth:0 };
 const pill: React.CSSProperties = { padding:'6px 10px', borderRadius:999, background:'rgba(16,185,129,.2)', border:'1px solid rgba(16,185,129,.35)', fontSize:12 };
 const btn: React.CSSProperties = { padding:'8px 12px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, textDecoration:'none', cursor:'pointer' };
 const btnSm: React.CSSProperties = { ...btn, padding:'6px 10px', fontWeight:600 };
-const btnGhostSm: React.CSS_PROPERTIES = { padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', fontWeight:600, cursor:'pointer' };
+const btnGhostSm: React.CSSProperties = { padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', fontWeight:600, cursor:'pointer' };
 const btnDanger: React.CSSProperties = { padding:'8px 12px', borderRadius:10, background:'transparent', color:'#ff6b6b', border:'1px solid #ff6b6b', fontWeight:700, cursor:'pointer' };
