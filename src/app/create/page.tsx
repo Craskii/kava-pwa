@@ -1,4 +1,3 @@
-// src/app/create/page.tsx
 'use client';
 export const runtime = 'edge';
 
@@ -13,6 +12,7 @@ export default function CreatePage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Always persistent identity
   const me = useMemo(() => {
     try {
       const saved = JSON.parse(localStorage.getItem('kava_me') || 'null');
@@ -30,16 +30,28 @@ export default function CreatePage() {
     }
     setLoading(true);
     setError(null);
+
     try {
+      const body = { name, type, hostId: me.id };
+
       const res = await fetch('/api/create', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ name, type, hostId: me.id }), // ✅ ensure ownership
+        body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
-      const json = await res.json();
-      if (json.type === 'list') router.push(`/list/${json.id}`);
-      else router.push(`/t/${json.id}`);
+
+      if (!res.ok) throw new Error(await res.text());
+      const game = await res.json();
+
+      // ✅ Save host identity mapping (important!)
+      localStorage.setItem('kava_me', JSON.stringify(me));
+      localStorage.setItem('kava_hostId', game.hostId);
+      localStorage.setItem('kava_lastGame', JSON.stringify(game));
+
+      console.log('Created game:', game);
+
+      if (game.type === 'list') router.push(`/list/${game.id}`);
+      else router.push(`/t/${game.id}`);
     } catch (e: any) {
       setError(e?.message || 'Failed to create game.');
     } finally {
@@ -51,10 +63,6 @@ export default function CreatePage() {
     <main style={wrap}>
       <BackButton href="/" />
       <h1 style={{ marginBottom: 10 }}>Create Game</h1>
-
-      <p style={{ opacity: 0.8, marginBottom: 12 }}>
-        Enter a name, then choose whether this will be a <b>List</b> or a <b>Tournament</b>.
-      </p>
 
       <input
         placeholder="Game name..."
@@ -74,11 +82,13 @@ export default function CreatePage() {
           Create Tournament
         </button>
       </div>
+
+      <p style={{ opacity: 0.6, marginTop: 16 }}>me.id: {me.id}</p>
     </main>
   );
 }
 
-/* styles */
+/* ---------- styles ---------- */
 const wrap: React.CSSProperties = { minHeight: '100vh', background: '#0b0b0b', color: '#fff', padding: 24, fontFamily: 'system-ui' };
 const input: React.CSSProperties = { width: '100%', maxWidth: 400, padding: '10px 12px', borderRadius: 10, border: '1px solid #333', background: '#111', color: '#fff', fontSize: 16, fontWeight: 500, marginBottom: 12 };
 const btn: React.CSSProperties = { padding: '10px 14px', borderRadius: 10, border: 'none', background: '#0ea5e9', color: '#fff', fontWeight: 700, cursor: 'pointer' };
