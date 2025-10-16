@@ -3,10 +3,12 @@
 export const runtime = 'edge';
 
 import BackButton from '../../components/BackButton';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { listListsRemoteForUser, uid, ListGame } from '../../lib/storage';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { uid, ListGame } from '../../lib/storage';
+import { startSmartPoll } from '../../lib/poll';
 
 export default function MyListsPage() {
+  // identity
   const me = useMemo(() => {
     try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); }
     catch { return null; }
@@ -16,36 +18,63 @@ export default function MyListsPage() {
     if (!me) {
       const newMe = { id: uid(), name: 'Player' };
       localStorage.setItem('kava_me', JSON.stringify(newMe));
-      location.reload();
+      // don’t hard reload; the next render will pick it up
     }
   }, [me]);
 
-  const [hosting, setHosting] = useState<ListGame[]>([]);
-  const [playing, setPlaying] = useState<ListGame[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [live, setLive] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
+  const [hosting, setHosting]   = useState<ListGame[]>([]);
+  const [playing, setPlaying]   = useState<ListGame[]>([]);
+  const [loading, setLoading]   = useState(true);
+  const [live, setLive]         = useState(true);
+  const [err, setErr]           = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
+
+  // one request helper that returns a version header for smart-polling
+  async function fetchMine(userId: string) {
+    const res = await fetch(`/api/lists?userId=${encodeURIComponent(userId)}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error(await res.text().catch(() => `HTTP ${res.status}`));
+    const v = res.headers.get('x-l-version') || '';
+    // tolerate non-json edge cases
+    const json = await res.json().catch(() => ({ hosting: [], playing: [] }));
+    const hs: ListGame[] = Array.isArray(json.hosting) ? json.hosting : [];
+    const ps: ListGame[] = Array.isArray(json.playing) ? json.playing : [];
+    return { v, hosting: hs, playing: ps };
+  }
+
+  // initial load + smart poll (no 1s interval)
+  useEffect(() => {
     if (!me?.id) return;
     setLoading(true);
     setErr(null);
-    try {
-      const res = await listListsRemoteForUser(me.id);
-      setHosting([...res.hosting].sort((a,b)=>b.createdAt-a.createdAt));
-      setPlaying([...res.playing].sort((a,b)=>b.createdAt-a.createdAt));
-    } catch (e: any) {
-      setErr(e?.message || 'Failed to load lists');
-    } finally { setLoading(false); }
+
+    pollRef.current?.stop();
+    const poll = startSmartPoll(async () => {
+      try {
+        const { v, hosting, playing } = await fetchMine(me.id);
+        const byCreated = (a: ListGame, b: ListGame) => (Number(b.createdAt)||0) - (Number(a.createdAt)||0);
+        setHosting([...hosting].sort(byCreated));
+        setPlaying([...playing].sort(byCreated));
+        setLoading(false);
+        return v;                       // smart backoff key
+      } catch (e: any) {
+        setErr(e?.message || 'Failed to load lists');
+        return null;                    // keep polling but backoff
+      }
+    });
+
+    pollRef.current = poll;
+    return () => poll.stop();
   }, [me?.id]);
 
+  // pause/resume live updates with the smart poller
   useEffect(() => {
-    let stop = false;
-    load();
-    let t: any;
-    if (live) t = setInterval(() => !stop && load(), 1000);
-    return () => { stop = true; if (t) clearInterval(t); };
-  }, [live, load]);
+    if (!pollRef.current) return;
+    if (live) pollRef.current.bump();
+    else pollRef.current.stop();
+    // when re-enabling, restart immediately
+    return () => { /* noop */ };
+  }, [live]);
 
   async function deleteList(id: string) {
     if (!confirm('Delete this list and remove all players?')) return;
@@ -68,7 +97,7 @@ export default function MyListsPage() {
         <div style={{display:'flex',alignItems:'center',gap:8}}>
           <span style={pill}>{live ? 'Live' : 'Paused'}</span>
           <button style={btnGhostSm} onClick={()=>setLive(v=>!v)}>{live ? 'Pause' : 'Go live'}</button>
-          <button style={btnSm} onClick={load}>Refresh</button>
+          <button style={btnSm} onClick={()=>pollRef.current?.bump()}>Refresh</button>
         </div>
       </div>
 
@@ -86,7 +115,7 @@ export default function MyListsPage() {
                <div style={tileInner}>
                  <div style={{ fontWeight:700, marginBottom:4 }}>{g.name}</div>
                  <div style={{ opacity:.8, fontSize:12 }}>
-                   Code: <b>{g.code || '—'}</b> • {g.players.length} {g.players.length===1?'player':'players'}
+                   Code: <b>{g.code || '—'}</b> • {g.players?.length ?? 0} {(g.players?.length ?? 0)===1?'player':'players'}
                  </div>
                </div>
                <div style={{display:'flex',gap:8}}>
@@ -108,7 +137,7 @@ export default function MyListsPage() {
                <div style={tileInner}>
                  <div style={{ fontWeight:700, marginBottom:4 }}>{g.name}</div>
                  <div style={{ opacity:.8, fontSize:12 }}>
-                   Code: <b>{g.code || '—'}</b> • {g.players.length} {g.players.length===1?'player':'players'}
+                   Code: <b>{g.code || '—'}</b> • {g.players?.length ?? 0} {(g.players?.length ?? 0)===1?'player':'players'}
                  </div>
                </div>
                <a href={`/list/${g.id}`} style={btn}>Open</a>
@@ -120,7 +149,7 @@ export default function MyListsPage() {
   );
 }
 
-/* styles */
+/* styles (unchanged) */
 const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui' };
 const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginBottom:14 };
 const muted: React.CSSProperties = { opacity:.7 };
@@ -132,4 +161,3 @@ const btn: React.CSSProperties = { padding:'8px 12px', borderRadius:10, border:'
 const btnSm: React.CSSProperties = { ...btn, padding:'6px 10px', fontWeight:600 };
 const btnGhostSm: React.CSSProperties = { padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', fontWeight:600, cursor:'pointer' };
 const btnDanger: React.CSSProperties = { padding:'8px 12px', borderRadius:10, background:'transparent', color:'#ff6b6b', border:'1px solid #ff6b6b', fontWeight:700, cursor:'pointer' };
-const error: React.CSSProperties = { background:'#7f1d1d', border:'1px solid #b91c1c', padding:10, borderRadius:8 };
