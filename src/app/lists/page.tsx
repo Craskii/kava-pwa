@@ -1,4 +1,3 @@
-// src/app/lists/page.tsx
 'use client';
 export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
@@ -8,7 +7,6 @@ import ErrorBoundary from '../../components/ErrorBoundary';
 import { uid, ListGame } from '../../lib/storage';
 import { startSmartPoll } from '../../lib/poll';
 
-/** Prevent platform overlay from replacing UI; still log stacks */
 function useSwallowGlobalErrors() {
   useEffect(() => {
     const onErr = (e: ErrorEvent) => { console.error('Global error:', e.error ?? e.message); e.preventDefault(); };
@@ -22,7 +20,6 @@ function useSwallowGlobalErrors() {
   }, []);
 }
 
-/** Normalize any server object into a safe ListGame */
 function coerceListGame(x: any): ListGame {
   return {
     id: String(x?.id ?? ''),
@@ -41,12 +38,10 @@ function coerceListGame(x: any): ListGame {
 export default function MyListsPage() {
   useSwallowGlobalErrors();
 
-  // render only on client to avoid hydration mismatches
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
   if (!mounted) return null;
 
-  // identity
   const me = useMemo(() => {
     try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); }
     catch { return null; }
@@ -80,8 +75,8 @@ export default function MyListsPage() {
     if (!me?.id) return;
     setLoading(true);
     setErr(null);
-
     pollRef.current?.stop();
+
     const poll = startSmartPoll(async () => {
       try {
         const { v, hosting, playing } = await fetchMine(me.id);
@@ -110,7 +105,7 @@ export default function MyListsPage() {
   async function deleteList(id: string) {
     if (!confirm('Delete this list and remove all players?')) return;
     const prev = hosting;
-    setHosting(h => h.filter(x => x.id !== id)); // optimistic
+    setHosting(h => h.filter(x => x.id !== id));
     try {
       const res = await fetch(`/api/list/${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
@@ -125,7 +120,6 @@ export default function MyListsPage() {
     <ErrorBoundary>
       <main style={wrap}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
-          {/* Replace BackButton with a simple link to avoid any subcomponent errors */}
           <a href="/" style={btnGhostSm}>&larr; Back</a>
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <span style={pill}>{live ? 'Live' : 'Paused'}</span>

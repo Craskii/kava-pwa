@@ -5,6 +5,7 @@ import "./globals.css";
 // Client components
 import AlertsGlobal from "@/components/AlertsGlobal";
 import LaunchReminder from "@/components/LaunchReminder";
+import ClientErrorTrap from "@/components/ClientErrorTrap"; // ✅ added
 
 export const metadata: Metadata = {
   title: "Kava Tournaments",
@@ -42,9 +43,13 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-status-bar-style" content="black" />
       </head>
       <body>
+        {/* ✅ Global error trap so platform overlay never replaces UI */}
+        <ClientErrorTrap />
+
         {/* Global Notification plumbing + launch reminder */}
         <AlertsGlobal />
         <LaunchReminder />
+
         {children}
       </body>
     </html>
