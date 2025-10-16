@@ -10,8 +10,8 @@ import { uid } from '@/lib/storage';
 export default function CreatePage() {
   const router = useRouter();
   const [name, setName] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // persistent identity
   const me = useMemo(() => {
@@ -24,27 +24,30 @@ export default function CreatePage() {
     return fresh;
   }, []);
 
-  async function create(type: 'list' | 'tournament') {
-    if (!name.trim()) { alert('Please enter a name.'); return; }
-    setBusy(true); setErr(null);
+  async function handleCreate(type: 'list' | 'tournament') {
+    if (!name.trim()) return alert('Please enter a name.');
+    setLoading(true); setError(null);
+
     try {
       const res = await fetch('/api/create', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ name, type, hostId: me.id }),
       });
-      if (!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
+      if (!res.ok) throw new Error(await res.text());
       const game = await res.json();
 
-      // save identity + last game + hostId
+      // remember identity + host
       localStorage.setItem('kava_me', JSON.stringify(me));
-      if (game.hostId) localStorage.setItem('kava_hostId', game.hostId);
       localStorage.setItem('kava_lastGame', JSON.stringify(game));
 
-      router.push(game.type === 'list' ? `/list/${game.id}` : `/t/${game.id}`);
+      if (game.type === 'list') router.push(`/list/${game.id}`);
+      else router.push(`/t/${game.id}`);
     } catch (e:any) {
-      setErr(e?.message || 'Failed to create game.');
-    } finally { setBusy(false); }
+      setError(e?.message || 'Failed to create game.');
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -53,28 +56,32 @@ export default function CreatePage() {
       <h1 style={{ marginBottom: 10 }}>Create Game</h1>
 
       <input
-        placeholder="Game name…"
+        placeholder="Game name..."
         value={name}
-        onChange={(e)=>setName(e.target.value)}
+        onChange={(e) => setName(e.target.value)}
         style={input}
-        disabled={busy}
+        disabled={loading}
       />
 
-      {err && <div style={errorBox}><b>Error:</b> {err}</div>}
+      {error && <div style={errorBox}><b>Error:</b> {error}</div>}
 
-      <div style={{ display:'flex', gap:12, marginTop:12 }}>
-        <button style={btn} onClick={()=>create('list')} disabled={busy}>Create List</button>
-        <button style={btnGhost} onClick={()=>create('tournament')} disabled={busy}>Create Tournament</button>
+      <div style={{ display: 'flex', gap: 12, marginTop: 16 }}>
+        <button style={btn} onClick={() => handleCreate('list')} disabled={loading}>
+          Create List
+        </button>
+        <button style={btnGhost} onClick={() => handleCreate('tournament')} disabled={loading}>
+          Create Tournament
+        </button>
       </div>
 
-      <div style={{ opacity:.6, marginTop:12, fontSize:12 }}>me.id: {me.id}</div>
+      <p style={{ opacity: 0.6, marginTop: 16 }}>me.id: {me.id}</p>
     </main>
   );
 }
 
 /* styles */
-const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui' };
-const input: React.CSSProperties = { width:'100%', maxWidth:420, padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff', fontSize:16, marginBottom:10 };
-const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
-const btnGhost: React.CSSProperties = { ...btn, background:'transparent', border:'1px solid rgba(255,255,255,.25)' };
-const errorBox: React.CSSProperties = { background:'#3b0d0d', border:'1px solid #7f1d1d', borderRadius:12, padding:12, marginTop:10 };
+const wrap: React.CSSProperties = { minHeight: '100vh', background: '#0b0b0b', color: '#fff', padding: 24, fontFamily: 'system-ui' };
+const input: React.CSSProperties = { width: '100%', maxWidth: 400, padding: '10px 12px', borderRadius: 10, border: '1px solid #333', background: '#111', color: '#fff', fontSize: 16, fontWeight: 500, marginBottom: 12 };
+const btn: React.CSSProperties = { padding: '10px 14px', borderRadius: 10, border: 'none', background: '#0ea5e9', color: '#fff', fontWeight: 700, cursor: 'pointer' };
+const btnGhost: React.CSSProperties = { ...btn, background: 'transparent', border: '1px solid rgba(255,255,255,0.25)' };
+const errorBox: React.CSSProperties = { background: '#3b0d0d', border: '1px solid #7f1d1d', borderRadius: 12, padding: 12, marginTop: 10 };

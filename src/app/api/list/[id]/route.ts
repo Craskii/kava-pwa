@@ -18,9 +18,10 @@ type ListGame = {
   createdAt: number; tables: Table[]; players: Player[]; queue: string[];
 };
 
-const LKEY = (id: string) => `l:${id}`;
-const LVER = (id: string) => `lv:${id}`;
+const LKEY    = (id: string) => `l:${id}`;
+const LVER    = (id: string) => `lv:${id}`;
 const LPLAYER = (playerId: string) => `lidx:p:${playerId}`; // string[]
+const LHOST   = (hostId: string) => `lidx:h:${hostId}`;     // string[]
 
 async function getV(env: Env, id: string): Promise<number> {
   const raw = await env.KAVA_TOURNAMENTS.get(LVER(id));
@@ -30,6 +31,7 @@ async function getV(env: Env, id: string): Promise<number> {
 async function setV(env: Env, id: string, v: number) {
   await env.KAVA_TOURNAMENTS.put(LVER(id), String(v));
 }
+
 async function readArr(env: Env, key: string): Promise<string[]> {
   const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -53,26 +55,14 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
   const id = params.id;
   const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
-
   const doc = JSON.parse(raw) as ListGame;
-
-  // defensive: ensure required fields exist (backfill legacy docs)
-  if (!doc.status) doc.status = "active";
-  if (!Array.isArray(doc.tables)) doc.tables = [{}, {}];
-  if (!Array.isArray(doc.players)) doc.players = [];
-  if (!Array.isArray(doc.queue)) doc.queue = [];
-
   const v = await getV(env, id);
   return new NextResponse(JSON.stringify(doc), {
-    headers: {
-      "content-type":"application/json",
-      "x-l-version": String(v),
-      "cache-control":"no-store"
-    }
+    headers: { "content-type":"application/json", "x-l-version": String(v), "Cache-Control":"public, max-age=5, stale-while-revalidate=30" }
   });
 }
 
-/* PUT (with If-Match) */
+/* PUT (If-Match) */
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
@@ -86,6 +76,7 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   const prevRaw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   const prev: ListGame | null = prevRaw ? JSON.parse(prevRaw) : null;
   const prevPlayers = new Set((prev?.players ?? []).map(p => p.id));
+  const prevHost = prev?.hostId ?? "";
 
   let body: ListGame;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
@@ -95,9 +86,15 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   const nextV = curV + 1;
   await setV(env, id, nextV);
 
+  // Maintain indices
   const nextPlayers = new Set((body.players ?? []).map(p => p.id));
   for (const p of nextPlayers) if (!prevPlayers.has(p)) await addTo(env, LPLAYER(p), id);
   for (const p of prevPlayers) if (!nextPlayers.has(p)) await removeFrom(env, LPLAYER(p), id);
+
+  if (body.hostId && body.hostId !== prevHost) {
+    if (prevHost) await removeFrom(env, LHOST(prevHost), id);
+    await addTo(env, LHOST(body.hostId), id);
+  }
 
   return new NextResponse(null, { status: 204, headers: { "x-l-version": String(nextV) } });
 }
@@ -113,6 +110,7 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
       const doc = JSON.parse(raw) as ListGame;
       if (doc.code) await env.KAVA_TOURNAMENTS.delete(`code:${doc.code}`);
       for (const p of (doc.players || [])) await removeFrom(env, LPLAYER(p.id), id);
+      if (doc.hostId) await removeFrom(env, LHOST(doc.hostId), id);
     } catch {}
   }
 
