@@ -284,12 +284,15 @@ export async function listILost(x: ListGame, tableIndex: number, loserId: string
   return saved;
 }
 
-export async function listLeave(x: ListGame, playerId: string): Promise<ListGame> {
+export async function listLeave(
+  x: ListGame,
+  playerId: string
+): Promise<ListGame> {
   const copy: ListGame = {
     ...x,
     tables: x.tables.map(tb => ({ ...tb })),
     queue: [...x.queue],
-    players: [...x.players]),
+    players: [...x.players], // <-- was "])," by mistake
   };
   copy.queue = copy.queue.filter(id => id !== playerId);
   for (const tb of copy.tables) {
