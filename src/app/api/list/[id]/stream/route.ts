@@ -1,72 +1,80 @@
-export const runtime = "edge";
+// src/app/api/list/[id]/stream/route.ts
+export const runtime = 'edge';
 
-import { getRequestContext } from "@cloudflare/next-on-pages";
+function send(res: TransformStreamDefaultController<string>, data: unknown) {
+  res.enqueue(`data: ${JSON.stringify(data)}\n\n`);
+}
 
-type KVNamespace = {
-  get(key: string): Promise<string | null>;
-};
-type Env = { KAVA_TOURNAMENTS: KVNamespace };
+export async function GET(req: Request, ctx: { params: { id: string } }) {
+  const id = decodeURIComponent(ctx.params.id || '');
+  if (!id) {
+    return new Response('Missing id', { status: 400 });
+  }
 
-const LKEY = (id: string) => `l:${id}`;
-const LVER = (id: string) => `lv:${id}`;
+  const { readable, writable } = new TransformStream<string>();
+  const writer = writable.getWriter();
 
-export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> }) {
-  const { id } = await ctx.params;
-  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
+  // Keep a simple version to avoid rebroadcasting unchanged docs
+  let lastVersion = -1;
+  let cancelled = false;
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      const enc = new TextEncoder();
-      const send = (obj: unknown) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+  const encoder = new TextEncoder();
+  const streamCtrl = {
+    enqueue: (chunk: string) => writer.write(encoder.encode(chunk)),
+    close: () => writer.close(),
+  };
 
-      let lastV = -1;
-
-      const first = await env.KAVA_TOURNAMENTS.get(LKEY(id));
-      if (first) {
-        try {
-          const list = JSON.parse(first);
-          send({ type: "snapshot", list });
-        } catch {}
-      }
-
-      let alive = true;
-      const loop = async () => {
-        while (alive) {
-          try {
-            const vRaw = await env.KAVA_TOURNAMENTS.get(LVER(id));
-            const v = Number(vRaw || "0");
-            if (v !== lastV) {
-              lastV = v;
-              const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
-              if (raw) {
-                try {
-                  const list = JSON.parse(raw);
-                  send({ type: "snapshot", list });
-                } catch { send({ type: "noop" }); }
-              } else {
-                send({ _deleted: true });
-              }
-            } else {
-              send({ type: "noop" });
-            }
-          } catch { /* ignore transient */ }
-          await new Promise(r => setTimeout(r, 1000));
-        }
-      };
-      loop();
-
-      // @ts-ignore
-      controller.signal?.addEventListener?.("abort", () => { alive = false; });
-    },
+  // Write SSE headers
+  const headers = new Headers({
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no', // for proxies
   });
 
-  return new Response(stream, {
+  // Tick loop: poll the local GET API and push when version changes
+  const poll = async () => {
+    while (!cancelled) {
+      try {
+        const res = await fetch(new URL(`/api/list/${encodeURIComponent(id)}`, req.url), {
+          headers: { 'Cache-Control': 'no-store' },
+        });
+
+        if (res.status === 404) {
+          send(streamCtrl as any, { _deleted: true });
+          break;
+        }
+
+        if (res.ok) {
+          const verHeader = Number(res.headers.get('x-l-version') || '0');
+          const doc = await res.json().catch(() => null);
+
+          // Only emit when version increases and doc looks sane
+          if (Number.isFinite(verHeader) && verHeader !== lastVersion && doc && doc.id && doc.hostId) {
+            lastVersion = verHeader;
+            send(streamCtrl as any, { list: { ...doc, v: verHeader } });
+          }
+        }
+      } catch {
+        // swallow and keep trying
+      }
+
+      // heartbeat to keep connection alive
+      streamCtrl.enqueue(': ping\n\n');
+
+      // sleep ~2s between polls
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+
+    try { (streamCtrl as any).close(); } catch {}
+  };
+
+  // Start polling without blocking the response
+  poll();
+
+  // Return the SSE response
+  return new Response(readable, {
     status: 200,
-    headers: {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-store",
-      "connection": "keep-alive",
-      "x-accel-buffering": "no",
-    },
+    headers,
   });
 }
