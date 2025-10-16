@@ -1,9 +1,10 @@
+// src/app/list/[id]/page.tsx
 'use client';
 export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
 import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
@@ -34,7 +35,6 @@ function coerceList(x: any): ListGame | null {
 
 export default function ListLobby() {
   const { id } = useParams<{ id: string }>();
-  const router = useRouter();
 
   // Always call hooks: no early returns
   const [mounted, setMounted] = useState(false);
@@ -99,7 +99,6 @@ export default function ListLobby() {
   useEffect(() => {
     if (!id) return;
     let es: EventSource | null = null;
-    let stopped = false;
     let pollRef: { stop: () => void; bump: () => void } | null = null;
 
     const startPoll = () => {
@@ -144,7 +143,6 @@ export default function ListLobby() {
     })();
 
     return () => {
-      stopped = true;
       try { es?.close(); } catch {}
       stopPoll();
     };
@@ -379,3 +377,4 @@ const chipBtn: React.CSSProperties = { padding:'4px 8px', borderRadius:8, border
 const input: React.CSSProperties = { width:260, maxWidth:'90vw', padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff' };
 const nameInput: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)' };
 const errorBox: React.CSSProperties = { background:'#3b0d0d', border:'1px solid #7f1d1d', borderRadius:12, padding:16, marginTop:14 };
+const muted: React.CSSProperties = { opacity:.7 }; // ✅ added
