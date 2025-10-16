@@ -38,16 +38,23 @@ function coerceListGame(x: any): ListGame {
 export default function MyListsPage() {
   useSwallowGlobalErrors();
 
+  // 1) Hooks must ALWAYS be called, regardless of mount state
   const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
-  if (!mounted) return null;
+  useEffect(() => { setMounted(true); }, []);
 
+  // Safe read of localStorage (works pre-mount too)
   const me = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); }
-    catch { return null; }
+    try {
+      if (typeof window === 'undefined') return null;
+      return JSON.parse(localStorage.getItem('kava_me') || 'null');
+    } catch {
+      return null;
+    }
   }, []);
 
+  // Ensure identity exists (runs client-side only)
   useEffect(() => {
+    if (typeof window === 'undefined') return;
     if (!me) {
       const newMe = { id: uid(), name: 'Player' };
       localStorage.setItem('kava_me', JSON.stringify(newMe));
@@ -71,12 +78,13 @@ export default function MyListsPage() {
     return { v, hosting: hs, playing: ps };
   }
 
+  // Start smart poll once we know (or created) an id
   useEffect(() => {
     if (!me?.id) return;
     setLoading(true);
     setErr(null);
-    pollRef.current?.stop();
 
+    pollRef.current?.stop();
     const poll = startSmartPoll(async () => {
       try {
         const { v, hosting, playing } = await fetchMine(me.id);
@@ -96,26 +104,14 @@ export default function MyListsPage() {
     return () => poll.stop();
   }, [me?.id]);
 
+  // Live toggle for the poller
   useEffect(() => {
     if (!pollRef.current) return;
     if (live) pollRef.current.bump();
     else pollRef.current.stop();
   }, [live]);
 
-  async function deleteList(id: string) {
-    if (!confirm('Delete this list and remove all players?')) return;
-    const prev = hosting;
-    setHosting(h => h.filter(x => x.id !== id));
-    try {
-      const res = await fetch(`/api/list/${encodeURIComponent(id)}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
-      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
-    } catch (e:any) {
-      alert(e?.message || 'Could not delete list.');
-      setHosting(prev);
-    }
-  }
-
+  // 2) Now we can conditionally render UI — but hooks above always ran
   return (
     <ErrorBoundary>
       <main style={wrap}>
@@ -130,51 +126,71 @@ export default function MyListsPage() {
 
         <h1 style={{ margin: '8px 0 12px' }}>My lists</h1>
 
-        {err && <div style={error}>{err}</div>}
+        {(!mounted) ? (
+          <div style={muted}>Loading…</div>
+        ) : (
+          <>
+            {err && <div style={error}>{err}</div>}
 
-        <section style={card}>
-          <h3 style={{ marginTop: 0 }}>Hosting</h3>
-          {loading && hosting.length === 0 ? <div style={muted}>Loading…</div> :
-           hosting.length === 0 ? <div style={muted}>You’re not hosting any lists yet.</div> :
-           <ul style={list}>
-             {hosting.map(g => (
-               <li key={g.id} style={tileOuter}>
-                 <div style={tileInner}>
-                   <div style={{ fontWeight:700, marginBottom:4 }}>{g.name}</div>
-                   <div style={{ opacity:.8, fontSize:12 }}>
-                     Code: <b>{g.code || '—'}</b> • {(g.players?.length ?? 0)} {(g.players?.length ?? 0)===1?'player':'players'}
-                   </div>
-                 </div>
-                 <div style={{display:'flex',gap:8}}>
-                   <a href={`/list/${g.id}`} style={btn}>Open</a>
-                   <button onClick={() => deleteList(g.id)} style={btnDanger}>Delete</button>
-                 </div>
-               </li>
-             ))}
-           </ul>}
-        </section>
+            <section style={card}>
+              <h3 style={{ marginTop: 0 }}>Hosting</h3>
+              {loading && hosting.length === 0 ? <div style={muted}>Loading…</div> :
+               hosting.length === 0 ? <div style={muted}>You’re not hosting any lists yet.</div> :
+               <ul style={list}>
+                 {hosting.map(g => (
+                   <li key={g.id} style={tileOuter}>
+                     <div style={tileInner}>
+                       <div style={{ fontWeight:700, marginBottom:4 }}>{g.name}</div>
+                       <div style={{ opacity:.8, fontSize:12 }}>
+                         Code: <b>{g.code || '—'}</b> • {(g.players?.length ?? 0)} {(g.players?.length ?? 0)===1?'player':'players'}
+                       </div>
+                     </div>
+                     <div style={{display:'flex',gap:8}}>
+                       <a href={`/list/${g.id}`} style={btn}>Open</a>
+                       <button onClick={() => deleteList(g.id)} style={btnDanger}>Delete</button>
+                     </div>
+                   </li>
+                 ))}
+               </ul>}
+            </section>
 
-        <section style={card}>
-          <h3 style={{ marginTop: 0 }}>Playing</h3>
-          {loading && playing.length === 0 ? <div style={muted}>Loading…</div> :
-           playing.length === 0 ? <div style={muted}>You’re not in any lists yet.</div> :
-           <ul style={list}>
-             {playing.map(g => (
-               <li key={g.id} style={tileOuter}>
-                 <div style={tileInner}>
-                   <div style={{ fontWeight:700, marginBottom:4 }}>{g.name}</div>
-                   <div style={{ opacity:.8, fontSize:12 }}>
-                     Code: <b>{g.code || '—'}</b> • {(g.players?.length ?? 0)} {(g.players?.length ?? 0)===1?'player':'players'}
-                   </div>
-                 </div>
-                 <a href={`/list/${g.id}`} style={btn}>Open</a>
-               </li>
-             ))}
-           </ul>}
-        </section>
+            <section style={card}>
+              <h3 style={{ marginTop: 0 }}>Playing</h3>
+              {loading && playing.length === 0 ? <div style={muted}>Loading…</div> :
+               playing.length === 0 ? <div style={muted}>You’re not in any lists yet.</div> :
+               <ul style={list}>
+                 {playing.map(g => (
+                   <li key={g.id} style={tileOuter}>
+                     <div style={tileInner}>
+                       <div style={{ fontWeight:700, marginBottom:4 }}>{g.name}</div>
+                       <div style={{ opacity:.8, fontSize:12 }}>
+                         Code: <b>{g.code || '—'}</b> • {(g.players?.length ?? 0)} {(g.players?.length ?? 0)===1?'player':'players'}
+                       </div>
+                     </div>
+                     <a href={`/list/${g.id}`} style={btn}>Open</a>
+                   </li>
+                 ))}
+               </ul>}
+            </section>
+          </>
+        )}
       </main>
     </ErrorBoundary>
   );
+
+  async function deleteList(id: string) {
+    if (!confirm('Delete this list and remove all players?')) return;
+    const prev = hosting;
+    setHosting(h => h.filter(x => x.id !== id));
+    try {
+      const res = await fetch(`/api/list/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(await res.text().catch(()=>`HTTP ${res.status}`));
+      try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
+    } catch (e:any) {
+      alert(e?.message || 'Could not delete list.');
+      setHosting(prev);
+    }
+  }
 }
 
 /* styles */
