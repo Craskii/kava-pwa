@@ -31,6 +31,13 @@ type ListGame = {
 type CreateBody = { name?: string; hostId?: string; type?: "tournament" | "list" };
 
 /* helpers */
+const TKEY = (id: string) => `t:${id}`;
+const TVER = (id: string) => `tv:${id}`;
+const LKEY = (id: string) => `l:${id}`;
+const LVER = (id: string) => `lv:${id}`;
+const THOST = (hostId: string) => `tidx:h:${hostId}`;
+const LHOST = (hostId: string) => `lidx:h:${hostId}`;
+
 function random5(): string { return Math.floor(Math.random() * 100000).toString().padStart(5, "0"); }
 async function uniqueNumericCode(env: Env): Promise<string> {
   for (let i = 0; i < 12; i++) {
@@ -39,6 +46,15 @@ async function uniqueNumericCode(env: Env): Promise<string> {
     if (!exists) return c;
   }
   return random5();
+}
+
+async function pushId(env: Env, key: string, id: string) {
+  const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
+  const arr: string[] = JSON.parse(raw);
+  if (!arr.includes(id)) {
+    arr.push(id);
+    await env.KAVA_TOURNAMENTS.put(key, JSON.stringify(arr));
+  }
 }
 
 /* route */
@@ -61,8 +77,10 @@ export async function POST(req: Request) {
       id, code, name, hostId, status: "active", createdAt: Date.now(),
       tables: [{}, {}], players: [], queue: [],
     };
-    await env.KAVA_TOURNAMENTS.put(`l:${id}`, JSON.stringify(listDoc));
+    await env.KAVA_TOURNAMENTS.put(LKEY(id), JSON.stringify(listDoc));
+    await env.KAVA_TOURNAMENTS.put(LVER(id), "1");
     await env.KAVA_TOURNAMENTS.put(`code:${code}`, JSON.stringify({ type: "list", id }));
+    await pushId(env, LHOST(hostId), id);
     return NextResponse.json({ ok: true, id, code, type: "list" });
   }
 
@@ -71,9 +89,11 @@ export async function POST(req: Request) {
     players: [], pending: [], queue: [], rounds: [],
   };
 
-  await env.KAVA_TOURNAMENTS.put(`t:${id}`, JSON.stringify(tournament));
+  await env.KAVA_TOURNAMENTS.put(TKEY(id), JSON.stringify(tournament));
+  await env.KAVA_TOURNAMENTS.put(TVER(id), "1");
   await env.KAVA_TOURNAMENTS.put(`code:${code}`, id); // legacy
   await env.KAVA_TOURNAMENTS.put(`code2:${code}`, JSON.stringify({ type: "tournament", id }));
+  await pushId(env, THOST(hostId), id);
 
   return NextResponse.json({ ok: true, id, code, type: "tournament" });
 }

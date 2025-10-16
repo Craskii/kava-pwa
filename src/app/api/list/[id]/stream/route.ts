@@ -1,68 +1,67 @@
-// src/app/api/list/[id]/stream/route.ts
-export const runtime = 'edge';
-export const dynamic = 'force-dynamic';
+export const runtime = "edge";
 
-import { NextRequest, NextResponse } from 'next/server';
-import { getRequestContext } from '@cloudflare/next-on-pages';
+import { getRequestContext } from "@cloudflare/next-on-pages";
 
-// Minimal KV typing
-type KVNamespace = {
-  get(key: string): Promise<string | null>;
-};
+type KVNamespace = { get(key: string): Promise<string | null> };
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-// in-memory channel per list id (edge note: per-isolate best effort)
-const channels: Record<string, Set<ReadableStreamDefaultController>> = {};
-const enc = new TextEncoder();
-const listKey = (id: string) => `l:${id}`;
+const LKEY = (id: string) => `l:${id}`;
+const LVER = (id: string) => `lv:${id}`;
 
-// Helper to push an SSE event to all listeners for a list id
-export function pushListUpdate(id: string, data: any) {
-  const set = channels[id];
-  if (!set || set.size === 0) return;
-  const payload = `data: ${JSON.stringify(data)}\n\n`;
-  for (const c of set) {
-    try { c.enqueue(enc.encode(payload)); } catch {}
-  }
-}
-
-export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
-  const id = params.id;
+export async function GET(
+  _req: Request,
+  ctx: { params: Promise<{ id: string }> }
+) {
+  const { id } = await ctx.params;
   const { env: rawEnv } = getRequestContext();
   const env = rawEnv as unknown as Env;
 
   const stream = new ReadableStream({
-    start(controller) {
-      if (!channels[id]) channels[id] = new Set();
-      channels[id].add(controller);
+    async start(controller) {
+      const enc = new TextEncoder();
+      const send = (obj: unknown) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
 
-      // send the latest snapshot immediately
+      let lastV = -1;
+      const first = await env.KAVA_TOURNAMENTS.get(LKEY(id));
+      if (first) {
+        send(JSON.parse(first));
+        const vraw = await env.KAVA_TOURNAMENTS.get(LVER(id));
+        lastV = vraw ? Number(vraw) : 0;
+      }
+
+      let alive = true;
+      const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
       (async () => {
-        try {
-          const raw = await env.KAVA_TOURNAMENTS.get(listKey(id));
-          if (raw) controller.enqueue(enc.encode(`data: ${raw}\n\n`));
-        } catch {}
+        while (alive) {
+          try {
+            const vraw = await env.KAVA_TOURNAMENTS.get(LVER(id));
+            const v = vraw ? Number(vraw) : 0;
+            if (Number.isFinite(v) && v !== lastV) {
+              lastV = v;
+              const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
+              if (raw) send(JSON.parse(raw));
+              else send({ _deleted: true });
+            } else {
+              send({ type: "noop" });
+            }
+          } catch {}
+          await sleep(1000);
+        }
       })();
 
-      // keep-alive comments every 15s
-      const ka = setInterval(() => {
-        try { controller.enqueue(enc.encode(':\n\n')); } catch {}
-      }, 15000);
-
-      // cleanup on client disconnect
-      // @ts-ignore - controller.signal exists in Edge runtime
-      controller.signal?.addEventListener('abort', () => {
-        clearInterval(ka);
-        channels[id].delete(controller);
-      });
+      // @ts-ignore
+      controller.signal?.addEventListener?.("abort", () => { alive = false; });
     },
   });
 
-  return new NextResponse(stream, {
+  return new Response(stream, {
+    status: 200,
     headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
-      Connection: 'keep-alive',
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-store",
+      "x-accel-buffering": "no",
+      "connection": "keep-alive",
     },
   });
 }
