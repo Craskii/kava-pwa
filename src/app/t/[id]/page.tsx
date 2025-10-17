@@ -73,7 +73,6 @@ function buildNextRoundFromSync(t: Tournament, roundIndex: number) {
   }
   if (t.rounds[roundIndex + 1]) t.rounds[roundIndex + 1] = next;
   else t.rounds.push(next);
-
   if (next.every(m => !!m.winner)) buildNextRoundFromSync(t, roundIndex + 1);
 }
 
@@ -83,9 +82,6 @@ export default function Lobby() {
   const [t, setT] = useState<Tournament | null>(null);
   const [busy, setBusy] = useState(false);
   const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
-
-  // players modal
-  const [playersOpen, setPlayersOpen] = useState(false);
 
   const me = useMemo(() => { try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); } catch { return null; } }, []);
   useEffect(() => { if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' })); }, [me]);
@@ -101,7 +97,6 @@ export default function Lobby() {
     },
   });
 
-  // load + smart poll
   useEffect(() => {
     if (!id) return;
     pollRef.current?.stop();
@@ -229,7 +224,7 @@ export default function Lobby() {
   function approve(pId: string) { update(x => approvePending(x, pId)); }
   function decline(pId: string) { update(x => declinePending(x, pId)); }
 
-  // players modal actions
+  // --- Add / rename / remove / co-host ---
   function addPlayerPrompt() {
     const nm = prompt('Player name?');
     if (!nm) return;
@@ -265,10 +260,71 @@ export default function Lobby() {
     });
   }
 
+  // --- Drag & drop seats in Round 1 ---
+  type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; pid?: string };
+  function onDragStart(ev: React.DragEvent, info: DragInfo) {
+    ev.dataTransfer.setData('application/json', JSON.stringify(info));
+    ev.dataTransfer.effectAllowed = 'move';
+  }
+  function onDragOver(ev: React.DragEvent) { ev.preventDefault(); }
+  function onDrop(ev: React.DragEvent, target: DragInfo) {
+    ev.preventDefault();
+    const raw = ev.dataTransfer.getData('application/json');
+    if (!raw) return;
+    let src: DragInfo;
+    try { src = JSON.parse(raw); } catch { return; }
+    if (src.type !== 'seat' || target.type !== 'seat') return;
+    if (t.status !== 'active' || src.round !== 0 || target.round !== 0) return;
+
+    update(x => {
+      const mSrc = x.rounds?.[0]?.[src.match];
+      const mTgt = x.rounds?.[0]?.[target.match];
+      if (!mSrc || !mTgt) return;
+
+      const clear = (m: Match) => { m.winner = undefined; m.reports = {}; };
+      clear(mSrc); clear(mTgt);
+
+      const valSrc = (mSrc as any)[src.side] as string | undefined;
+      const valTgt = (mTgt as any)[target.side] as string | undefined;
+      (mSrc as any)[src.side] = valTgt;
+      (mTgt as any)[target.side] = valSrc;
+
+      x.rounds = [x.rounds[0]];
+      buildNextRoundFromSync(x, 0);
+    });
+  }
+  function pill(pid?: string, round?: number, match?: number, side?: 'a' | 'b') {
+    const name = pid ? (t.players.find(p => p.id === pid)?.name || '??') : '—';
+    const draggable = canHost && t.status === 'active' && round === 0;
+    const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, pid };
+    return (
+      <span
+        draggable={draggable}
+        onDragStart={e => onDragStart(e, info)}
+        onDragOver={onDragOver}
+        onDrop={e => onDrop(e, info)}
+        style={{ ...pillStyle, opacity: pid ? 1 : .6, cursor: draggable ? 'grab' : 'default' }}
+        title={draggable ? 'Drag to swap seats in Round 1' : undefined}
+      >
+        {name}
+      </span>
+    );
+  }
+
+  function report(roundIdx: number, matchIdx: number, result: 'win' | 'loss') {
+    if (!me) return; update(x => { submitReport(x, roundIdx, matchIdx, me.id, result); });
+  }
+
   const lastRound = t.rounds.at(-1);
   const finalWinnerId = lastRound?.[0]?.winner;
   const iAmChampion = t.status === 'completed' && finalWinnerId === me?.id;
   const lock = { opacity: busy ? .6 : 1, pointerEvents: busy ? 'none' as const : 'auto' };
+
+  // --- players box “slider” (scroll) when > 5 ---
+  const playersScrollable = t.players.length > 5;
+  const playersBox: React.CSSProperties = playersScrollable
+    ? { maxHeight: 260, overflowY: 'auto', paddingRight: 4 }
+    : {};
 
   return (
     <main style={wrap}>
@@ -281,31 +337,68 @@ export default function Lobby() {
             <div style={subhead}>
               {t.code ? <>Private code: <b>{t.code}</b></> : 'Public tournament'} • {t.players.length} {t.players.length === 1 ? 'player' : 'players'}
             </div>
-            {iAmChampion && (
-              <div style={champ}>🎉 <b>Congratulations!</b> You won the tournament!</div>
-            )}
+            {iAmChampion && <div style={champ}>🎉 <b>Congratulations!</b> You won the tournament!</div>}
           </div>
-
-          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            <button style={btnGhost} onClick={() => setPlayersOpen(true)}>Players ({t.players.length})</button>
+          <div style={{ display:'flex', gap:8, marginTop:8, alignItems:'center' }}>
             <AlertsToggle />
             <button style={{ ...btnGhost, ...lock }} onClick={leaveTournament}>Leave Tournament</button>
           </div>
         </header>
 
-        {/* How it works */}
         <section style={notice}>
           <b>How it works:</b> Tap <i>Start</i> to seed a single-elimination bracket.
           Players can self-report (<i>I won / I lost</i>). When all matches in a round have winners,
           the next round is created automatically until a champion is decided.
           Hosts can override winners with the <i>A wins / B wins / Clear</i> buttons.
+          Drag player pills in <b>Round 1</b> to rearrange matchups.
+        </section>
+
+        {/* Players (scrolls when >5 to avoid clutter) */}
+        <section style={card}>
+          <h3 style={{ marginTop: 0 }}>Players ({t.players.length})</h3>
+          {canHost && (
+            <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:10 }}>
+              <button style={{ ...btn, ...lock }} onClick={addPlayerPrompt}>Add player</button>
+            </div>
+          )}
+
+          {t.players.length === 0 ? (
+            <div style={{ opacity:.7 }}>No players yet.</div>
+          ) : (
+            <div style={playersBox}>
+              <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
+                {t.players.map(p => {
+                  const isCH = coHosts.includes(p.id);
+                  return (
+                    <li key={p.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}>
+                      <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                        <span>{p.name}</span>
+                        {p.id === t.hostId && <span style={roleBadge}>Host</span>}
+                        {isCH && <span style={roleBadge}>Co-host</span>}
+                      </div>
+                      {canHost && (
+                        <div style={{ display:'flex', gap:8 }}>
+                          {iAmHost && p.id !== t.hostId && (
+                            <button style={btnMini} onClick={() => toggleCoHost(p.id)} disabled={busy}>
+                              {isCH ? 'Remove co-host' : 'Make co-host'}
+                            </button>
+                          )}
+                          <button style={btnMini} onClick={() => renamePlayer(p.id)} disabled={busy}>Rename</button>
+                          {p.id !== t.hostId && <button style={btnDanger} onClick={() => removePlayer(p.id)} disabled={busy}>Remove</button>}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
         </section>
 
         {/* Host controls */}
         {iAmHost && (
           <div style={card}>
             <h3 style={{ marginTop: 0 }}>Host Controls</h3>
-
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
               <input
                 defaultValue={t.name}
@@ -372,7 +465,11 @@ export default function Lobby() {
 
                     return (
                       <div key={i} style={{ background: '#111', borderRadius: 10, padding: '10px 12px', display: 'grid', gap: 8 }}>
-                        <div>{aName} vs {bName}</div>
+                        <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                          {pill(m.a, rIdx, i, 'a')}
+                          <span style={{ opacity:.7 }}>vs</span>
+                          {pill(m.b, rIdx, i, 'b')}
+                        </div>
 
                         {canHost && t.status !== 'completed' && (
                           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems:'center' }}>
@@ -380,7 +477,6 @@ export default function Lobby() {
                             <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)} disabled={busy}>B wins</button>
                             <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)} disabled={busy}>Clear</button>
 
-                            {/* Ping */}
                             <button
                               style={btnPing}
                               onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
@@ -418,54 +514,6 @@ export default function Lobby() {
           </div>
         )}
       </div>
-
-      {/* PLAYERS MODAL */}
-      {playersOpen && (
-        <div style={modalWrap} onClick={() => setPlayersOpen(false)}>
-          <div style={modalCard} onClick={e => e.stopPropagation()}>
-            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
-              <h3 style={{margin:0}}>Players ({t.players.length})</h3>
-              <button style={btnGhost} onClick={() => setPlayersOpen(false)}>Close</button>
-            </div>
-
-            {canHost && (
-              <div style={{display:'flex', gap:8, marginBottom:12}}>
-                <button style={btn} onClick={addPlayerPrompt} disabled={busy}>Add player</button>
-              </div>
-            )}
-
-            {t.players.length === 0 ? (
-              <div style={{opacity:.7}}>No players yet.</div>
-            ) : (
-              <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8, maxHeight:'55vh', overflow:'auto' }}>
-                {t.players.map(p => {
-                  const isCH = (t.coHosts ?? []).includes(p.id);
-                  return (
-                    <li key={p.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}>
-                      <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                        <span>{p.name}</span>
-                        {p.id === t.hostId && <span style={roleBadge}>Host</span>}
-                        {isCH && <span style={roleBadge}>Co-host</span>}
-                      </div>
-                      {canHost && (
-                        <div style={{ display:'flex', gap:8 }}>
-                          {iAmHost && p.id !== t.hostId && (
-                            <button style={btnMini} onClick={() => toggleCoHost(p.id)} disabled={busy}>
-                              {isCH ? 'Remove co-host' : 'Make co-host'}
-                            </button>
-                          )}
-                          <button style={btnMini} onClick={() => renamePlayer(p.id)} disabled={busy}>Rename</button>
-                          {p.id !== t.hostId && <button style={btnDanger} onClick={() => removePlayer(p.id)} disabled={busy}>Remove</button>}
-                        </div>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </div>
-        </div>
-      )}
     </main>
   );
 }
@@ -487,5 +535,4 @@ const btnMini: React.CSSProperties = { padding: '6px 10px', borderRadius: 8, bor
 const btnActive: React.CSSProperties = { ...btnMini, background: '#0ea5e9', border: 'none' };
 const btnPing: React.CSSProperties = { ...btnMini, background: 'rgba(14,165,233,0.15)', border: '1px solid rgba(14,165,233,0.45)', color: '#38bdf8' };
 const input: React.CSSProperties = { width: '100%', padding: '12px 14px', borderRadius: 10, border: '1px solid #333', background: '#111', color: '#fff' };
-const modalWrap: React.CSSProperties = { position:'fixed', inset:0, background:'rgba(0,0,0,.5)', display:'grid', placeItems:'center', zIndex:1000 };
-const modalCard: React.CSSProperties = { width:'min(640px, 94vw)', background:'#0f0f0f', border:'1px solid rgba(255,255,255,.15)', borderRadius:12, padding:16 };
+const pillStyle: React.CSSProperties = { padding:'4px 8px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', minWidth:40, textAlign:'center' };
