@@ -21,7 +21,8 @@ export type Tournament = {
   players: Player[];
   pending: Player[];
   rounds: Match[][];
-  v?: number; // server ETag/version (optional)
+  v?: number;
+  coHosts?: string[]; // <-- NEW: can ping & manage players/seeding
 };
 
 /* ===== Lists ===== */
