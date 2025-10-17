@@ -3,6 +3,7 @@ export const runtime = "edge";
 
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
+import { sendPushToPlayers } from "@/lib/push";
 
 /* ---------- KV ---------- */
 type KVNamespace = {
@@ -21,6 +22,9 @@ type Tournament = {
   id: string; name: string; code?: string; hostId: string; status: TournamentStatus;
   createdAt: number; players: Player[]; pending: Player[]; queue: string[]; rounds: Match[][];
   v?: number;
+  // optional meta used for ping
+  lastPingAt?: number; lastPingR?: number; lastPingM?: number;
+  coHosts?: string[];
 };
 
 /* ---------- keys ---------- */
@@ -37,6 +41,7 @@ async function setV(env: Env, id: string, v: number) {
   await env.KAVA_TOURNAMENTS.put(TVER(id), String(v));
 }
 
+/* small helpers for indices */
 async function readArr(env: Env, key: string): Promise<string[]> {
   const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -62,13 +67,7 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const doc = JSON.parse(raw) as Tournament;
   const v = await getV(env, id);
-  return new NextResponse(JSON.stringify(doc), {
-    headers: {
-      "content-type": "application/json",
-      "x-t-version": String(v),
-      "cache-control": "no-store"
-    }
-  });
+  return NextResponse.json(doc, { headers: { "x-t-version": String(v), "Cache-Control": "no-store" } });
 }
 
 /* ---------- PUT (If-Match) ---------- */
@@ -82,10 +81,11 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
     return NextResponse.json({ error: "Version conflict" }, { status: 412 });
   }
 
-  // read previous to update player indices
+  // read previous to update player indices and detect ping change
   const prevRaw = await env.KAVA_TOURNAMENTS.get(TKEY(id));
   const prev: Tournament | null = prevRaw ? JSON.parse(prevRaw) : null;
   const prevPlayers = new Set((prev?.players ?? []).map(p => p.id));
+  const prevPingAt = prev?.lastPingAt || 0;
 
   let body: Tournament;
   try { body = await req.json(); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
@@ -100,6 +100,24 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   for (const p of nextPlayers) if (!prevPlayers.has(p)) await addTo(env, PIDX(p), id);
   for (const p of prevPlayers) if (!nextPlayers.has(p)) await removeFrom(env, PIDX(p), id);
 
+  // 🔔 Push on ping change
+  const changedPing = !!body.lastPingAt && body.lastPingAt !== prevPingAt;
+  if (changedPing && typeof body.lastPingR === 'number' && typeof body.lastPingM === 'number') {
+    const r = body.rounds?.[body.lastPingR]?.[body.lastPingM];
+    if (r) {
+      const targets: string[] = [];
+      if (r.a) targets.push(r.a);
+      if (r.b) targets.push(r.b);
+      // title/body + optional deeplink
+      await sendPushToPlayers(
+        targets,
+        "You're up!",
+        "Head to your table — your match is ready.",
+        `https://${req.headers.get('host') || ''}/t/${id}`
+      );
+    }
+  }
+
   return new NextResponse(null, { status: 204, headers: { "x-t-version": String(nextV) } });
 }
 
@@ -113,6 +131,7 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
     try {
       const doc = JSON.parse(raw) as Tournament;
       if (doc.code) await env.KAVA_TOURNAMENTS.delete(`code:${doc.code}`);
+      // remove from all player indices
       for (const p of (doc.players || [])) await removeFrom(env, PIDX(p.id), id);
     } catch {}
   }

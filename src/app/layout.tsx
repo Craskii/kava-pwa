@@ -5,7 +5,12 @@ import "./globals.css";
 // Client components
 import AlertsGlobal from "@/components/AlertsGlobal";
 import LaunchReminder from "@/components/LaunchReminder";
-import ClientErrorTrap from "@/components/ClientErrorTrap"; // ✅ added
+import ClientErrorTrap from "@/components/ClientErrorTrap";
+
+// SW + update toast wrapper
+import ClientBoot from "./ClientBoot";
+// OneSignal init (background push)
+import OneSignalBoot from "./OneSignalBoot";
 
 export const metadata: Metadata = {
   title: "Kava Tournaments",
@@ -18,9 +23,7 @@ export const metadata: Metadata = {
       { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
       { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
     ],
-    apple: [
-      { url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
-    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
   },
 };
 
@@ -29,11 +32,7 @@ export const viewport: Viewport = {
   viewportFit: "cover",
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
       <head>
@@ -46,11 +45,15 @@ export default function RootLayout({
         {/* ✅ Global error trap so platform overlay never replaces UI */}
         <ClientErrorTrap />
 
-        {/* Global Notification plumbing + launch reminder */}
+        {/* Global in-app banners + launch reminder */}
         <AlertsGlobal />
         <LaunchReminder />
 
-        {children}
+        {/* 🔔 OneSignal boot (Option A background push) */}
+        <OneSignalBoot />
+
+        {/* ✅ SW register + update toast wrapper */}
+        <ClientBoot>{children}</ClientBoot>
       </body>
     </html>
   );

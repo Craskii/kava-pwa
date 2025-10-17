@@ -5,7 +5,7 @@ export const runtime = 'edge';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
-import AlertsToggle from '@/components/AlertsToggle';
+// AlertsToggle moved to Home page
 import { useQueueAlerts, bumpAlerts } from '@/lib/alerts';
 import {
   saveTournamentRemote,
@@ -86,6 +86,7 @@ export default function Lobby() {
   const me = useMemo(() => { try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); } catch { return null; } }, []);
   useEffect(() => { if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' })); }, [me]);
 
+  // in-app banners
   useQueueAlerts({
     tournamentId: String(id),
     upNextMessage: (s: any) => `your up now in ${s?.bracketRoundName || 'this round'}!`,
@@ -97,6 +98,7 @@ export default function Lobby() {
     },
   });
 
+  // load + smart poll
   useEffect(() => {
     if (!id) return;
     pollRef.current?.stop();
@@ -123,7 +125,7 @@ export default function Lobby() {
     </main>
   );
 
-  const coHosts = t.coHosts ?? [];
+  const coHosts = (t as any).coHosts ?? [];
   const iAmHost = me?.id === t.hostId;
   const iAmCoHost = !!me && coHosts.includes(me.id);
   const canHost = iAmHost || iAmCoHost;
@@ -136,7 +138,7 @@ export default function Lobby() {
       players: [...t.players],
       pending: [...t.pending],
       rounds: t.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } })) ),
-      coHosts: [...coHosts],
+      ...(t as any).coHosts ? { coHosts: [...(t as any).coHosts] } : {},
     };
     const first = structuredClone(base);
     mut(first);
@@ -152,7 +154,7 @@ export default function Lobby() {
           players: [...latest.players],
           pending: [...latest.pending],
           rounds: latest.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } })) ),
-          coHosts: [...(latest.coHosts ?? [])],
+          ...(latest as any).coHosts ? { coHosts: [...(latest as any).coHosts] } : {},
         };
         mut(second);
         const saved = await saveTournamentRemote(second);
@@ -176,7 +178,7 @@ export default function Lobby() {
     await update(x => {
       x.players = x.players.filter(p => p.id !== me.id);
       x.pending = x.pending.filter(p => p.id !== me.id);
-      x.coHosts = (x.coHosts ?? []).filter(id => id !== me.id);
+      (x as any).coHosts = ((x as any).coHosts ?? []).filter((id: string) => id !== me.id);
       x.rounds = x.rounds.map(round =>
         round.map(m => ({
           ...m,
@@ -242,7 +244,7 @@ export default function Lobby() {
     update(x => {
       x.players = x.players.filter(p => p.id !== pid);
       x.pending = x.pending.filter(p => p.id !== pid);
-      x.coHosts = (x.coHosts ?? []).filter(id => id !== pid);
+      (x as any).coHosts = ((x as any).coHosts ?? []).filter((id: string) => id !== pid);
       x.rounds = x.rounds.map(rr => rr.map(m => ({
         ...m,
         a: m.a === pid ? undefined : m.a,
@@ -254,9 +256,9 @@ export default function Lobby() {
   }
   function toggleCoHost(pid: string) {
     update(x => {
-      x.coHosts ??= [];
-      if (x.coHosts.includes(pid)) x.coHosts = x.coHosts.filter(id => id !== pid);
-      else x.coHosts.push(pid);
+      (x as any).coHosts ??= [];
+      if ((x as any).coHosts.includes(pid)) (x as any).coHosts = (x as any).coHosts.filter((id: string) => id !== pid);
+      else (x as any).coHosts.push(pid);
     });
   }
 
@@ -320,7 +322,7 @@ export default function Lobby() {
   const iAmChampion = t.status === 'completed' && finalWinnerId === me?.id;
   const lock = { opacity: busy ? .6 : 1, pointerEvents: busy ? 'none' as const : 'auto' };
 
-  // --- players box “slider” (scroll) when > 5 ---
+  // players box “slider” (vertical scroll) when > 5
   const playersScrollable = t.players.length > 5;
   const playersBox: React.CSSProperties = playersScrollable
     ? { maxHeight: 260, overflowY: 'auto', paddingRight: 4 }
@@ -340,7 +342,7 @@ export default function Lobby() {
             {iAmChampion && <div style={champ}>🎉 <b>Congratulations!</b> You won the tournament!</div>}
           </div>
           <div style={{ display:'flex', gap:8, marginTop:8, alignItems:'center' }}>
-            <AlertsToggle />
+            {/* Alerts toggle lives on Home now */}
             <button style={{ ...btnGhost, ...lock }} onClick={leaveTournament}>Leave Tournament</button>
           </div>
         </header>
@@ -496,8 +498,8 @@ export default function Lobby() {
 
                         {!canHost && canReport && (
                           <div style={{ display: 'flex', gap: 6 }}>
-                            <button style={btnMini} onClick={() => submitReport(t, rIdx, i, me!.id, 'win')} disabled={busy}>I won</button>
-                            <button style={btnMini} onClick={() => submitReport(t, rIdx, i, me!.id, 'loss')} disabled={busy}>I lost</button>
+                            <button style={btnMini} onClick={() => report(rIdx, i, 'win')} disabled={busy}>I won</button>
+                            <button style={btnMini} onClick={() => report(rIdx, i, 'loss')} disabled={busy}>I lost</button>
                           </div>
                         )}
                         {!canHost && w && (

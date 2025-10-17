@@ -1,48 +1,93 @@
 // public/sw.js
-self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()));
+// Simple app-shell + network-first for HTML and APIs, cache-first for static assets.
 
-self.addEventListener('message', (event) => {
-  if (event?.data?.type === 'SKIP_WAITING') self.skipWaiting();
-});
+const VERSION = self.__BUILD__ || String(Date.now());
+const STATIC_CACHE = `static-${VERSION}`;
+const DYNAMIC_CACHE = `dynamic-${VERSION}`;
+const APP_SHELL = ["/"]; // add more shell routes if you like
 
-// Block generic "You're up!" so only our custom texts appear
-function isBanned(text) {
-  if (!text) return false;
-  const t = String(text).trim().toLowerCase();
-  return t === "you're up!" || t === "you're up" || t === "you’re up!" || t === "you’re up";
-}
-
-self.addEventListener('push', (event) => {
-  let data = {};
-  try { data = event.data?.json() || {}; } catch {}
-  const title = data.title || null;
-  const body  = data.body  || null;
-  const options = data.options || {};
-
-  if (isBanned(title) || isBanned(body)) return; // ignore generic pushes
-
-  if (title || body) {
-    event.waitUntil(
-      self.registration.showNotification(title || 'Kava', {
-        body: body || '',
-        tag: 'kava-alert',
-        renotify: true,
-        ...options,
-      })
-    );
-  }
-});
-
-self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-  const targetUrl = (event.notification?.data && event.notification.data.url) || '/';
+self.addEventListener("install", (event) => {
   event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientsArr) => {
-      for (const client of clientsArr) {
-        if ('focus' in client) { client.focus(); return; }
+    (async () => {
+      const cache = await caches.open(STATIC_CACHE);
+      await cache.addAll(APP_SHELL);
+    })()
+  );
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    (async () => {
+      const keys = await caches.keys();
+      await Promise.all(
+        keys
+          .filter((k) => k !== STATIC_CACHE && k !== DYNAMIC_CACHE)
+          .map((k) => caches.delete(k))
+      );
+    })()
+  );
+  self.clients.claim();
+});
+
+self.addEventListener("fetch", (event) => {
+  const req = event.request;
+  if (req.method !== "GET") return;
+
+  const url = new URL(req.url);
+  const isHTML =
+    req.mode === "navigate" ||
+    (req.headers.get("accept") || "").includes("text/html");
+
+  const isStaticAsset =
+    url.pathname.includes("/_next/") ||
+    /\.(?:js|css|png|jpg|jpeg|gif|webp|svg|ico|woff2?)$/i.test(url.pathname);
+
+  // Network-first for HTML (pages) so deploys show up immediately
+  if (isHTML) {
+    event.respondWith(
+      (async () => {
+        try {
+          const fresh = await fetch(req, { cache: "no-store" });
+          const cache = await caches.open(DYNAMIC_CACHE);
+          cache.put(req, fresh.clone());
+          return fresh;
+        } catch {
+          const cached = await caches.match(req);
+          return cached || new Response("Offline", { status: 503 });
+        }
+      })()
+    );
+    return;
+  }
+
+  // Cache-first for static assets
+  if (isStaticAsset) {
+    event.respondWith(
+      (async () => {
+        const cached = await caches.match(req);
+        if (cached) return cached;
+        const res = await fetch(req);
+        const cache = await caches.open(STATIC_CACHE);
+        cache.put(req, res.clone());
+        return res;
+      })()
+    );
+    return;
+  }
+
+  // APIs & everything else: network-first with offline fallback
+  event.respondWith(
+    (async () => {
+      try {
+        const fresh = await fetch(req, { cache: "no-store" });
+        const cache = await caches.open(DYNAMIC_CACHE);
+        cache.put(req, fresh.clone());
+        return fresh;
+      } catch {
+        const cached = await caches.match(req);
+        return cached || new Response("Offline", { status: 503 });
       }
-      if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
-    })
+    })()
   );
 });

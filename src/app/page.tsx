@@ -1,4 +1,8 @@
+// src/app/page.tsx
+'use client';
+
 import Link from "next/link";
+import AlertsToggle from "@/components/AlertsToggle";
 import InstallPWAButton from "./InstallPWAButton";
 import IOSInstallTip from "./IOSInstallTip";
 
@@ -16,20 +20,24 @@ export default function Home() {
       }}
     >
       {/* Header */}
-      <header style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <div
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 12,
-            display: "grid",
-            placeItems: "center",
-            background: "#0ea5e9",
-          }}
-        >
-          🏓
+      <header style={{ display: "flex", alignItems: "center", justifyContent:'space-between', gap: 12 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 12,
+              display: "grid",
+              placeItems: "center",
+              background: "#0ea5e9",
+            }}
+          >
+            🏓
+          </div>
+          <h1 style={{ fontSize: 24, margin: 0 }}>Kava Tournaments</h1>
         </div>
-        <h1 style={{ fontSize: 24, margin: 0 }}>Kava Tournaments</h1>
+        {/* 🔔 Alerts toggle lives on Home now */}
+        <AlertsToggle />
       </header>
 
       {/* Main actions */}
