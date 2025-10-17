@@ -30,22 +30,18 @@ function shuffle<T>(arr: T[]): T[] {
   }
   return a;
 }
-
 function normalizeMatch(m: Match): Match | null {
-  const a = m.a;
-  const b = m.b;
+  const a = m.a, b = m.b;
   if (!a && !b) return null;
   if (a && !b) return { ...m, winner: a, reports: m.reports ?? {} };
   if (!a && b) return { ...m, winner: b, reports: m.reports ?? {} };
   return { ...m, reports: m.reports ?? {} };
 }
-
 function seedLocal(t: Tournament): Tournament {
   const ids = shuffle(t.players.map(p => p.id));
   const first: Match[] = [];
   for (let i = 0; i < ids.length; i += 2) {
-    const a = ids[i];
-    const b = ids[i + 1];
+    const a = ids[i], b = ids[i + 1];
     const nm = normalizeMatch({ a, b, reports: {} });
     if (nm) first.push(nm);
   }
@@ -53,7 +49,6 @@ function seedLocal(t: Tournament): Tournament {
   buildNextRoundFromSync(seeded, 0);
   return seeded;
 }
-
 function buildNextRoundFromSync(t: Tournament, roundIndex: number) {
   const cur = t.rounds[roundIndex] || [];
   const normalized: Match[] = [];
@@ -70,15 +65,12 @@ function buildNextRoundFromSync(t: Tournament, roundIndex: number) {
     if (winners.length === 1) t.status = 'completed';
     return;
   }
-
   const next: Match[] = [];
   for (let i = 0; i < winners.length; i += 2) {
-    const a = winners[i];
-    const b = winners[i + 1];
+    const a = winners[i], b = winners[i + 1];
     const nm = normalizeMatch({ a, b, reports: {} });
     if (nm) next.push(nm);
   }
-
   if (t.rounds[roundIndex + 1]) t.rounds[roundIndex + 1] = next;
   else t.rounds.push(next);
 
@@ -91,6 +83,9 @@ export default function Lobby() {
   const [t, setT] = useState<Tournament | null>(null);
   const [busy, setBusy] = useState(false);
   const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
+
+  // players modal
+  const [playersOpen, setPlayersOpen] = useState(false);
 
   const me = useMemo(() => { try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); } catch { return null; } }, []);
   useEffect(() => { if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' })); }, [me]);
@@ -186,7 +181,6 @@ export default function Lobby() {
     await update(x => {
       x.players = x.players.filter(p => p.id !== me.id);
       x.pending = x.pending.filter(p => p.id !== me.id);
-      // also strip from cohosts if present
       x.coHosts = (x.coHosts ?? []).filter(id => id !== me.id);
       x.rounds = x.rounds.map(round =>
         round.map(m => ({
@@ -209,21 +203,17 @@ export default function Lobby() {
     try {
       const saved = await saveTournamentRemote(local);
       setT(saved); pollRef.current?.bump(); bumpAlerts();
-    } catch (e) {
-      console.error(e);
+    } catch {
       try {
         const latest = await getTournamentRemote(t.id);
         if (!latest) throw new Error('no-latest');
         const reseeded = seedLocal(latest);
         const saved = await saveTournamentRemote(reseeded);
         setT(saved); pollRef.current?.bump(); bumpAlerts();
-      } catch (ee) {
-        console.error(ee);
+      } catch {
         alert('Could not start bracket.');
       }
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   }
 
   function hostSetWinner(roundIdx: number, matchIdx: number, winnerId?: string) {
@@ -239,25 +229,19 @@ export default function Lobby() {
   function approve(pId: string) { update(x => approvePending(x, pId)); }
   function decline(pId: string) { update(x => declinePending(x, pId)); }
 
-  // --- Add player (prompt for name) ---
+  // players modal actions
   function addPlayerPrompt() {
     const nm = prompt('Player name?');
     if (!nm) return;
     const p = { id: uid(), name: nm.trim() || 'Player' };
     update(x => { if (x.status === 'active') insertLatePlayer(x, p); else x.players.push(p); });
   }
-
-  // --- Rename player (inline) ---
   function renamePlayer(pid: string) {
     const cur = t.players.find(p => p.id === pid)?.name || '';
     const nm = prompt('Rename player', cur);
     if (!nm) return;
-    update(x => {
-      const p = x.players.find(pp => pp.id === pid);
-      if (p) p.name = nm.trim() || p.name;
-    });
+    update(x => { const p = x.players.find(pp => pp.id === pid); if (p) p.name = nm.trim() || p.name; });
   }
-
   function removePlayer(pid: string) {
     if (!confirm('Remove this player?')) return;
     update(x => {
@@ -273,77 +257,12 @@ export default function Lobby() {
       })));
     });
   }
-
-  // --- Co-host toggle (host only) ---
   function toggleCoHost(pid: string) {
     update(x => {
       x.coHosts ??= [];
       if (x.coHosts.includes(pid)) x.coHosts = x.coHosts.filter(id => id !== pid);
       else x.coHosts.push(pid);
     });
-  }
-
-  // --- DnD Round 1: drag pills to swap/move seats ---
-  type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; pid?: string };
-  function onDragStart(ev: React.DragEvent, info: DragInfo) {
-    ev.dataTransfer.setData('application/json', JSON.stringify(info));
-    ev.dataTransfer.effectAllowed = 'move';
-  }
-  function onDragOver(ev: React.DragEvent) { ev.preventDefault(); }
-  function onDrop(ev: React.DragEvent, target: DragInfo) {
-    ev.preventDefault();
-    const raw = ev.dataTransfer.getData('application/json');
-    if (!raw) return;
-    let src: DragInfo;
-    try { src = JSON.parse(raw); } catch { return; }
-    if (src.type !== 'seat' || target.type !== 'seat') return;
-    // only allow round 0 edits, active tournament, and no winners/ reports in both matches
-    if (t.status !== 'active' || src.round !== 0 || target.round !== 0) return;
-
-    update(x => {
-      const mSrc = x.rounds?.[0]?.[src.match];
-      const mTgt = x.rounds?.[0]?.[target.match];
-      if (!mSrc || !mTgt) return;
-
-      // clear winners/reports for touched matches
-      const clear = (m: Match) => { m.winner = undefined; m.reports = {}; };
-      clear(mSrc); clear(mTgt);
-
-      const valSrc = (mSrc as any)[src.side] as string | undefined;
-      const valTgt = (mTgt as any)[target.side] as string | undefined;
-      (mSrc as any)[src.side] = valTgt;
-      (mTgt as any)[target.side] = valSrc;
-
-      // rebuild downstream from round 0
-      x.rounds = [x.rounds[0]];
-      buildNextRoundFromSync(x, 0);
-    });
-  }
-
-  function pill(pid?: string, round: number, match: number, side: 'a' | 'b') {
-    const name = pid ? (t.players.find(p => p.id === pid)?.name || '??') : '—';
-    const draggable = canHost && t.status === 'active' && round === 0;
-    const info: DragInfo = { type: 'seat', round, match, side, pid };
-    return (
-      <span
-        draggable={draggable}
-        onDragStart={e => onDragStart(e, info)}
-        onDragOver={onDragOver}
-        onDrop={e => onDrop(e, info)}
-        style={{
-          ...pillStyle,
-          opacity: pid ? 1 : .6,
-          cursor: draggable ? 'grab' : 'default',
-        }}
-        title={draggable ? 'Drag to swap seats in Round 1' : undefined}
-      >
-        {name}
-      </span>
-    );
-  }
-
-  function report(roundIdx: number, matchIdx: number, result: 'win' | 'loss') {
-    if (!me) return; update(x => { submitReport(x, roundIdx, matchIdx, me.id, result); });
   }
 
   const lastRound = t.rounds.at(-1);
@@ -366,11 +285,11 @@ export default function Lobby() {
               <div style={champ}>🎉 <b>Congratulations!</b> You won the tournament!</div>
             )}
           </div>
-          <div style={{ textAlign: 'right' }}>
-            <div style={{ display: 'flex', gap: 8, marginTop: 8, justifyContent: 'flex-end', alignItems:'center' }}>
-              <AlertsToggle />
-              <button style={{ ...btnGhost, ...lock }} onClick={leaveTournament}>Leave Tournament</button>
-            </div>
+
+          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+            <button style={btnGhost} onClick={() => setPlayersOpen(true)}>Players ({t.players.length})</button>
+            <AlertsToggle />
+            <button style={{ ...btnGhost, ...lock }} onClick={leaveTournament}>Leave Tournament</button>
           </div>
         </header>
 
@@ -380,54 +299,13 @@ export default function Lobby() {
           Players can self-report (<i>I won / I lost</i>). When all matches in a round have winners,
           the next round is created automatically until a champion is decided.
           Hosts can override winners with the <i>A wins / B wins / Clear</i> buttons.
-          Drag player pills in <b>Round 1</b> to rearrange matchups.
         </section>
 
-        {/* Players list — visible to everyone; editable by host/co-host */}
-        <section style={card}>
-          <h3 style={{ marginTop: 0 }}>Players ({t.players.length})</h3>
-          <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:10 }}>
-            {canHost && (
-              <>
-                <button style={{ ...btn, ...lock }} onClick={addPlayerPrompt}>Add player</button>
-              </>
-            )}
-          </div>
-          {t.players.length === 0 ? (
-            <div style={{ opacity:.7 }}>No players yet.</div>
-          ) : (
-            <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
-              {t.players.map(p => {
-                const isCH = coHosts.includes(p.id);
-                return (
-                  <li key={p.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}>
-                    <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                      <span>{p.name}</span>
-                      {p.id === t.hostId && <span style={roleBadge}>Host</span>}
-                      {isCH && <span style={roleBadge}>Co-host</span>}
-                    </div>
-                    {canHost && (
-                      <div style={{ display:'flex', gap:8 }}>
-                        {iAmHost && p.id !== t.hostId && (
-                          <button style={btnMini} onClick={() => toggleCoHost(p.id)} disabled={busy}>
-                            {isCH ? 'Remove co-host' : 'Make co-host'}
-                          </button>
-                        )}
-                        <button style={btnMini} onClick={() => renamePlayer(p.id)} disabled={busy}>Rename</button>
-                        {p.id !== t.hostId && <button style={btnDanger} onClick={() => removePlayer(p.id)} disabled={busy}>Remove</button>}
-                      </div>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-
-        {/* Host controls (rename/start/delete) */}
+        {/* Host controls */}
         {iAmHost && (
           <div style={card}>
             <h3 style={{ marginTop: 0 }}>Host Controls</h3>
+
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
               <input
                 defaultValue={t.name}
@@ -494,12 +372,7 @@ export default function Lobby() {
 
                     return (
                       <div key={i} style={{ background: '#111', borderRadius: 10, padding: '10px 12px', display: 'grid', gap: 8 }}>
-                        {/* seat pills (draggable in round 1 if host/cohost) */}
-                        <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-                          {pill(m.a, rIdx, i, 'a')}
-                          <span style={{ opacity:.7 }}>vs</span>
-                          {pill(m.b, rIdx, i, 'b')}
-                        </div>
+                        <div>{aName} vs {bName}</div>
 
                         {canHost && t.status !== 'completed' && (
                           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems:'center' }}>
@@ -507,14 +380,13 @@ export default function Lobby() {
                             <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)} disabled={busy}>B wins</button>
                             <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)} disabled={busy}>Clear</button>
 
-                            {/* Ping buttons (host + co-host) */}
+                            {/* Ping */}
                             <button
                               style={btnPing}
                               onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
                               disabled={busy}
                               title={`Ping ${aName}`}
                             >Ping A 🔔</button>
-
                             <button
                               style={btnPing}
                               onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
@@ -528,8 +400,8 @@ export default function Lobby() {
 
                         {!canHost && canReport && (
                           <div style={{ display: 'flex', gap: 6 }}>
-                            <button style={btnMini} onClick={() => report(rIdx, i, 'win')} disabled={busy}>I won</button>
-                            <button style={btnMini} onClick={() => report(rIdx, i, 'loss')} disabled={busy}>I lost</button>
+                            <button style={btnMini} onClick={() => submitReport(t, rIdx, i, me!.id, 'win')} disabled={busy}>I won</button>
+                            <button style={btnMini} onClick={() => submitReport(t, rIdx, i, me!.id, 'loss')} disabled={busy}>I lost</button>
                           </div>
                         )}
                         {!canHost && w && (
@@ -546,6 +418,54 @@ export default function Lobby() {
           </div>
         )}
       </div>
+
+      {/* PLAYERS MODAL */}
+      {playersOpen && (
+        <div style={modalWrap} onClick={() => setPlayersOpen(false)}>
+          <div style={modalCard} onClick={e => e.stopPropagation()}>
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12}}>
+              <h3 style={{margin:0}}>Players ({t.players.length})</h3>
+              <button style={btnGhost} onClick={() => setPlayersOpen(false)}>Close</button>
+            </div>
+
+            {canHost && (
+              <div style={{display:'flex', gap:8, marginBottom:12}}>
+                <button style={btn} onClick={addPlayerPrompt} disabled={busy}>Add player</button>
+              </div>
+            )}
+
+            {t.players.length === 0 ? (
+              <div style={{opacity:.7}}>No players yet.</div>
+            ) : (
+              <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8, maxHeight:'55vh', overflow:'auto' }}>
+                {t.players.map(p => {
+                  const isCH = (t.coHosts ?? []).includes(p.id);
+                  return (
+                    <li key={p.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}>
+                      <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                        <span>{p.name}</span>
+                        {p.id === t.hostId && <span style={roleBadge}>Host</span>}
+                        {isCH && <span style={roleBadge}>Co-host</span>}
+                      </div>
+                      {canHost && (
+                        <div style={{ display:'flex', gap:8 }}>
+                          {iAmHost && p.id !== t.hostId && (
+                            <button style={btnMini} onClick={() => toggleCoHost(p.id)} disabled={busy}>
+                              {isCH ? 'Remove co-host' : 'Make co-host'}
+                            </button>
+                          )}
+                          <button style={btnMini} onClick={() => renamePlayer(p.id)} disabled={busy}>Rename</button>
+                          {p.id !== t.hostId && <button style={btnDanger} onClick={() => removePlayer(p.id)} disabled={busy}>Remove</button>}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -567,4 +487,5 @@ const btnMini: React.CSSProperties = { padding: '6px 10px', borderRadius: 8, bor
 const btnActive: React.CSSProperties = { ...btnMini, background: '#0ea5e9', border: 'none' };
 const btnPing: React.CSSProperties = { ...btnMini, background: 'rgba(14,165,233,0.15)', border: '1px solid rgba(14,165,233,0.45)', color: '#38bdf8' };
 const input: React.CSSProperties = { width: '100%', padding: '12px 14px', borderRadius: 10, border: '1px solid #333', background: '#111', color: '#fff' };
-const pillStyle: React.CSSProperties = { padding:'4px 8px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', minWidth:40, textAlign:'center' };
+const modalWrap: React.CSSProperties = { position:'fixed', inset:0, background:'rgba(0,0,0,.5)', display:'grid', placeItems:'center', zIndex:1000 };
+const modalCard: React.CSSProperties = { width:'min(640px, 94vw)', background:'#0f0f0f', border:'1px solid rgba(255,255,255,.15)', borderRadius:12, padding:16 };
