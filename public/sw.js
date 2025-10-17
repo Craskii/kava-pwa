@@ -1,6 +1,6 @@
 // public/sw.js
 // Simple app-shell + network-first for HTML and APIs, cache-first for static assets.
-
+const CACHE_VERSION = 'v7'; // ← bump this number
 const VERSION = self.__BUILD__ || String(Date.now());
 const STATIC_CACHE = `static-${VERSION}`;
 const DYNAMIC_CACHE = `dynamic-${VERSION}`;
