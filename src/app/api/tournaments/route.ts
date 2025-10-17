@@ -1,10 +1,10 @@
+// src/app/api/tournaments/route.ts
 export const runtime = "edge";
+
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
-type KVNamespace = {
-  get(key: string): Promise<string | null>;
-};
+type KVNamespace = { get(key: string): Promise<string | null> };
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
 const THOST = (hostId: string) => `tidx:h:${hostId}`; // string[]
@@ -33,7 +33,6 @@ export async function GET(req: Request) {
     readIds(env, TPLAYER(userId)),
   ]);
 
-  // fetch docs for each (still cheap compared to a global list)
   const fetchMany = async (ids: string[]) => {
     const out: Tournament[] = [];
     for (const id of ids) {
@@ -48,7 +47,7 @@ export async function GET(req: Request) {
     fetchMany(playIds),
   ]);
 
-  // combined version = max of versions so me page can smart-poll
+  // combined version = max of versions so the page can smart-poll
   let maxV = 0;
   for (const id of [...new Set([...hostIds, ...playIds])]) {
     const vRaw = await env.KAVA_TOURNAMENTS.get(TVER(id));
@@ -63,7 +62,7 @@ export async function GET(req: Request) {
     headers: {
       "content-type": "application/json",
       "x-t-version": String(maxV),
-      "Cache-Control": "no-store"
+      "cache-control": "no-store"
     }
   });
 }

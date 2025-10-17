@@ -1,8 +1,10 @@
+// src/app/api/list/[id]/route.ts
 export const runtime = "edge";
 
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
+/* ---------- KV ---------- */
 type KVNamespace = {
   get(key: string): Promise<string | null>;
   put(key: string, value: string): Promise<void>;
@@ -10,18 +12,29 @@ type KVNamespace = {
 };
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
+/* ---------- Types ---------- */
 type Table = { a?: string; b?: string };
 type Player = { id: string; name: string };
 type ListGame = {
-  id: string; name: string; code?: string; hostId: string; status: "active";
-  createdAt: number; tables: Table[]; players: Player[]; queue: string[];
+  id: string;
+  name: string;
+  code?: string;
+  hostId: string;
+  status: "active";
+  createdAt: number;
+  tables: Table[];
+  players: Player[];
+  queue: string[];
+  v?: number;
 };
 
+/* ---------- keys ---------- */
 const LKEY = (id: string) => `l:${id}`;
 const LVER = (id: string) => `lv:${id}`;
 const LPLAYER = (playerId: string) => `lidx:p:${playerId}`; // string[]
 const LHOST   = (hostId: string)   => `lidx:h:${hostId}`;   // string[]
 
+/* ---------- helpers ---------- */
 async function getV(env: Env, id: string): Promise<number> {
   const raw = await env.KAVA_TOURNAMENTS.get(LVER(id));
   const n = raw ? Number(raw) : 0;

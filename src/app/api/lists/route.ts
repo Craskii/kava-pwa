@@ -1,3 +1,4 @@
+// src/app/api/lists/route.ts
 export const runtime = "edge";
 
 import { NextResponse } from "next/server";

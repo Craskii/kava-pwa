@@ -1,3 +1,4 @@
+// src/app/api/create/route.ts
 export const runtime = "edge";
 
 import { NextResponse } from "next/server";
@@ -49,7 +50,8 @@ async function uniqueNumericCode(env: Env): Promise<string> {
 }
 async function pushId(env: Env, key: string, id: string) {
   const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
-  const arr: string[] = JSON.parse(raw);
+  let arr: string[];
+  try { arr = JSON.parse(raw); } catch { arr = []; }
   if (!arr.includes(id)) {
     arr.push(id);
     await env.KAVA_TOURNAMENTS.put(key, JSON.stringify(arr));
@@ -98,7 +100,7 @@ export async function POST(req: Request) {
 
   await env.KAVA_TOURNAMENTS.put(TKEY(id), JSON.stringify(tournament));
   await env.KAVA_TOURNAMENTS.put(TVER(id), "1");
-  await env.KAVA_TOURNAMENTS.put(`code:${code}`, id); // legacy
+  await env.KAVA_TOURNAMENTS.put(`code:${code}`, id); // legacy lookup
   await env.KAVA_TOURNAMENTS.put(`code2:${code}`, JSON.stringify({ type: "tournament", id }));
   await pushId(env, THOST(hostId), id);
 

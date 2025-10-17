@@ -1,86 +1,55 @@
 // src/app/api/tournament/[id]/stream/route.ts
 export const runtime = "edge";
 
-import { getRequestContext } from "@cloudflare/next-on-pages";
+export async function GET(req: Request, ctx: { params: { id: string } }) {
+  const id = decodeURIComponent(ctx.params.id || '');
+  if (!id) return new Response('Missing id', { status: 400 });
 
-type KVNamespace = {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
-  delete(key: string): Promise<void>;
-};
-type Env = { KAVA_TOURNAMENTS: KVNamespace };
+  const { readable, writable } = new TransformStream<string>();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+  const send = (obj: unknown) => writer.write(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
 
-function keyOf(id: string) { return `t:${id}`; }
+  let lastVersion = -1;
+  let alive = true;
 
-export async function GET(
-  _req: Request,
-  ctx: { params: Promise<{ id: string }> }
-) {
-  const { id } = await ctx.params;
-  const { env: rawEnv } = getRequestContext();
-  const env = rawEnv as unknown as Env;
+  const headers = new Headers({
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store",
+    "x-accel-buffering": "no",
+    "connection": "keep-alive",
+  });
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      const enc = new TextEncoder();
-
-      // helper to send SSE event
-      const send = (obj: unknown) => {
-        controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
-      };
-
-      // First snapshot
-      let lastVersion = -1;
-      const first = await env.KAVA_TOURNAMENTS.get(keyOf(id));
-      if (first) {
-        try {
-          const t = JSON.parse(first);
-          lastVersion = Number(t.version || 0);
-          send({ type: "snapshot", tournament: t });
-        } catch {}
-      }
-
-      // Poll KV every 1000ms; push only when version changes
-      let alive = true;
-      const loop = async () => {
-        while (alive) {
-          try {
-            const raw = await env.KAVA_TOURNAMENTS.get(keyOf(id));
-            if (raw) {
-              const t = JSON.parse(raw);
-              const v = Number(t.version || 0);
-              if (v !== lastVersion) {
-                lastVersion = v;
-                send({ type: "snapshot", tournament: t });
-              } else {
-                // keep-alive/no-op to prevent intermediaries closing idle streams
-                send({ type: "noop" });
-              }
-            }
-          } catch {
-            // swallow; next tick will retry
-          }
-          await new Promise(r => setTimeout(r, 1000));
+  const loop = async () => {
+    while (alive) {
+      try {
+        const res = await fetch(new URL(`/api/tournament/${encodeURIComponent(id)}`, req.url), {
+          headers: { "cache-control": "no-store" }
+        });
+        if (res.status === 404) {
+          send({ _deleted: true });
+          break;
         }
-      };
-      loop();
+        if (res.ok) {
+          const v = Number(res.headers.get("x-t-version") || "0");
+          const doc = await res.json().catch(() => null);
+          if (Number.isFinite(v) && v !== lastVersion && doc && doc.id && doc.hostId) {
+            lastVersion = v;
+            send({ tournament: { ...doc, v } });
+          }
+        }
+      } catch {
+        // swallow, retry next tick
+      }
+      // keep-alive comment
+      writer.write(encoder.encode(`: ping\n\n`));
+      await new Promise(r => setTimeout(r, 1000));
+    }
 
-      // Close hook
-      // @ts-ignore — not typed on Edge yet
-      controller.signal?.addEventListener?.("abort", () => { alive = false; });
+    try { writer.close(); } catch {}
+  };
 
-      // SSE headers: set once when stream starts
-    },
-    cancel() { /* no-op */ },
-  });
+  loop();
 
-  return new Response(stream, {
-    status: 200,
-    headers: {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-store",
-      "x-accel-buffering": "no",       // Nginx proxies
-      "connection": "keep-alive",
-    },
-  });
+  return new Response(readable, { status: 200, headers });
 }

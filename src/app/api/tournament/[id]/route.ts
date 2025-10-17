@@ -1,3 +1,4 @@
+// src/app/api/tournament/[id]/route.ts
 export const runtime = "edge";
 
 import { NextResponse } from "next/server";
@@ -36,7 +37,6 @@ async function setV(env: Env, id: string, v: number) {
   await env.KAVA_TOURNAMENTS.put(TVER(id), String(v));
 }
 
-/* small helpers for indices */
 async function readArr(env: Env, key: string): Promise<string[]> {
   const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
   try { return JSON.parse(raw) as string[]; } catch { return []; }
@@ -62,7 +62,13 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const doc = JSON.parse(raw) as Tournament;
   const v = await getV(env, id);
-  return NextResponse.json(doc, { headers: { "x-t-version": String(v), "Cache-Control": "public, max-age=5, stale-while-revalidate=30" } });
+  return new NextResponse(JSON.stringify(doc), {
+    headers: {
+      "content-type": "application/json",
+      "x-t-version": String(v),
+      "cache-control": "no-store"
+    }
+  });
 }
 
 /* ---------- PUT (If-Match) ---------- */
@@ -107,7 +113,6 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
     try {
       const doc = JSON.parse(raw) as Tournament;
       if (doc.code) await env.KAVA_TOURNAMENTS.delete(`code:${doc.code}`);
-      // remove from all player indices
       for (const p of (doc.players || [])) await removeFrom(env, PIDX(p.id), id);
     } catch {}
   }

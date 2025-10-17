@@ -1,6 +1,22 @@
+# wrangler.toml
 name = "kava-pwa"
-compatibility_date = "2024-06-01"
+main = "dist/worker/index.js" # (ignored by Pages, fine to keep)
 
+# --- Durable Objects bindings ---
+[[durable_objects.bindings]]
+name = "LIST_ROOM"
+class_name = "ListRoom"
+
+[[durable_objects.bindings]]
+name = "TOURNAMENT_ROOM"
+class_name = "TournamentRoom"
+
+# For Pages, these are required so the DOs exist:
+[[migrations]]
+tag = "v1"
+new_classes = ["ListRoom", "TournamentRoom"]
+
+# KV (for indices + code lookup)
 [[kv_namespaces]]
 binding = "KAVA_TOURNAMENTS"
-id = "local-kava-tournaments"
+id = "KAVA_TOURNAMENTS" # set to your KV id on production env
