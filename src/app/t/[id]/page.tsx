@@ -5,7 +5,7 @@ export const runtime = 'edge';
 import { useParams, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
-// AlertsToggle moved to Home page
+import AlertsToggle from '@/components/AlertsToggle';
 import { useQueueAlerts, bumpAlerts } from '@/lib/alerts';
 import {
   saveTournamentRemote,
@@ -19,15 +19,12 @@ import {
   Match,
   getTournamentRemote,
 } from '../../../lib/storage';
-import { startSmartPoll } from '../../../lib/poll';
+import { startAdaptivePoll } from '@/lib/poll';
 
 /* ---------- helpers ---------- */
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
+  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
   return a;
 }
 function normalizeMatch(m: Match): Match | null {
@@ -52,27 +49,14 @@ function seedLocal(t: Tournament): Tournament {
 function buildNextRoundFromSync(t: Tournament, roundIndex: number) {
   const cur = t.rounds[roundIndex] || [];
   const normalized: Match[] = [];
-  for (const m of cur) {
-    const nm = normalizeMatch(m);
-    if (nm) normalized.push(nm);
-  }
+  for (const m of cur) { const nm = normalizeMatch(m); if (nm) normalized.push(nm); }
   t.rounds[roundIndex] = normalized;
-
   const winners = normalized.map(m => m.winner).filter(Boolean) as string[];
   if (normalized.some(m => !m.winner)) return;
-
-  if (winners.length <= 1) {
-    if (winners.length === 1) t.status = 'completed';
-    return;
-  }
+  if (winners.length <= 1) { if (winners.length === 1) t.status = 'completed'; return; }
   const next: Match[] = [];
-  for (let i = 0; i < winners.length; i += 2) {
-    const a = winners[i], b = winners[i + 1];
-    const nm = normalizeMatch({ a, b, reports: {} });
-    if (nm) next.push(nm);
-  }
-  if (t.rounds[roundIndex + 1]) t.rounds[roundIndex + 1] = next;
-  else t.rounds.push(next);
+  for (let i = 0; i < winners.length; i += 2) { const a = winners[i], b = winners[i + 1]; const nm = normalizeMatch({ a, b, reports: {} }); if (nm) next.push(nm); }
+  if (t.rounds[roundIndex + 1]) t.rounds[roundIndex + 1] = next; else t.rounds.push(next);
   if (next.every(m => !!m.winner)) buildNextRoundFromSync(t, roundIndex + 1);
 }
 
@@ -86,7 +70,6 @@ export default function Lobby() {
   const me = useMemo(() => { try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); } catch { return null; } }, []);
   useEffect(() => { if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' })); }, [me]);
 
-  // in-app banners
   useQueueAlerts({
     tournamentId: String(id),
     upNextMessage: (s: any) => `your up now in ${s?.bracketRoundName || 'this round'}!`,
@@ -98,19 +81,26 @@ export default function Lobby() {
     },
   });
 
-  // load + smart poll
+  // Adaptive polling with If-None-Match
   useEffect(() => {
     if (!id) return;
     pollRef.current?.stop();
-    const poll = startSmartPoll(async () => {
-      const res = await fetch(`/api/tournament/${id}`, { cache: 'no-store' });
-      if (res.ok) {
-        const v = res.headers.get('x-t-version') || '';
-        const next = await res.json();
-        setT(next);
-        return v;
-      }
-      return null;
+    const poll = startAdaptivePoll<Tournament>({
+      key: `t:${id}`,
+      minMs: 4000,
+      maxMs: 60000,
+      fetchOnce: async (etag) => {
+        const res = await fetch(`/api/tournament/${id}`, {
+          headers: etag ? { 'If-None-Match': etag } : undefined,
+          cache: 'no-store',
+        });
+        if (res.status === 304) return { status: 304, etag: etag ?? null };
+        if (!res.ok) return { status: 304, etag: etag ?? null };
+        const payload = await res.json();
+        const newTag = res.headers.get('etag') || res.headers.get('x-t-version') || null;
+        return { status: 200, etag: newTag, payload };
+      },
+      onChange: (payload) => setT(payload),
     });
     pollRef.current = poll;
     return () => poll.stop();
@@ -125,7 +115,7 @@ export default function Lobby() {
     </main>
   );
 
-  const coHosts = (t as any).coHosts ?? [];
+  const coHosts = t.coHosts ?? [];
   const iAmHost = me?.id === t.hostId;
   const iAmCoHost = !!me && coHosts.includes(me.id);
   const canHost = iAmHost || iAmCoHost;
@@ -138,7 +128,7 @@ export default function Lobby() {
       players: [...t.players],
       pending: [...t.pending],
       rounds: t.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } })) ),
-      ...(t as any).coHosts ? { coHosts: [...(t as any).coHosts] } : {},
+      coHosts: [...coHosts],
     };
     const first = structuredClone(base);
     mut(first);
@@ -154,13 +144,12 @@ export default function Lobby() {
           players: [...latest.players],
           pending: [...latest.pending],
           rounds: latest.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } })) ),
-          ...(latest as any).coHosts ? { coHosts: [...(latest as any).coHosts] } : {},
+          coHosts: [...(latest.coHosts ?? [])],
         };
         mut(second);
         const saved = await saveTournamentRemote(second);
         setT(saved); pollRef.current?.bump(); bumpAlerts();
-      } catch (e) {
-        console.error(e);
+      } catch {
         alert('Could not save changes.');
       }
     } finally { setBusy(false); }
@@ -178,7 +167,7 @@ export default function Lobby() {
     await update(x => {
       x.players = x.players.filter(p => p.id !== me.id);
       x.pending = x.pending.filter(p => p.id !== me.id);
-      (x as any).coHosts = ((x as any).coHosts ?? []).filter((id: string) => id !== me.id);
+      x.coHosts = (x.coHosts ?? []).filter(id => id !== me.id);
       x.rounds = x.rounds.map(round =>
         round.map(m => ({
           ...m,
@@ -226,7 +215,6 @@ export default function Lobby() {
   function approve(pId: string) { update(x => approvePending(x, pId)); }
   function decline(pId: string) { update(x => declinePending(x, pId)); }
 
-  // --- Add / rename / remove / co-host ---
   function addPlayerPrompt() {
     const nm = prompt('Player name?');
     if (!nm) return;
@@ -244,7 +232,7 @@ export default function Lobby() {
     update(x => {
       x.players = x.players.filter(p => p.id !== pid);
       x.pending = x.pending.filter(p => p.id !== pid);
-      (x as any).coHosts = ((x as any).coHosts ?? []).filter((id: string) => id !== pid);
+      x.coHosts = (x.coHosts ?? []).filter(id => id !== pid);
       x.rounds = x.rounds.map(rr => rr.map(m => ({
         ...m,
         a: m.a === pid ? undefined : m.a,
@@ -256,13 +244,13 @@ export default function Lobby() {
   }
   function toggleCoHost(pid: string) {
     update(x => {
-      (x as any).coHosts ??= [];
-      if ((x as any).coHosts.includes(pid)) (x as any).coHosts = (x as any).coHosts.filter((id: string) => id !== pid);
-      else (x as any).coHosts.push(pid);
+      x.coHosts ??= [];
+      if (x.coHosts.includes(pid)) x.coHosts = x.coHosts.filter(id => id !== pid);
+      else x.coHosts.push(pid);
     });
   }
 
-  // --- Drag & drop seats in Round 1 ---
+  // Drag & drop Round 1 seats
   type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; pid?: string };
   function onDragStart(ev: React.DragEvent, info: DragInfo) {
     ev.dataTransfer.setData('application/json', JSON.stringify(info));
@@ -322,11 +310,8 @@ export default function Lobby() {
   const iAmChampion = t.status === 'completed' && finalWinnerId === me?.id;
   const lock = { opacity: busy ? .6 : 1, pointerEvents: busy ? 'none' as const : 'auto' };
 
-  // players box “slider” (vertical scroll) when > 5
   const playersScrollable = t.players.length > 5;
-  const playersBox: React.CSSProperties = playersScrollable
-    ? { maxHeight: 260, overflowY: 'auto', paddingRight: 4 }
-    : {};
+  const playersBox: React.CSSProperties = playersScrollable ? { maxHeight: 260, overflowY: 'auto', paddingRight: 4 } : {};
 
   return (
     <main style={wrap}>
@@ -342,7 +327,7 @@ export default function Lobby() {
             {iAmChampion && <div style={champ}>🎉 <b>Congratulations!</b> You won the tournament!</div>}
           </div>
           <div style={{ display:'flex', gap:8, marginTop:8, alignItems:'center' }}>
-            {/* Alerts toggle lives on Home now */}
+            <AlertsToggle />
             <button style={{ ...btnGhost, ...lock }} onClick={leaveTournament}>Leave Tournament</button>
           </div>
         </header>
@@ -355,7 +340,7 @@ export default function Lobby() {
           Drag player pills in <b>Round 1</b> to rearrange matchups.
         </section>
 
-        {/* Players (scrolls when >5 to avoid clutter) */}
+        {/* Players */}
         <section style={card}>
           <h3 style={{ marginTop: 0 }}>Players ({t.players.length})</h3>
           {canHost && (
@@ -363,7 +348,6 @@ export default function Lobby() {
               <button style={{ ...btn, ...lock }} onClick={addPlayerPrompt}>Add player</button>
             </div>
           )}
-
           {t.players.length === 0 ? (
             <div style={{ opacity:.7 }}>No players yet.</div>
           ) : (
@@ -463,7 +447,7 @@ export default function Lobby() {
                     const bName = t.players.find(p => p.id === m.b)?.name || (m.b ? '??' : 'BYE');
                     const w = m.winner;
                     const iPlay = me && (m.a === me?.id || m.b === me?.id);
-                    const canReport = iPlay && !w && t.status === 'active';
+                    const canReport = !canHost && iPlay && !w && t.status === 'active';
 
                     return (
                       <div key={i} style={{ background: '#111', borderRadius: 10, padding: '10px 12px', display: 'grid', gap: 8 }}>
@@ -496,7 +480,7 @@ export default function Lobby() {
                           </div>
                         )}
 
-                        {!canHost && canReport && (
+                        {canReport && (
                           <div style={{ display: 'flex', gap: 6 }}>
                             <button style={btnMini} onClick={() => report(rIdx, i, 'win')} disabled={busy}>I won</button>
                             <button style={btnMini} onClick={() => report(rIdx, i, 'loss')} disabled={busy}>I lost</button>

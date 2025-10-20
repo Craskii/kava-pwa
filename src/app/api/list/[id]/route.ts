@@ -4,7 +4,7 @@ export const runtime = "edge";
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
-/* ---------- KV ---------- */
+/* KV + types */
 type KVNamespace = {
   get(key: string): Promise<string | null>;
   put(key: string, value: string): Promise<void>;
@@ -12,29 +12,19 @@ type KVNamespace = {
 };
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-/* ---------- Types ---------- */
 type Table = { a?: string; b?: string };
 type Player = { id: string; name: string };
 type ListGame = {
-  id: string;
-  name: string;
-  code?: string;
-  hostId: string;
-  status: "active";
-  createdAt: number;
-  tables: Table[];
-  players: Player[];
-  queue: string[];
-  v?: number;
+  id: string; name: string; code?: string; hostId: string; status: "active";
+  createdAt: number; tables: Table[]; players: Player[]; queue: string[];
 };
 
-/* ---------- keys ---------- */
+/* keys + helpers */
 const LKEY = (id: string) => `l:${id}`;
 const LVER = (id: string) => `lv:${id}`;
-const LPLAYER = (playerId: string) => `lidx:p:${playerId}`; // string[]
-const LHOST   = (hostId: string)   => `lidx:h:${hostId}`;   // string[]
+const LPLAYER = (playerId: string) => `lidx:p:${playerId}`;
+const LHOST   = (hostId: string)   => `lidx:h:${hostId}`;
 
-/* ---------- helpers ---------- */
 async function getV(env: Env, id: string): Promise<number> {
   const raw = await env.KAVA_TOURNAMENTS.get(LVER(id));
   const n = raw ? Number(raw) : 0;
@@ -60,7 +50,7 @@ async function removeFrom(env: Env, key: string, id: string) {
   if (next.length !== arr.length) await writeArr(env, key, next);
 }
 
-/* Coerce on read to avoid missing fields breaking clients */
+/* Coerce for safety */
 function coerce(doc: any): ListGame {
   return {
     id: String(doc?.id ?? ""),
@@ -75,20 +65,39 @@ function coerce(doc: any): ListGame {
   };
 }
 
-/* GET */
-export async function GET(_: Request, { params }: { params: { id: string } }) {
+/* ---------- GET (ETag/304) ---------- */
+export async function GET(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
+
+  const v = await getV(env, id);
+  const etag = `"l-${v}"`;
+  const inm = req.headers.get("if-none-match");
+  if (inm && inm === etag) {
+    return new NextResponse(null, {
+      status: 304,
+      headers: {
+        ETag: etag,
+        "Cache-Control": "public, max-age=0, stale-while-revalidate=30",
+        "x-l-version": String(v),
+      }
+    });
+  }
+
   const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  const doc = coerce(JSON.parse(raw));
-  const v = await getV(env, id);
-  return new NextResponse(JSON.stringify(doc), {
-    headers: { "content-type":"application/json", "x-l-version": String(v), "cache-control":"no-store" }
+  // pass through JSON (already serialized)
+  return new NextResponse(raw, {
+    headers: {
+      "content-type": "application/json",
+      ETag: etag,
+      "Cache-Control": "public, max-age=0, stale-while-revalidate=30",
+      "x-l-version": String(v),
+    }
   });
 }
 
-/* PUT (optimistic concurrency with If-Match) */
+/* ---------- PUT (If-Match) ---------- */
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
@@ -111,7 +120,7 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   const nextV = curV + 1;
   await setV(env, id, nextV);
 
-  // keep indices in sync (players + host)
+  // indices: players + host
   const nextPlayers = new Set((body.players ?? []).map(p => p.id));
   for (const p of nextPlayers) if (!prevPlayers.has(p)) await addTo(env, LPLAYER(p), id);
   for (const p of prevPlayers) if (!nextPlayers.has(p)) await removeFrom(env, LPLAYER(p), id);
@@ -121,10 +130,10 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   }
   if (body.hostId) await addTo(env, LHOST(body.hostId), id);
 
-  return new NextResponse(null, { status: 204, headers: { "x-l-version": String(nextV) } });
+  return new NextResponse(null, { status: 204, headers: { "x-l-version": String(nextV), ETag: `"l-${nextV}"` } });
 }
 
-/* DELETE */
+/* ---------- DELETE ---------- */
 export async function DELETE(_: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
