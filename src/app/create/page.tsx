@@ -2,115 +2,103 @@
 'use client';
 export const runtime = 'edge';
 
-import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
-
-function uid() {
-  return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6);
-}
+import { useRouter } from 'next/navigation';
+import BackButton from '@/components/BackButton';
+import { uid } from '@/lib/storage';
 
 type Me = { id: string; name: string };
 
-export default function CreateGamePage() {
-  const r = useRouter();
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+export default function CreatePage() {
+  const router = useRouter();
+  const [name, setName] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const me = useMemo<Me>(() => {
     try {
-      const existing = JSON.parse(localStorage.getItem('kava_me') || 'null');
-      if (existing?.id) return existing;
+      const saved = JSON.parse(localStorage.getItem('kava_me') || 'null');
+      if (saved?.id) return saved;
     } catch {}
-    const fresh = { id: uid(), name: 'Player' };
+    const fresh = { id: uid(), name: 'Host' };
     localStorage.setItem('kava_me', JSON.stringify(fresh));
     return fresh;
   }, []);
 
-  async function create(type: 'tournament' | 'list') {
-    if (busy) return;
-    setBusy(true);
-    setErr(null);
+  async function handleCreate(type: 'list' | 'tournament') {
+    if (!name.trim()) { alert('Please enter a name.'); return; }
+    setLoading(true); setError(null);
     try {
+      localStorage.setItem('kava_me', JSON.stringify(me));
       const res = await fetch('/api/create', {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-me': me.id, // <— ensure API gets a hostId
-        },
-        body: JSON.stringify({ type }),
+        headers: { 'content-type':'application/json' },
+        body: JSON.stringify({ name, type, hostId: me.id }),
       });
+      const text = await res.text();
       if (!res.ok) {
-        const j = await res.json().catch(() => ({}));
-        setErr(j?.error || `HTTP ${res.status}`);
-        setBusy(false);
+        // Surface exact server error for easier debugging
+        try { setError(JSON.parse(text)?.error || `HTTP ${res.status}`); }
+        catch { setError(text || `HTTP ${res.status}`); }
         return;
       }
-      const data = await res.json();
-      const href: string = data?.href || (type === 'tournament' ? `/t/${data?.id}` : `/list/${data?.id}`);
-      r.push(href);
-    } catch (e: any) {
-      setErr(e?.message || 'Failed to create');
+      const game = JSON.parse(text) as { id: string; type: 'list'|'tournament'; href?: string };
+      const href = game.href || (game.type === 'list' ? `/list/${game.id}` : `/t/${game.id}`);
+      localStorage.setItem('kava_lastGame', text);
+      router.push(href);
+    } catch (e:any) {
+      setError(e?.message || 'Failed to create game.');
     } finally {
-      setBusy(false);
+      setLoading(false);
     }
   }
 
   return (
     <main style={wrap}>
-      <h1 style={{ margin: '8px 0 16px' }}>Create game</h1>
+      <BackButton href="/" />
+      <h1 style={{ marginBottom: 10 }}>Create Game</h1>
 
-      {err && (
-        <div style={errorBox}>
-          <b>Couldn’t create</b>
-          <div style={{ marginTop: 6, fontSize: 13, opacity: 0.9 }}>{String(err)}</div>
+      <input
+        placeholder="Game name..."
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        style={input}
+        disabled={loading}
+      />
+
+      {error && (
+        <div style={errBox}>
+          <b>Error:</b> <span style={{ opacity:.9 }}>{error}</span>
         </div>
       )}
 
-      <div style={{ display: 'grid', gap: 10, maxWidth: 420 }}>
-        <button style={btn} disabled={busy} onClick={() => create('tournament')}>
-          {busy ? 'Creating…' : 'Create a tournament'}
+      <div style={{ display:'flex', gap:12, marginTop:16 }}>
+        <button style={btnPrimary} onClick={() => handleCreate('tournament')} disabled={loading}>
+          {loading ? 'Creating…' : 'Create Tournament'}
         </button>
-        <button style={btnGhost} disabled={busy} onClick={() => create('list')}>
-          {busy ? 'Creating…' : 'Create a list'}
+        <button style={btnGhost} onClick={() => handleCreate('list')} disabled={loading}>
+          {loading ? 'Creating…' : 'Create List'}
         </button>
       </div>
+
+      <p style={{ opacity:.6, marginTop:16, fontSize:12 }}>me.id: {me.id}</p>
     </main>
   );
 }
 
+/* styles */
 const wrap: React.CSSProperties = {
-  minHeight: '100vh',
-  background: '#0b0b0b',
-  color: '#fff',
-  padding: 24,
-  fontFamily: 'system-ui',
+  minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui'
 };
-
-const btn: React.CSSProperties = {
-  padding: '12px 14px',
-  borderRadius: 12,
-  border: 'none',
-  background: '#0ea5e9',
-  color: '#fff',
-  fontWeight: 700,
-  cursor: 'pointer',
+const input: React.CSSProperties = {
+  width:'100%', maxWidth:420, padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff', fontSize:16, fontWeight:500, marginBottom:12
 };
-
+const btnPrimary: React.CSSProperties = {
+  padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer'
+};
 const btnGhost: React.CSSProperties = {
-  padding: '12px 14px',
-  borderRadius: 12,
-  border: '1px solid rgba(255,255,255,0.25)',
-  background: 'transparent',
-  color: '#fff',
-  fontWeight: 600,
-  cursor: 'pointer',
+  padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', fontWeight:700, cursor:'pointer'
 };
-
-const errorBox: React.CSSProperties = {
-  background: 'rgba(239, 68, 68, .15)',
-  border: '1px solid rgba(239, 68, 68, .4)',
-  color: '#fecaca',
-  padding: '10px 12px',
-  borderRadius: 12,
-  marginBottom: 12,
+const errBox: React.CSSProperties = {
+  background:'#3b0d0d', border:'1px solid #7f1d1d', borderRadius:12, padding:12, marginTop:8
 };
