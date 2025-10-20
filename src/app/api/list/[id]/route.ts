@@ -2,15 +2,7 @@
 export const runtime = "edge";
 
 import { NextResponse } from "next/server";
-import { getRequestContext } from "@cloudflare/next-on-pages";
-
-/* KV + types */
-type KVNamespace = {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
-  delete(key: string): Promise<void>;
-};
-type Env = { KAVA_TOURNAMENTS: KVNamespace };
+import { getEnvOrError, KVNamespace } from "../../_utils/env";
 
 type Table = { a?: string; b?: string };
 type Player = { id: string; name: string };
@@ -19,38 +11,36 @@ type ListGame = {
   createdAt: number; tables: Table[]; players: Player[]; queue: string[];
 };
 
-/* keys + helpers */
 const LKEY = (id: string) => `l:${id}`;
 const LVER = (id: string) => `lv:${id}`;
 const LPLAYER = (playerId: string) => `lidx:p:${playerId}`;
 const LHOST   = (hostId: string)   => `lidx:h:${hostId}`;
 
-async function getV(env: Env, id: string): Promise<number> {
-  const raw = await env.KAVA_TOURNAMENTS.get(LVER(id));
+async function getV(kv: KVNamespace, id: string): Promise<number> {
+  const raw = await kv.get(LVER(id));
   const n = raw ? Number(raw) : 0;
   return Number.isFinite(n) ? n : 0;
 }
-async function setV(env: Env, id: string, v: number) {
-  await env.KAVA_TOURNAMENTS.put(LVER(id), String(v));
+async function setV(kv: KVNamespace, id: string, v: number) {
+  await kv.put(LVER(id), String(v));
 }
-async function readArr(env: Env, key: string): Promise<string[]> {
-  const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
+async function readArr(kv: KVNamespace, key: string): Promise<string[]> {
+  const raw = (await kv.get(key)) || "[]";
   try { return JSON.parse(raw) as string[]; } catch { return []; }
 }
-async function writeArr(env: Env, key: string, arr: string[]) {
-  await env.KAVA_TOURNAMENTS.put(key, JSON.stringify(arr));
+async function writeArr(kv: KVNamespace, key: string, arr: string[]) {
+  await kv.put(key, JSON.stringify(arr));
 }
-async function addTo(env: Env, key: string, id: string) {
-  const arr = await readArr(env, key);
-  if (!arr.includes(id)) { arr.push(id); await writeArr(env, key, arr); }
+async function addTo(kv: KVNamespace, key: string, id: string) {
+  const arr = await readArr(kv, key);
+  if (!arr.includes(id)) { arr.push(id); await writeArr(kv, key, arr); }
 }
-async function removeFrom(env: Env, key: string, id: string) {
-  const arr = await readArr(env, key);
+async function removeFrom(kv: KVNamespace, key: string, id: string) {
+  const arr = await readArr(kv, key);
   const next = arr.filter(x => x !== id);
-  if (next.length !== arr.length) await writeArr(env, key, next);
+  if (next.length !== arr.length) await writeArr(kv, key, next);
 }
 
-/* Coerce for safety */
 function coerce(doc: any): ListGame {
   return {
     id: String(doc?.id ?? ""),
@@ -65,90 +55,110 @@ function coerce(doc: any): ListGame {
   };
 }
 
-/* ---------- GET (ETag/304) ---------- */
+/* GET with ETag/304 */
 export async function GET(req: Request, { params }: { params: { id: string } }) {
-  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
-  const id = params.id;
+  const env = getEnvOrError(); if ("error" in env) return env.error;
+  const kv = env.env.KAVA_TOURNAMENTS;
 
-  const v = await getV(env, id);
-  const etag = `W/"l-${id}-${v}"`;
-  const inm = req.headers.get("if-none-match");
-  if (inm && inm === etag) {
-    return new NextResponse(null, {
-      status: 304,
+  const id = params.id || "";
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
+
+  try {
+    const v = await getV(kv, id);
+    const etag = `"l-${v}"`;
+    const inm = req.headers.get("if-none-match");
+    if (inm && inm === etag) {
+      return new NextResponse(null, {
+        status: 304,
+        headers: {
+          ETag: etag,
+          "Cache-Control": "public, max-age=0, stale-while-revalidate=30",
+          "x-l-version": String(v),
+        }
+      });
+    }
+
+    const raw = await kv.get(LKEY(id));
+    if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    return new NextResponse(raw, {
       headers: {
-        "etag": etag,
+        "content-type": "application/json",
+        ETag: etag,
+        "Cache-Control": "public, max-age=0, stale-while-revalidate=30",
         "x-l-version": String(v),
-        "cache-control": "no-store",
       }
     });
+  } catch (e: any) {
+    return NextResponse.json({ error: "GET failed", detail: String(e?.message || e) }, { status: 500 });
   }
-
-  const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
-  if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
-
-  return new NextResponse(raw, {
-    headers: {
-      "content-type": "application/json",
-      "etag": etag,
-      "x-l-version": String(v),
-      "cache-control": "no-store",
-    }
-  });
 }
 
-/* ---------- PUT (If-Match) ---------- */
+/* PUT with If-Match */
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
-  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
-  const id = params.id;
+  const env = getEnvOrError(); if ("error" in env) return env.error;
+  const kv = env.env.KAVA_TOURNAMENTS;
 
-  const ifMatch = req.headers.get("if-match");
-  const curV = await getV(env, id);
-  if (ifMatch !== null && String(curV) !== String(ifMatch)) {
-    return NextResponse.json({ error: "Version conflict" }, { status: 412 });
+  const id = params.id || "";
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
+
+  try {
+    const ifMatch = req.headers.get("if-match");
+    const curV = await getV(kv, id);
+    if (ifMatch !== null && String(curV) !== String(ifMatch)) {
+      return NextResponse.json({ error: "Version conflict" }, { status: 412 });
+    }
+
+    const prevRaw = await kv.get(LKEY(id));
+    const prev = prevRaw ? coerce(JSON.parse(prevRaw)) : null;
+    const prevPlayers = new Set((prev?.players ?? []).map(p => p.id));
+
+    let body: ListGame;
+    try { body = coerce(await req.json()); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
+    if (body.id !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 });
+
+    await kv.put(LKEY(id), JSON.stringify(body));
+    const nextV = curV + 1;
+    await setV(kv, id, nextV);
+
+    const nextPlayers = new Set((body.players ?? []).map(p => p.id));
+    for (const p of nextPlayers) if (!prevPlayers.has(p)) await addTo(kv, LPLAYER(p), id);
+    for (const p of prevPlayers) if (!nextPlayers.has(p)) await removeFrom(kv, LPLAYER(p), id);
+
+    if (prev?.hostId && prev.hostId !== body.hostId) {
+      await removeFrom(kv, LHOST(prev.hostId), id);
+    }
+    if (body.hostId) await addTo(kv, LHOST(body.hostId), id);
+
+    return new NextResponse(null, { status: 204, headers: { "x-l-version": String(nextV), ETag: `"l-${nextV}"` } });
+  } catch (e: any) {
+    return NextResponse.json({ error: "PUT failed", detail: String(e?.message || e) }, { status: 500 });
   }
-
-  const prevRaw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
-  const prev = prevRaw ? coerce(JSON.parse(prevRaw)) : null;
-  const prevPlayers = new Set((prev?.players ?? []).map(p => p.id));
-
-  let body: ListGame;
-  try { body = coerce(await req.json()); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
-  if (body.id !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 });
-
-  await env.KAVA_TOURNAMENTS.put(LKEY(id), JSON.stringify(body));
-  const nextV = curV + 1;
-  await setV(env, id, nextV);
-
-  const nextPlayers = new Set((body.players ?? []).map(p => p.id));
-  for (const p of nextPlayers) if (!prevPlayers.has(p)) await addTo(env, LPLAYER(p), id);
-  for (const p of prevPlayers) if (!nextPlayers.has(p)) await removeFrom(env, LPLAYER(p), id);
-
-  if (prev?.hostId && prev.hostId !== body.hostId) await removeFrom(env, LHOST(prev.hostId), id);
-  if (body.hostId) await addTo(env, LHOST(body.hostId), id);
-
-  return new NextResponse(null, {
-    status: 204,
-    headers: { "x-l-version": String(nextV), "etag": `W/"l-${id}-${nextV}"` }
-  });
 }
 
-/* ---------- DELETE ---------- */
+/* DELETE */
 export async function DELETE(_: Request, { params }: { params: { id: string } }) {
-  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
-  const id = params.id;
+  const env = getEnvOrError(); if ("error" in env) return env.error;
+  const kv = env.env.KAVA_TOURNAMENTS;
 
-  const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
-  if (raw) {
-    try {
-      const doc = coerce(JSON.parse(raw));
-      if (doc.code) await env.KAVA_TOURNAMENTS.delete(`code:${doc.code}`);
-      for (const p of (doc.players || [])) await removeFrom(env, LPLAYER(p.id), id);
-      if (doc.hostId) await removeFrom(env, LHOST(doc.hostId), id);
-    } catch {}
+  const id = params.id || "";
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
+
+  try {
+    const raw = await kv.get(LKEY(id));
+    if (raw) {
+      try {
+        const doc = coerce(JSON.parse(raw));
+        if (doc.code) await kv.delete(`code:${doc.code}`);
+        for (const p of (doc.players || [])) await removeFrom(kv, LPLAYER(p.id), id);
+        if (doc.hostId) await removeFrom(kv, LHOST(doc.hostId), id);
+      } catch {}
+    }
+
+    await kv.delete(LKEY(id));
+    await kv.delete(LVER(id));
+    return new NextResponse(null, { status: 204 });
+  } catch (e: any) {
+    return NextResponse.json({ error: "DELETE failed", detail: String(e?.message || e) }, { status: 500 });
   }
-
-  await env.KAVA_TOURNAMENTS.delete(LKEY(id));
-  await env.KAVA_TOURNAMENTS.delete(LVER(id));
-  return new NextResponse(null, { status: 204 });
 }
