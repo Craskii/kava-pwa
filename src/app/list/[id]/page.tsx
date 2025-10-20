@@ -6,8 +6,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
 import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
-import { getListRemote, listJoin, listLeave, listILost, listSetTables, ListGame, Player, uid } from '../../../lib/storage';
-import { startAdaptivePoll } from '@/lib/poll';
+import {
+  getListRemote, listJoin, listLeave, listILost, listSetTables,
+  ListGame, Player, uid
+} from '../../../lib/storage';
 
 function coerceList(x: any): ListGame | null {
   if (!x) return null;
@@ -24,7 +26,9 @@ function coerceList(x: any): ListGame | null {
       queue: Array.isArray(x.queue) ? x.queue.map((id: any) => String(id)) : [],
       v: Number(x.v ?? 0),
     };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 }
 
 export default function ListLobby() {
@@ -38,12 +42,15 @@ export default function ListLobby() {
     : '';
 
   const me = useMemo<Player>(() => {
-    try { return JSON.parse(localStorage.getItem('kava_me') || 'null') || { id: uid(), name: 'Player' }; }
-    catch { return { id: uid(), name: 'Player' }; }
+    try {
+      return JSON.parse(localStorage.getItem('kava_me') || 'null') || { id: uid(), name: 'Player' };
+    } catch {
+      return { id: uid(), name: 'Player' };
+    }
   }, []);
   useEffect(() => { localStorage.setItem('kava_me', JSON.stringify(me)); }, [me]);
 
-  // Alerts
+  // 🔔 alerts on this list
   useQueueAlerts({
     listId: id,
     upNextMessage: 'your up next get ready!!',
@@ -55,7 +62,7 @@ export default function ListLobby() {
     },
   });
 
-  // bump when my seating changes
+  // Track my seating to bump alerts when I get seated
   const lastSeating = useRef<string>('');
   function detectMySeatingChanged(next: ListGame | null) {
     if (!next) return false;
@@ -65,39 +72,12 @@ export default function ListLobby() {
       if (lastSeating.current !== '') { lastSeating.current = ''; return true; }
       return false;
     }
-    const a = tables[i]?.a ?? 'x', b = tables[i]?.b ?? 'x';
+    const a = tables[i]?.a ?? 'x';
+    const b = tables[i]?.b ?? 'x';
     const key = `table-${i}-${a}-${b}`;
     if (key !== lastSeating.current) { lastSeating.current = key; return true; }
     return false;
   }
-
-  // Adaptive polling with ETag (replaces SSE)
-  useEffect(() => {
-    if (!id) return;
-    const poll = startAdaptivePoll<ListGame>({
-      key: `l:${id}`,
-      minMs: 4000,
-      maxMs: 60000,
-      fetchOnce: async (etag) => {
-        const res = await fetch(`/api/list/${id}`, {
-          headers: etag ? { 'If-None-Match': etag } : undefined,
-          cache: 'no-store',
-        });
-        if (res.status === 304) return { status: 304, etag: etag ?? null };
-        if (!res.ok) return { status: 304, etag: etag ?? null };
-        const payload = await res.json();
-        const newTag = res.headers.get('etag') || res.headers.get('x-l-version') || null;
-        return { status: 200, etag: newTag, payload };
-      },
-      onChange: (payload) => {
-        const doc = coerceList(payload);
-        if (!doc || !doc.id || !doc.hostId) return; // guard
-        setG(doc);
-        if (detectMySeatingChanged(doc)) bumpAlerts();
-      },
-    });
-    return () => poll.stop();
-  }, [id]);
 
   async function loadOnce() {
     if (!id) return;
@@ -106,6 +86,33 @@ export default function ListLobby() {
     setG(coerced);
     if (detectMySeatingChanged(coerced)) bumpAlerts();
   }
+
+  // SSE stream (fallback to manual refresh if it fails silently)
+  useEffect(() => {
+    if (!id) return;
+    let es: EventSource | null = null;
+
+    loadOnce();
+
+    try {
+      es = new EventSource(`/api/list/${encodeURIComponent(id)}/stream`);
+      es.onmessage = (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          if (data?._deleted) { setG(null); return; }
+          const docRaw = data?.list ?? data?.game ?? data;
+          const doc = coerceList(docRaw);
+          // 🔒 guard: ignore malformed snapshots (prevents host flicker)
+          if (!doc || !doc.id || !doc.hostId) return;
+          setG(doc);
+          if (detectMySeatingChanged(doc)) bumpAlerts();
+        } catch {}
+      };
+    } catch (err) {
+      console.error('SSE error', err);
+    }
+    return () => { try { es?.close(); } catch {} };
+  }, [id]);
 
   const safeTables = Array.isArray(g?.tables) ? g!.tables : [];
   const safeQueue  = Array.isArray(g?.queue)  ? g!.queue  : [];
@@ -207,7 +214,6 @@ export default function ListLobby() {
       <main style={wrap}>
         <BackButton href="/lists" />
         <p style={{ opacity:.7 }}>Loading…</p>
-        <div><button style={btnGhostSm} onClick={loadOnce}>Retry</button></div>
       </main>
     );
   }
@@ -250,8 +256,8 @@ export default function ListLobby() {
           <h3 style={{marginTop:0}}>Host controls</h3>
 
           <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
-            <button style={safeTables.length===1 ? btnActive : btn} onClick={()=>onTables(1)} disabled={busy}>1 Table</button>
-            <button style={safeTables.length>=2 ? btnActive : btnGhost} onClick={()=>onTables(2)} disabled={busy}>2 Tables</button>
+            <button style={oneActive ? btnActive : btn} onClick={()=>onTables(1)} disabled={busy}>1 Table</button>
+            <button style={twoActive ? btnActive : btnGhost} onClick={()=>onTables(2)} disabled={busy}>2 Tables</button>
           </div>
 
           <div style={{display:'flex',gap:8,flexWrap:'wrap', marginBottom:12}}>
