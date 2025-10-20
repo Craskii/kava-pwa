@@ -60,32 +60,30 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
 
-  // read version FIRST (tiny KV read)
   const v = await getV(env, id);
-  const etag = `"t-${v}"`;
+  const etag = `W/"t-${id}-${v}"`;
 
   const inm = req.headers.get("if-none-match");
   if (inm && inm === etag) {
     return new NextResponse(null, {
       status: 304,
       headers: {
-        ETag: etag,
-        "Cache-Control": "public, max-age=0, stale-while-revalidate=30",
+        "etag": etag,
         "x-t-version": String(v),
+        "cache-control": "no-store",
       }
     });
   }
 
-  // only fetch heavy doc if needed
   const raw = await env.KAVA_TOURNAMENTS.get(TKEY(id));
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   return new NextResponse(raw, {
     headers: {
       "content-type": "application/json",
-      ETag: etag,
-      "Cache-Control": "public, max-age=0, stale-while-revalidate=30",
+      "etag": etag,
       "x-t-version": String(v),
+      "cache-control": "no-store",
     }
   });
 }
@@ -101,7 +99,6 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
     return NextResponse.json({ error: "Version conflict" }, { status: 412 });
   }
 
-  // read previous to update player indices
   const prevRaw = await env.KAVA_TOURNAMENTS.get(TKEY(id));
   const prev: Tournament | null = prevRaw ? JSON.parse(prevRaw) : null;
   const prevPlayers = new Set((prev?.players ?? []).map(p => p.id));
@@ -114,12 +111,15 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   const nextV = curV + 1;
   await setV(env, id, nextV);
 
-  // update per-player indices
+  // per-player indices
   const nextPlayers = new Set((body.players ?? []).map(p => p.id));
   for (const p of nextPlayers) if (!prevPlayers.has(p)) await addTo(env, PIDX(p), id);
   for (const p of prevPlayers) if (!nextPlayers.has(p)) await removeFrom(env, PIDX(p), id);
 
-  return new NextResponse(null, { status: 204, headers: { "x-t-version": String(nextV), ETag: `"t-${nextV}"` } });
+  return new NextResponse(null, {
+    status: 204,
+    headers: { "x-t-version": String(nextV), "etag": `W/"t-${id}-${nextV}"` }
+  });
 }
 
 /* ---------- DELETE ---------- */

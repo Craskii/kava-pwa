@@ -18,13 +18,16 @@ import {
   uid,
   Match,
   getTournamentRemote,
-} from '../../../lib/storage';
+} from '@/lib/storage';
 import { startAdaptivePoll } from '@/lib/poll';
 
 /* ---------- helpers ---------- */
 function shuffle<T>(arr: T[]): T[] {
   const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
   return a;
 }
 function normalizeMatch(m: Match): Match | null {
@@ -51,11 +54,17 @@ function buildNextRoundFromSync(t: Tournament, roundIndex: number) {
   const normalized: Match[] = [];
   for (const m of cur) { const nm = normalizeMatch(m); if (nm) normalized.push(nm); }
   t.rounds[roundIndex] = normalized;
+
   const winners = normalized.map(m => m.winner).filter(Boolean) as string[];
   if (normalized.some(m => !m.winner)) return;
+
   if (winners.length <= 1) { if (winners.length === 1) t.status = 'completed'; return; }
   const next: Match[] = [];
-  for (let i = 0; i < winners.length; i += 2) { const a = winners[i], b = winners[i + 1]; const nm = normalizeMatch({ a, b, reports: {} }); if (nm) next.push(nm); }
+  for (let i = 0; i < winners.length; i += 2) {
+    const a = winners[i], b = winners[i + 1];
+    const nm = normalizeMatch({ a, b, reports: {} });
+    if (nm) next.push(nm);
+  }
   if (t.rounds[roundIndex + 1]) t.rounds[roundIndex + 1] = next; else t.rounds.push(next);
   if (next.every(m => !!m.winner)) buildNextRoundFromSync(t, roundIndex + 1);
 }
@@ -67,8 +76,13 @@ export default function Lobby() {
   const [busy, setBusy] = useState(false);
   const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
 
-  const me = useMemo(() => { try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); } catch { return null; } }, []);
-  useEffect(() => { if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' })); }, [me]);
+  const me = useMemo(() => {
+    try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); }
+    catch { return null; }
+  }, []);
+  useEffect(() => {
+    if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' }));
+  }, [me]);
 
   useQueueAlerts({
     tournamentId: String(id),
@@ -81,39 +95,32 @@ export default function Lobby() {
     },
   });
 
-  // Adaptive polling with If-None-Match
+  // ✅ Adaptive one-tab polling with If-None-Match ETag
   useEffect(() => {
     if (!id) return;
     pollRef.current?.stop();
-    const poll = startAdaptivePoll<Tournament>({
+    const poll = startSmartPollETag<Tournament>(`/api/tournament/${encodeURIComponent(id)}`, {
       key: `t:${id}`,
-      minMs: 4000,
-      maxMs: 60000,
-      fetchOnce: async (etag) => {
-        const res = await fetch(`/api/tournament/${id}`, {
-          headers: etag ? { 'If-None-Match': etag } : undefined,
-          cache: 'no-store',
-        });
-        if (res.status === 304) return { status: 304, etag: etag ?? null };
-        if (!res.ok) return { status: 304, etag: etag ?? null };
-        const payload = await res.json();
-        const newTag = res.headers.get('etag') || res.headers.get('x-t-version') || null;
-        return { status: 200, etag: newTag, payload };
+      versionHeader: 'x-t-version',
+      onUpdate: (payload) => {
+        if (!payload) return;
+        setT(payload);
       },
-      onChange: (payload) => setT(payload),
     });
     pollRef.current = poll;
     return () => poll.stop();
   }, [id]);
 
-  if (!t) return (
-    <main style={wrap}>
-      <div style={container}>
-        <BackButton href="/" />
-        <p>Loading…</p>
-      </div>
-    </main>
-  );
+  if (!t) {
+    return (
+      <main style={wrap}>
+        <div style={container}>
+          <BackButton href="/" />
+          <p>Loading…</p>
+        </div>
+      </main>
+    );
+  }
 
   const coHosts = t.coHosts ?? [];
   const iAmHost = me?.id === t.hostId;
@@ -127,7 +134,7 @@ export default function Lobby() {
       ...t,
       players: [...t.players],
       pending: [...t.pending],
-      rounds: t.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } })) ),
+      rounds: t.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
       coHosts: [...coHosts],
     };
     const first = structuredClone(base);
@@ -143,7 +150,7 @@ export default function Lobby() {
           ...latest,
           players: [...latest.players],
           pending: [...latest.pending],
-          rounds: latest.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } })) ),
+          rounds: latest.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
           coHosts: [...(latest.coHosts ?? [])],
         };
         mut(second);
@@ -175,7 +182,7 @@ export default function Lobby() {
           b: m.b === me.id ? undefined : m.b,
           winner: m.winner === me.id ? undefined : m.winner,
           reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== me.id)),
-        }))
+        })),
       );
     });
     r.push('/'); r.refresh();
@@ -302,7 +309,8 @@ export default function Lobby() {
   }
 
   function report(roundIdx: number, matchIdx: number, result: 'win' | 'loss') {
-    if (!me) return; update(x => { submitReport(x, roundIdx, matchIdx, me.id, result); });
+    if (!me) return;
+    update(x => { submitReport(x, roundIdx, matchIdx, me.id, result); });
   }
 
   const lastRound = t.rounds.at(-1);

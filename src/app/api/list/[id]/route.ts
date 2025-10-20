@@ -71,28 +71,28 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const id = params.id;
 
   const v = await getV(env, id);
-  const etag = `"l-${v}"`;
+  const etag = `W/"l-${id}-${v}"`;
   const inm = req.headers.get("if-none-match");
   if (inm && inm === etag) {
     return new NextResponse(null, {
       status: 304,
       headers: {
-        ETag: etag,
-        "Cache-Control": "public, max-age=0, stale-while-revalidate=30",
+        "etag": etag,
         "x-l-version": String(v),
+        "cache-control": "no-store",
       }
     });
   }
 
   const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  // pass through JSON (already serialized)
+
   return new NextResponse(raw, {
     headers: {
       "content-type": "application/json",
-      ETag: etag,
-      "Cache-Control": "public, max-age=0, stale-while-revalidate=30",
+      "etag": etag,
       "x-l-version": String(v),
+      "cache-control": "no-store",
     }
   });
 }
@@ -120,17 +120,17 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   const nextV = curV + 1;
   await setV(env, id, nextV);
 
-  // indices: players + host
   const nextPlayers = new Set((body.players ?? []).map(p => p.id));
   for (const p of nextPlayers) if (!prevPlayers.has(p)) await addTo(env, LPLAYER(p), id);
   for (const p of prevPlayers) if (!nextPlayers.has(p)) await removeFrom(env, LPLAYER(p), id);
 
-  if (prev?.hostId && prev.hostId !== body.hostId) {
-    await removeFrom(env, LHOST(prev.hostId), id);
-  }
+  if (prev?.hostId && prev.hostId !== body.hostId) await removeFrom(env, LHOST(prev.hostId), id);
   if (body.hostId) await addTo(env, LHOST(body.hostId), id);
 
-  return new NextResponse(null, { status: 204, headers: { "x-l-version": String(nextV), ETag: `"l-${nextV}"` } });
+  return new NextResponse(null, {
+    status: 204,
+    headers: { "x-l-version": String(nextV), "etag": `W/"l-${id}-${nextV}"` }
+  });
 }
 
 /* ---------- DELETE ---------- */

@@ -17,7 +17,7 @@ import {
   Player,
   uid,
 } from '@/lib/storage';
-import { startSmartPollETag } from '@/lib/poll';
+import { startAdaptivePoll } from '@/lib/poll';
 
 function coerceList(x: any): ListGame | null {
   if (!x) return null;
