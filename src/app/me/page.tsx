@@ -15,7 +15,7 @@ type Tournament = {
   status: 'setup' | 'active' | 'completed';
 };
 
-function safeMe(): Player {
+function loadMe(): Player {
   try {
     const raw = localStorage.getItem('kava_me');
     if (raw) return JSON.parse(raw);
@@ -26,22 +26,41 @@ function safeMe(): Player {
 }
 
 export default function MyTournamentsPage() {
-  const me = useMemo(safeMe, []);
+  const me = useMemo(loadMe, []);
   const [all, setAll] = useState<Tournament[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [rawBody, setRawBody] = useState<string | null>(null);
 
   async function load() {
     setBusy(true);
     setErr(null);
+    setRawBody(null);
     try {
-      // Very defensive: tolerate any response shape
-      const res = await fetch('/api/tournaments', { cache: 'no-store' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      // Send a lightweight identity hint in case the API expects it
+      const res = await fetch('/api/tournaments', {
+        cache: 'no-store',
+        headers: { 'x-me': me.id },
+      });
+
+      // If not OK, read the body (text first, then fall back) and show it
+      if (!res.ok) {
+        let body = '';
+        try { body = await res.text(); } catch {}
+        setRawBody(body || '(no response body)');
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      // Parse defensively
+      let data: any = null;
+      try { data = await res.json(); } catch {
+        throw new Error('Response was not JSON');
+      }
+
       const arr = Array.isArray(data?.tournaments) ? data.tournaments
                : Array.isArray(data) ? data
                : [];
+
       const normalized: Tournament[] = arr.map((t: any) => ({
         id: String(t?.id ?? ''),
         name: String(t?.name ?? 'Untitled'),
@@ -52,6 +71,7 @@ export default function MyTournamentsPage() {
           ? t.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') }))
           : [],
       })).filter(t => t.id && t.hostId);
+
       setAll(normalized);
     } catch (e: any) {
       setErr(e?.message || 'Failed to load');
@@ -70,9 +90,7 @@ export default function MyTournamentsPage() {
     <main style={wrap}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
         <BackButton href="/" />
-        <div style={{ display:'flex', gap:8 }}>
-          <button onClick={load} style={btnGhost} disabled={busy}>{busy ? 'Refreshing…' : 'Refresh'}</button>
-        </div>
+        <button onClick={load} style={btnGhost} disabled={busy}>{busy ? 'Refreshing…' : 'Refresh'}</button>
       </div>
 
       <h1 style={{ margin:'6px 0 12px' }}>My tournaments</h1>
@@ -80,8 +98,14 @@ export default function MyTournamentsPage() {
       {err && (
         <div style={errorBox}>
           <div style={{ fontWeight:700, marginBottom:6 }}>Couldn’t load tournaments</div>
-          <div style={{ opacity:.85, fontSize:13, marginBottom:8 }}>{err}</div>
-          <div><button onClick={load} style={btn}>{busy ? 'Retrying…' : 'Try again'}</button></div>
+          <div style={{ opacity:.9, fontSize:13, marginBottom:6 }}>{err}</div>
+          {rawBody && (
+            <pre style={preBox}>{rawBody.slice(0, 4000)}</pre>
+          )}
+          <div style={{ display:'flex', gap:8 }}>
+            <button onClick={load} style={btn}>{busy ? 'Retrying…' : 'Try again'}</button>
+            <a href="/api/tournaments" style={btnGhost}>Open API</a>
+          </div>
         </div>
       )}
 
@@ -136,7 +160,7 @@ export default function MyTournamentsPage() {
   );
 }
 
-/* styles (matching your app look) */
+/* styles */
 const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui' };
 const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginBottom:14 };
 const list: React.CSSProperties = { listStyle:'none', padding:0, margin:0, display:'grid', gap:8 };
@@ -144,3 +168,4 @@ const row: React.CSSProperties = { display:'flex', justifyContent:'space-between
 const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, textDecoration:'none', cursor:'pointer' };
 const btnGhost: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', textDecoration:'none', cursor:'pointer' };
 const errorBox: React.CSSProperties = { background:'rgba(127,29,29,.25)', border:'1px solid rgba(248,113,113,.35)', borderRadius:12, padding:12, marginBottom:14 };
+const preBox: React.CSSProperties = { whiteSpace:'pre-wrap', wordBreak:'break-word', background:'#1a1a1a', border:'1px solid rgba(255,255,255,.12)', borderRadius:8, padding:10, maxHeight:260, overflow:'auto', margin:'8px 0' };
