@@ -1,5 +1,5 @@
 // src/lib/poll.ts
-// Tiny adaptive polling helper with ETag support.
+// Adaptive ETag-backed poller (client-safe) + backward-compatible shim.
 
 export type AdaptivePollResult<T> = {
   status: 200 | 304;
@@ -66,4 +66,15 @@ export function startAdaptivePoll<T>(opts: AdaptivePollOptions<T>): AdaptivePoll
       nextTimer = setTimeout(tick, 0);
     }
   };
+}
+
+/* ------------------------------------------------------------------
+   BACKWARD-COMPAT SHIM
+   Some old pages may call `startSmartPollETag(...)` (no import).
+   We expose a global shim and also export the name for any code that imports it.
+-------------------------------------------------------------------*/
+
+// Signature-compatible alias (we accept the same options object used above)
+export function startSmartPollETag<T>(opts: AdaptivePollOptions<T>): AdaptivePollHandle {
+  return startAdaptivePoll<T>(opts);
 }
