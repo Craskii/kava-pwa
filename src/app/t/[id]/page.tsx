@@ -74,6 +74,7 @@ export default function Lobby() {
   const r = useRouter();
   const [t, setT] = useState<Tournament | null>(null);
   const [busy, setBusy] = useState(false);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
   const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
 
   const me = useMemo(() => {
@@ -95,17 +96,51 @@ export default function Lobby() {
     },
   });
 
-  // ✅ Adaptive one-tab polling with If-None-Match ETag
+  /* ---------- initial fetch so we don't hang on Loading if API errors ---------- */
+  useEffect(() => {
+    let cancelled = false;
+    async function loadInitial() {
+      setErrMsg(null);
+      try {
+        const res = await fetch(`/api/tournament/${id}`, { cache: 'no-store' });
+        if (!res.ok) {
+          const text = await res.text().catch(()=>'');
+          if (!cancelled) setErrMsg(`HTTP ${res.status}${text ? ` • ${text}` : ''}`);
+          return;
+        }
+        const json = await res.json();
+        if (!cancelled) setT(json);
+      } catch (e:any) {
+        if (!cancelled) setErrMsg(e?.message || 'Network error');
+      }
+    }
+    if (id) loadInitial();
+    return () => { cancelled = true; };
+  }, [id]);
+
+  /* ---------- adaptive ETag polling (one tab) ---------- */
   useEffect(() => {
     if (!id) return;
     pollRef.current?.stop();
-    const poll = startSmartPollETag<Tournament>(`/api/tournament/${encodeURIComponent(id)}`, {
+    const poll = startAdaptivePoll<Tournament>({
       key: `t:${id}`,
-      versionHeader: 'x-t-version',
-      onUpdate: (payload) => {
-        if (!payload) return;
-        setT(payload);
+      minMs: 4000,
+      maxMs: 60000,
+      fetchOnce: async (etag) => {
+        const res = await fetch(`/api/tournament/${id}`, {
+          headers: etag ? { 'If-None-Match': etag } : undefined,
+          cache: 'no-store',
+        });
+        if (res.status === 304) return { status: 304, etag: etag ?? null };
+        if (!res.ok) {
+          console.warn('poll error', res.status);
+          return { status: 304, etag: etag ?? null };
+        }
+        const payload = await res.json();
+        const newTag = res.headers.get('etag') || res.headers.get('x-t-version') || null;
+        return { status: 200, etag: newTag, payload };
       },
+      onChange: (payload) => setT(payload),
     });
     pollRef.current = poll;
     return () => poll.stop();
@@ -116,7 +151,15 @@ export default function Lobby() {
       <main style={wrap}>
         <div style={container}>
           <BackButton href="/" />
-          <p>Loading…</p>
+          {errMsg ? (
+            <>
+              <h3>Couldn’t load tournament</h3>
+              <pre style={{ whiteSpace:'pre-wrap', opacity:.8 }}>{errMsg}</pre>
+              <button style={btnGhost} onClick={() => window.location.reload()}>Try again</button>
+            </>
+          ) : (
+            <p>Loading…</p>
+          )}
         </div>
       </main>
     );
