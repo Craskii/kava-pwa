@@ -1,132 +1,101 @@
 // src/app/me/page.tsx
 'use client';
+export const runtime = 'edge';
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import BackButton from '@/components/BackButton';
+import { getOrCreateMe } from '@/lib/me';
 
-type Player = { id: string; name: string };
-type Tournament = {
+type TItem = {
   id: string;
   name: string;
   code?: string;
+  createdAt?: number;
   hostId: string;
-  players: Player[];
-  status: 'setup' | 'active' | 'completed';
 };
 
-function loadMe(): Player {
-  try {
-    const raw = localStorage.getItem('kava_me');
-    if (raw) return JSON.parse(raw);
-  } catch {}
-  const me = { id: crypto.randomUUID(), name: 'Player' };
-  try { localStorage.setItem('kava_me', JSON.stringify(me)); } catch {}
-  return me;
-}
+type ApiResp = { hosting: TItem[]; playing: TItem[] };
 
 export default function MyTournamentsPage() {
-  const me = useMemo(loadMe, []);
-  const [all, setAll] = useState<Tournament[] | null>(null);
+  const me = useMemo(() => getOrCreateMe('Player'), []);
+  const [data, setData] = useState<ApiResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [rawBody, setRawBody] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   async function load() {
-    setBusy(true);
-    setErr(null);
-    setRawBody(null);
+    setLoading(true); setErr(null);
     try {
-      // Send a lightweight identity hint in case the API expects it
-      const res = await fetch('/api/tournaments', {
+      const res = await fetch(`/api/tournaments?userId=${encodeURIComponent(me.id)}`, {
         cache: 'no-store',
-        headers: { 'x-me': me.id },
+        headers: { 'x-user-id': me.id }, // header fallback too
       });
-
-      // If not OK, read the body (text first, then fall back) and show it
       if (!res.ok) {
-        let body = '';
-        try { body = await res.text(); } catch {}
-        setRawBody(body || '(no response body)');
-        throw new Error(`HTTP ${res.status}`);
+        const txt = await res.text().catch(() => '');
+        throw new Error(`HTTP ${res.status}\n${txt || 'Failed to load'}`);
       }
-
-      // Parse defensively
-      let data: any = null;
-      try { data = await res.json(); } catch {
-        throw new Error('Response was not JSON');
-      }
-
-      const arr = Array.isArray(data?.tournaments) ? data.tournaments
-               : Array.isArray(data) ? data
-               : [];
-
-      const normalized: Tournament[] = arr.map((t: any) => ({
-        id: String(t?.id ?? ''),
-        name: String(t?.name ?? 'Untitled'),
-        code: t?.code ? String(t.code) : undefined,
-        hostId: String(t?.hostId ?? ''),
-        status: (t?.status === 'active' || t?.status === 'completed') ? t.status : 'setup',
-        players: Array.isArray(t?.players)
-          ? t.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') }))
-          : [],
-      })).filter(t => t.id && t.hostId);
-
-      setAll(normalized);
+      const json = (await res.json()) as ApiResp;
+      setData(json);
     } catch (e: any) {
-      setErr(e?.message || 'Failed to load');
-      setAll([]);
+      setErr(e?.message || 'Failed to load tournaments');
     } finally {
-      setBusy(false);
+      setLoading(false);
     }
   }
 
   useEffect(() => { load(); }, []);
 
-  const hosting = (all || []).filter(t => t.hostId === me.id);
-  const playing = (all || []).filter(t => t.hostId !== me.id && t.players.some(p => p.id === me.id));
+  if (loading) {
+    return (
+      <main style={wrap}>
+        <div style={head}>
+          <BackButton href="/" />
+          <h1 style={{ margin: 0 }}>My tournaments</h1>
+        </div>
+        <p style={{ opacity: .7 }}>Loading…</p>
+      </main>
+    );
+  }
+
+  if (err) {
+    return (
+      <main style={wrap}>
+        <div style={head}>
+          <BackButton href="/" />
+          <h1 style={{ margin: 0 }}>My tournaments</h1>
+        </div>
+        <div style={errorBox}>
+          <b>Couldn’t load tournaments</b>
+          <pre style={pre}>{err}</pre>
+          <div style={{ marginTop: 8 }}>
+            <button style={btn} onClick={load}>Try again</button>
+            <a href="/api/tournaments" style={{ marginLeft: 12, color: '#9CDCFE' }}>Open API</a>
+          </div>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main style={wrap}>
-      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+      <div style={head}>
         <BackButton href="/" />
-        <button onClick={load} style={btnGhost} disabled={busy}>{busy ? 'Refreshing…' : 'Refresh'}</button>
+        <h1 style={{ margin: 0 }}>My tournaments</h1>
       </div>
 
-      <h1 style={{ margin:'6px 0 12px' }}>My tournaments</h1>
-
-      {err && (
-        <div style={errorBox}>
-          <div style={{ fontWeight:700, marginBottom:6 }}>Couldn’t load tournaments</div>
-          <div style={{ opacity:.9, fontSize:13, marginBottom:6 }}>{err}</div>
-          {rawBody && (
-            <pre style={preBox}>{rawBody.slice(0, 4000)}</pre>
-          )}
-          <div style={{ display:'flex', gap:8 }}>
-            <button onClick={load} style={btn}>{busy ? 'Retrying…' : 'Try again'}</button>
-            <a href="/api/tournaments" style={btnGhost}>Open API</a>
-          </div>
-        </div>
-      )}
-
       <section style={card}>
-        <h3 style={{ marginTop:0 }}>Hosting</h3>
-        {hosting.length === 0 ? (
-          <div style={{ opacity:.7 }}>You’re not hosting any tournaments yet.</div>
+        <h3 style={{ marginTop: 0 }}>Hosting ({data?.hosting.length || 0})</h3>
+        {(data?.hosting.length || 0) === 0 ? (
+          <div style={{ opacity: .7 }}>You aren’t hosting any tournaments yet.</div>
         ) : (
           <ul style={list}>
-            {hosting.map(t => (
+            {data!.hosting.map(t => (
               <li key={t.id} style={row}>
                 <div>
-                  <div style={{ fontWeight:700 }}>{t.name}</div>
-                  <div style={{ opacity:.7, fontSize:13 }}>
-                    {t.code ? <>Code: <b>{t.code}</b> • </> : null}
-                    {t.players.length} {t.players.length === 1 ? 'player' : 'players'}
-                  </div>
+                  <div style={{ fontWeight: 700 }}>{t.name}</div>
+                  {t.code && <div style={{ opacity: .7, fontSize: 12 }}>Code: {t.code}</div>}
                 </div>
-                <div style={{ display:'flex', gap:8 }}>
-                  <Link href={`/t/${encodeURIComponent(t.id)}`} style={btn}>Open</Link>
-                </div>
+                <Link href={`/t/${t.id}`} style={linkBtn}>Open</Link>
               </li>
             ))}
           </ul>
@@ -134,23 +103,18 @@ export default function MyTournamentsPage() {
       </section>
 
       <section style={card}>
-        <h3 style={{ marginTop:0 }}>Playing</h3>
-        {playing.length === 0 ? (
-          <div style={{ opacity:.7 }}>You’re not in any tournaments yet.</div>
+        <h3 style={{ marginTop: 0 }}>Playing ({data?.playing.length || 0})</h3>
+        {(data?.playing.length || 0) === 0 ? (
+          <div style={{ opacity: .7 }}>You aren’t in any tournaments yet.</div>
         ) : (
           <ul style={list}>
-            {playing.map(t => (
+            {data!.playing.map(t => (
               <li key={t.id} style={row}>
                 <div>
-                  <div style={{ fontWeight:700 }}>{t.name}</div>
-                  <div style={{ opacity:.7, fontSize:13 }}>
-                    {t.code ? <>Code: <b>{t.code}</b> • </> : null}
-                    {t.players.length} {t.players.length === 1 ? 'player' : 'players'}
-                  </div>
+                  <div style={{ fontWeight: 700 }}>{t.name}</div>
+                  {t.code && <div style={{ opacity: .7, fontSize: 12 }}>Code: {t.code}</div>}
                 </div>
-                <div style={{ display:'flex', gap:8 }}>
-                  <Link href={`/t/${encodeURIComponent(t.id)}`} style={btnGhost}>Open</Link>
-                </div>
+                <Link href={`/t/${t.id}`} style={linkBtn}>Open</Link>
               </li>
             ))}
           </ul>
@@ -161,11 +125,12 @@ export default function MyTournamentsPage() {
 }
 
 /* styles */
-const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui' };
-const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginBottom:14 };
-const list: React.CSSProperties = { listStyle:'none', padding:0, margin:0, display:'grid', gap:8 };
-const row: React.CSSProperties = { display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 };
-const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, textDecoration:'none', cursor:'pointer' };
-const btnGhost: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', textDecoration:'none', cursor:'pointer' };
-const errorBox: React.CSSProperties = { background:'rgba(127,29,29,.25)', border:'1px solid rgba(248,113,113,.35)', borderRadius:12, padding:12, marginBottom:14 };
-const preBox: React.CSSProperties = { whiteSpace:'pre-wrap', wordBreak:'break-word', background:'#1a1a1a', border:'1px solid rgba(255,255,255,.12)', borderRadius:8, padding:10, maxHeight:260, overflow:'auto', margin:'8px 0' };
+const wrap: React.CSSProperties = { minHeight: '100vh', background: '#0b0b0b', color: '#fff', padding: 24, fontFamily: 'system-ui' };
+const head: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 };
+const card: React.CSSProperties = { background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 14, padding: 14, marginBottom: 14 };
+const list: React.CSSProperties = { listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 8 };
+const row: React.CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: '#111', borderRadius: 10, padding: '10px 12px' };
+const linkBtn: React.CSSProperties = { padding: '8px 12px', borderRadius: 8, background: '#0ea5e9', color: '#fff', textDecoration: 'none', fontWeight: 700 };
+const btn: React.CSSProperties = { padding: '10px 14px', borderRadius: 10, border: 'none', background: '#0ea5e9', color: '#fff', fontWeight: 700, cursor: 'pointer' };
+const errorBox: React.CSSProperties = { background: 'rgba(127,29,29,.2)', border: '1px solid rgba(127,29,29,.5)', padding: 12, borderRadius: 12 };
+const pre: React.CSSProperties = { whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 6 };

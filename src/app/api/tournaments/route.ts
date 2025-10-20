@@ -13,8 +13,13 @@ const TKEY = (id: string) => `t:${id}`;
 const TVER = (id: string) => `tv:${id}`;
 
 type Tournament = {
-  id: string; hostId: string; players: { id: string; name: string }[];
-  createdAt: number; updatedAt?: number; name: string; code?: string;
+  id: string;
+  hostId: string;
+  players: { id: string; name: string }[];
+  createdAt: number;
+  updatedAt?: number;
+  name: string;
+  code?: string;
 };
 
 async function readIds(env: Env, key: string): Promise<string[]> {
@@ -23,10 +28,20 @@ async function readIds(env: Env, key: string): Promise<string[]> {
 }
 
 export async function GET(req: Request) {
-  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
-  const u = new URL(req.url);
-  const userId = u.searchParams.get("userId");
-  if (!userId) return NextResponse.json({ error: "Missing userId" }, { status: 400 });
+  const { env: rawEnv } = getRequestContext();
+  const env = rawEnv as unknown as Env;
+
+  const url = new URL(req.url);
+  const qsUser = url.searchParams.get("userId");
+  const hdrUser = req.headers.get("x-user-id");
+  const userId = (qsUser || hdrUser || "").trim();
+
+  if (!userId) {
+    return NextResponse.json(
+      { error: "Missing userId. Pass ?userId=... or header x-user-id." },
+      { status: 400 }
+    );
+  }
 
   const [hostIds, playIds] = await Promise.all([
     readIds(env, THOST(userId)),
@@ -37,7 +52,8 @@ export async function GET(req: Request) {
     const out: Tournament[] = [];
     for (const id of ids) {
       const raw = await env.KAVA_TOURNAMENTS.get(TKEY(id));
-      if (raw) out.push(JSON.parse(raw));
+      if (!raw) continue;
+      try { out.push(JSON.parse(raw) as Tournament); } catch {}
     }
     return out;
   };
@@ -49,20 +65,21 @@ export async function GET(req: Request) {
 
   // combined version = max of versions so the page can smart-poll
   let maxV = 0;
-  for (const id of [...new Set([...hostIds, ...playIds])]) {
+  const uniq = [...new Set([...hostIds, ...playIds])];
+  for (const id of uniq) {
     const vRaw = await env.KAVA_TOURNAMENTS.get(TVER(id));
     const v = vRaw ? Number(vRaw) : 0;
     if (Number.isFinite(v)) maxV = Math.max(maxV, v);
   }
 
-  hosting.sort((a,b)=> (b.createdAt||0) - (a.createdAt||0));
-  playing.sort((a,b)=> (b.createdAt||0) - (a.createdAt||0));
+  hosting.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  playing.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 
   return new NextResponse(JSON.stringify({ hosting, playing }), {
     headers: {
       "content-type": "application/json",
       "x-t-version": String(maxV),
-      "cache-control": "no-store"
-    }
+      "cache-control": "no-store",
+    },
   });
 }
