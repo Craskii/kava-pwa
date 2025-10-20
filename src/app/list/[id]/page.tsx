@@ -5,7 +5,8 @@ export const runtime = 'edge';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
-import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
+// ✅ make sure this import path matches your project (most repos keep it in lib)
+import { useQueueAlerts, bumpAlerts } from '@/lib/alerts';
 import {
   getListRemote,
   listJoin,
@@ -16,7 +17,6 @@ import {
   Player,
   uid,
 } from '@/lib/storage';
-// ✅ use the adaptive poller with ETag/304
 import { startSmartPollETag } from '@/lib/poll';
 
 function coerceList(x: any): ListGame | null {
@@ -46,7 +46,6 @@ export default function ListLobby() {
   const [busy, setBusy] = useState(false);
   const [nameField, setNameField] = useState('');
 
-  // derive list id from URL (client only)
   const id =
     typeof window !== 'undefined'
       ? decodeURIComponent(window.location.pathname.split('/').pop() || '')
@@ -63,7 +62,6 @@ export default function ListLobby() {
     localStorage.setItem('kava_me', JSON.stringify(me));
   }, [me]);
 
-  // Alerts/banners
   useQueueAlerts({
     listId: id,
     upNextMessage: 'your up next get ready!!',
@@ -75,7 +73,7 @@ export default function ListLobby() {
     },
   });
 
-  // 🔔 bump when my seating changes
+  // banner bumps when seating changes
   const lastSeating = useRef<string>('');
   function detectMySeatingChanged(next: ListGame | null) {
     if (!next) return false;
@@ -98,25 +96,22 @@ export default function ListLobby() {
     return false;
   }
 
-  // 🔁 adaptive, one-tab polling with ETag/304 (replaces SSE)
+  // ✅ adaptive ETag polling (guard if id missing)
   useEffect(() => {
     if (!id) return;
-    const poll = startSmartPollETag<ListGame>(`/api/list/${id}`, {
+    const poll = startSmartPollETag<ListGame>(`/api/list/${encodeURIComponent(id)}`, {
       key: `l:${id}`,
-      versionHeader: 'x-l-version', // server should also set ETag to same value
+      versionHeader: 'x-l-version',
       onUpdate: (payload) => {
         const doc = coerceList(payload);
         if (!doc || !doc.id || !doc.hostId) return;
         setG(doc);
         if (detectMySeatingChanged(doc)) bumpAlerts();
       },
-      // optional cadence overrides (defaults are fine):
-      // minMs: 1500, maxMs: 60000,
     });
     return () => poll.stop();
   }, [id]);
 
-  // Manual one-shot load (used for "Refresh" + initial fallback)
   async function loadOnce() {
     if (!id) return;
     const next = await getListRemote(id);
@@ -289,27 +284,14 @@ export default function ListLobby() {
         </div>
 
         <div style={{ display: 'flex', gap: 8 }}>
-          {!seated && !queued && (
-            <button style={btn} onClick={onJoinQueue} disabled={busy}>
-              Join queue
-            </button>
-          )}
-          {queued && (
-            <button style={btnGhost} onClick={onLeaveQueue} disabled={busy}>
-              Leave queue
-            </button>
-          )}
-          {seated && (
-            <button style={btnGhost} onClick={onILost} disabled={busy}>
-              I lost
-            </button>
-          )}
+          {!seated && !queued && <button style={btn} onClick={onJoinQueue} disabled={busy}>Join queue</button>}
+          {queued && <button style={btnGhost} onClick={onLeaveQueue} disabled={busy}>Leave queue</button>}
+          {seated && <button style={btnGhost} onClick={onILost} disabled={busy}>I lost</button>}
         </div>
       </header>
 
       <section style={notice}>
-        <b>How it works:</b> One shared queue feeds both tables. When someone taps <i>“I lost”</i>,
-        the next person in the queue sits at whichever table frees up first.
+        <b>How it works:</b> One shared queue feeds both tables. When someone taps <i>“I lost”</i>, the next person in the queue sits at whichever table frees up first.
       </section>
 
       {g.hostId === me.id && (
@@ -317,36 +299,14 @@ export default function ListLobby() {
           <h3 style={{ marginTop: 0 }}>Host controls</h3>
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-            <button
-              style={safeTables.length === 1 ? btnActive : btn}
-              onClick={() => onTables(1)}
-              disabled={busy}
-            >
-              1 Table
-            </button>
-            <button
-              style={safeTables.length >= 2 ? btnActive : btnGhost}
-              onClick={() => onTables(2)}
-              disabled={busy}
-            >
-              2 Tables
-            </button>
+            <button style={safeTables.length === 1 ? btnActive : btn} onClick={() => onTables(1)} disabled={busy}>1 Table</button>
+            <button style={safeTables.length >= 2 ? btnActive : btnGhost} onClick={() => onTables(2)} disabled={busy}>2 Tables</button>
           </div>
 
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
-            <input
-              placeholder="Add player name..."
-              value={nameField}
-              onChange={(e) => setNameField(e.target.value)}
-              style={input}
-              disabled={busy}
-            />
-            <button style={btn} onClick={onAddPlayerManual} disabled={busy || !nameField.trim()}>
-              Add player
-            </button>
-            <button style={btnGhost} onClick={onAddMe} disabled={busy}>
-              Add me
-            </button>
+            <input placeholder="Add player name..." value={nameField} onChange={(e) => setNameField(e.target.value)} style={input} disabled={busy} />
+            <button style={btn} onClick={onAddPlayerManual} disabled={busy || !nameField.trim()}>Add player</button>
+            <button style={btnGhost} onClick={onAddMe} disabled={busy}>Add me</button>
           </div>
 
           <div>
@@ -356,21 +316,9 @@ export default function ListLobby() {
             ) : (
               <ul style={{ listStyle: 'none', padding: 0, margin: 0, display: 'grid', gap: 8 }}>
                 {safePlayers.map((p) => (
-                  <li
-                    key={p.id}
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      background: '#111',
-                      padding: '10px 12px',
-                      borderRadius: 10,
-                    }}
-                  >
+                  <li key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#111', padding: '10px 12px', borderRadius: 10 }}>
                     <span>{p.name}</span>
-                    <button style={btnGhost} onClick={() => onRemovePlayer(p.id)} disabled={busy}>
-                      Remove
-                    </button>
+                    <button style={btnGhost} onClick={() => onRemovePlayer(p.id)} disabled={busy}>Remove</button>
                   </li>
                 ))}
               </ul>
@@ -387,11 +335,7 @@ export default function ListLobby() {
           <ol style={{ margin: 0, paddingLeft: 18 }}>
             {safeQueue.map((qid) => {
               const name = safePlayers.find((p) => p.id === qid)?.name || '??';
-              return (
-                <li key={qid} style={{ margin: '6px 0' }}>
-                  {name}
-                </li>
-              );
+              return <li key={qid} style={{ margin: '6px 0' }}>{name}</li>;
             })}
           </ol>
         )}
@@ -405,24 +349,12 @@ export default function ListLobby() {
             const b = safePlayers.find((p) => p.id === t.b)?.name || (t.b ? '??' : '—');
             const meHere = t.a === me.id || t.b === me.id;
             return (
-              <div
-                key={i}
-                style={{
-                  background: '#111',
-                  borderRadius: 12,
-                  padding: '10px 12px',
-                  border: '1px solid rgba(255,255,255,.12)',
-                }}
-              >
+              <div key={i} style={{ background: '#111', borderRadius: 12, padding: '10px 12px', border: '1px solid rgba(255,255,255,.12)' }}>
                 <div style={{ opacity: 0.8, fontSize: 12, marginBottom: 6 }}>Table {i + 1}</div>
-                <div style={{ minHeight: 22 }}>
-                  {a} vs {b}
-                </div>
+                <div style={{ minHeight: 22 }}>{a} vs {b}</div>
                 {meHere && (
                   <div style={{ marginTop: 8 }}>
-                    <button style={btnMini} onClick={onILost} disabled={busy}>
-                      I lost
-                    </button>
+                    <button style={btnMini} onClick={onILost} disabled={busy}>I lost</button>
                   </div>
                 )}
               </div>
@@ -435,101 +367,15 @@ export default function ListLobby() {
 }
 
 /* styles */
-const wrap: React.CSSProperties = {
-  minHeight: '100vh',
-  background: '#0b0b0b',
-  color: '#fff',
-  padding: 24,
-  fontFamily: 'system-ui',
-};
-const notice: React.CSSProperties = {
-  background: 'rgba(14,165,233,.12)',
-  border: '1px solid rgba(14,165,233,.25)',
-  borderRadius: 12,
-  padding: '10px 12px',
-  margin: '8px 0 14px',
-};
-const card: React.CSSProperties = {
-  background: 'rgba(255,255,255,0.06)',
-  border: '1px solid rgba(255,255,255,0.12)',
-  borderRadius: 14,
-  padding: 14,
-  marginBottom: 14,
-};
-const pill: React.CSSProperties = {
-  padding: '6px 10px',
-  borderRadius: 999,
-  background: 'rgba(16,185,129,.2)',
-  border: '1px solid rgba(16,185,129,.35)',
-  fontSize: 12,
-};
-const btn: React.CSSProperties = {
-  padding: '10px 14px',
-  borderRadius: 10,
-  border: 'none',
-  background: '#0ea5e9',
-  color: '#fff',
-  fontWeight: 700,
-  cursor: 'pointer',
-};
-const btnGhost: React.CSSProperties = {
-  padding: '10px 14px',
-  borderRadius: 10,
-  border: '1px solid rgba(255,255,255,0.25)',
-  background: 'transparent',
-  color: '#fff',
-  cursor: 'pointer',
-};
-const btnActive: React.CSSProperties = {
-  padding: '10px 14px',
-  borderRadius: 10,
-  border: 'none',
-  background: '#0ea5e9',
-  color: '#fff',
-  fontWeight: 700,
-  cursor: 'pointer',
-};
-const btnGhostSm: React.CSSProperties = {
-  padding: '6px 10px',
-  borderRadius: 10,
-  border: '1px solid rgba(255,255,255,0.25)',
-  background: 'transparent',
-  color: '#fff',
-  cursor: 'pointer',
-  fontWeight: 600,
-};
-const btnMini: React.CSSProperties = {
-  padding: '6px 10px',
-  borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.25)',
-  background: 'transparent',
-  color: '#fff',
-  cursor: 'pointer',
-  fontSize: 12,
-};
-const chipBtn: React.CSSProperties = {
-  padding: '4px 8px',
-  borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.25)',
-  background: 'transparent',
-  color: '#fff',
-  cursor: 'pointer',
-  fontSize: 12,
-};
-const input: React.CSSProperties = {
-  width: 260,
-  maxWidth: '90vw',
-  padding: '10px 12px',
-  borderRadius: 10,
-  border: '1px solid #333',
-  background: '#111',
-  color: '#fff',
-};
-const nameInput: React.CSSProperties = {
-  background: '#111',
-  border: '1px solid #333',
-  color: '#fff',
-  borderRadius: 10,
-  padding: '8px 10px',
-  width: 'min(420px, 80vw)',
-};
+const wrap: React.CSSProperties = { minHeight: '100vh', background: '#0b0b0b', color: '#fff', padding: 24, fontFamily: 'system-ui' };
+const notice: React.CSSProperties = { background: 'rgba(14,165,233,.12)', border: '1px solid rgba(14,165,233,.25)', borderRadius: 12, padding: '10px 12px', margin: '8px 0 14px' };
+const card: React.CSSProperties = { background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 14, padding: 14, marginBottom: 14 };
+const pill: React.CSSProperties = { padding: '6px 10px', borderRadius: 999, background: 'rgba(16,185,129,.2)', border: '1px solid rgba(16,185,129,.35)', fontSize: 12 };
+const btn: React.CSSProperties = { padding: '10px 14px', borderRadius: 10, border: 'none', background: '#0ea5e9', color: '#fff', fontWeight: 700, cursor: 'pointer' };
+const btnGhost: React.CSSProperties = { padding: '10px 14px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.25)', background: 'transparent', color: '#fff', cursor: 'pointer' };
+const btnActive: React.CSSProperties = { padding: '10px 14px', borderRadius: 10, border: 'none', background: '#0ea5e9', color: '#fff', fontWeight: 700, cursor: 'pointer' };
+const btnGhostSm: React.CSSProperties = { padding: '6px 10px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.25)', background: 'transparent', color: '#fff', cursor: 'pointer', fontWeight: 600 };
+const btnMini: React.CSSProperties = { padding: '6px 10px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.25)', background: 'transparent', color: '#fff', cursor: 'pointer', fontSize: 12 };
+const chipBtn: React.CSSProperties = { padding: '4px 8px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.25)', background: 'transparent', color: '#fff', cursor: 'pointer', fontSize: 12 };
+const input: React.CSSProperties = { width: 260, maxWidth: '90vw', padding: '10px 12px', borderRadius: 10, border: '1px solid #333', background: '#111', color: '#fff' };
+const nameInput: React.CSSProperties = { background: '#111', border: '1px solid #333', color: '#fff', borderRadius: 10, padding: '8px 10px', width: 'min(420px, 80vw)' };

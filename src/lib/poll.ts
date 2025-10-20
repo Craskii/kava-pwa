@@ -1,122 +1,103 @@
 // src/lib/poll.ts
-type LeaderMsg<T = any> = { etag: string | null; payload?: T };
+// Adaptive, one-tab polling with ETag/304 + focus/visibility + backoff.
 
-type StartOpts<T> = {
-  key: string; // unique per resource, e.g. "t:<id>" or "l:<id>"
-  minMs?: number; // initial interval (default 4000)
-  maxMs?: number; // max interval (default 60000)
-  backoff?: number; // multiply when unchanged (default 1.7)
-  boostMs?: number; // after change, stay fast briefly (default 3000)
-  fetchOnce: (etag: string | null) => Promise<{ status: 200 | 304; etag: string | null; payload?: T }>;
-  onChange: (payload: T, etag: string | null) => void;
+type PollOptions<TPayload> = {
+  key: string;                   // stable key per resource (used for leader election)
+  minMs?: number;                // fastest interval
+  maxMs?: number;                // slowest interval
+  versionHeader?: string;        // eg: 'x-l-version'
+  onUpdate: (payload: TPayload) => void;
 };
 
-export function startAdaptivePoll<T>(opts: StartOpts<T>) {
-  const key = opts.key;
-  const minMs = opts.minMs ?? 4000;
-  const maxMs = opts.maxMs ?? 60000;
-  const backoff = opts.backoff ?? 1.7;
-  const boostMs = opts.boostMs ?? 3000;
+function leaderKey(key: string) {
+  return `poll-leader:${key}`;
+}
 
-  let timer: any = null;
-  let delay = minMs;
+function isLeader(key: string) {
+  const now = Date.now();
+  const cur = Number(localStorage.getItem(leaderKey(key)) || 0);
+  if (now > cur) {
+    // become leader for 5s
+    localStorage.setItem(leaderKey(key), String(now + 5000));
+    return true;
+  }
+  return false;
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+export function startSmartPollETag<TPayload = any>(
+  endpoint: string,
+  opts: PollOptions<TPayload>
+) {
+  const minMs = Math.max(800, opts.minMs ?? 1500);
+  const maxMs = Math.max(minMs, opts.maxMs ?? 60000);
+  let stopFlag = false;
+  let curDelay = minMs;
   let etag: string | null = null;
-  let stopped = false;
 
-  // one-tab leader election for this resource
-  const HEART = `${key}:heart`;
-  const DATA = `${key}:data`;
-  let amLeader = false;
-  let heartTimer: any = null;
-
-  function electLeader() {
-    const mine = `${Date.now()}-${Math.random()}`;
-    localStorage.setItem(HEART, mine);
-    setTimeout(() => {
-      amLeader = localStorage.getItem(HEART) === mine;
-      if (amLeader) startLeader();
-      else startFollower();
-    }, 150);
-  }
-
-  function startLeader() {
-    heartTimer = setInterval(() => localStorage.setItem(HEART, `${Date.now()}-${Math.random()}`), 2000);
-    schedule(10);
-  }
-  function stopLeader() {
-    clearInterval(heartTimer);
-    heartTimer = null;
-  }
-  function startFollower() {
-    window.addEventListener('storage', onStorage);
-  }
-
-  function onStorage(ev: StorageEvent) {
-    if (ev.key === DATA && ev.newValue) {
-      try {
-        const msg: LeaderMsg = JSON.parse(ev.newValue);
-        if (msg.etag && msg.etag !== etag && msg.payload) {
-          etag = msg.etag;
-          // @ts-ignore
-          opts.onChange(msg.payload, msg.etag);
-        }
-      } catch {}
-    }
-  }
-
-  function schedule(ms: number) {
-    clearTimeout(timer);
-    timer = setTimeout(tick, ms);
+  // bump: used by pages when they perform a write, to fetch soon
+  async function bump() {
+    curDelay = minMs;
   }
 
   async function tick() {
-    if (stopped) return;
+    while (!stopFlag) {
+      // run only if this tab is leader & page visible
+      if (document.visibilityState === 'visible' && isLeader(opts.key)) {
+        try {
+          const res = await fetch(endpoint, {
+            cache: 'no-store',
+            headers: etag ? { 'If-None-Match': etag } : undefined,
+          });
 
-    // Pause/polite
-    if (document.hidden || !navigator.onLine) { schedule(2000); return; }
+          if (res.status === 200) {
+            const nextTag =
+              res.headers.get('etag') ||
+              (opts.versionHeader ? res.headers.get(opts.versionHeader) : null);
 
-    try {
-      const r = await opts.fetchOnce(etag);
-      if (r.status === 200 && r.payload) {
-        etag = r.etag || null;
-        opts.onChange(r.payload, etag);
-        // broadcast latest to followers
-        try { localStorage.setItem(DATA, JSON.stringify({ etag, payload: r.payload } as LeaderMsg)); } catch {}
-        delay = Math.max(minMs, boostMs);
+            const payload = (await res.json()) as TPayload;
+
+            if (nextTag && nextTag !== etag) {
+              etag = nextTag;
+            }
+            opts.onUpdate(payload);
+            // fast again after change
+            curDelay = minMs;
+          } else if (res.status === 304) {
+            // no change -> back off
+            curDelay = Math.min(curDelay * 1.5, maxMs);
+          } else {
+            // server hiccup -> back off more
+            curDelay = Math.min(curDelay * 2, maxMs);
+          }
+        } catch {
+          // network error: exponential backoff
+          curDelay = Math.min(curDelay * 2, maxMs);
+        }
       } else {
-        delay = Math.min(maxMs, Math.floor(delay * backoff));
+        // not leader or hidden -> back off to save CPU
+        curDelay = Math.min(curDelay * 2, maxMs);
       }
-    } catch {
-      delay = Math.min(maxMs, Math.floor(Math.max(minMs, delay * 1.5)));
+      await sleep(curDelay);
     }
-    schedule(delay);
   }
 
-  function onFocusLike() {
-    amLeader = false;
-    window.removeEventListener('storage', onStorage);
-    stopLeader();
-    electLeader();
-    delay = minMs;
-    schedule(50);
-  }
+  // reset delay on focus/visibility change
+  const onVis = () => (curDelay = minMs);
+  window.addEventListener('focus', onVis);
+  document.addEventListener('visibilitychange', onVis);
 
-  window.addEventListener('focus', onFocusLike);
-  document.addEventListener('visibilitychange', onFocusLike);
-  window.addEventListener('online', onFocusLike);
-
-  electLeader();
+  tick();
 
   return {
     stop() {
-      stopped = true;
-      clearTimeout(timer);
-      window.removeEventListener('focus', onFocusLike);
-      document.removeEventListener('visibilitychange', onFocusLike);
-      window.removeEventListener('online', onFocusLike);
-      window.removeEventListener('storage', onStorage);
-      stopLeader();
+      stopFlag = true;
+      window.removeEventListener('focus', onVis);
+      document.removeEventListener('visibilitychange', onVis);
     },
-    bump() { delay = minMs; schedule(50); }
+    bump,
   };
 }
