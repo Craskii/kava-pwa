@@ -1,65 +1,116 @@
+// src/app/create/page.tsx
 'use client';
 export const runtime = 'edge';
 
-import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import BackButton from '@/components/BackButton';
-import { uid } from '@/lib/storage';
+import { useMemo, useState } from 'react';
 
-export default function CreatePage() {
-  const router = useRouter();
-  const [name, setName] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function uid() {
+  return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 6);
+}
 
-  const me = useMemo(() => {
+type Me = { id: string; name: string };
+
+export default function CreateGamePage() {
+  const r = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const me = useMemo<Me>(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem('kava_me') || 'null');
-      if (saved?.id) return saved;
+      const existing = JSON.parse(localStorage.getItem('kava_me') || 'null');
+      if (existing?.id) return existing;
     } catch {}
-    const fresh = { id: uid(), name: 'Host' };
+    const fresh = { id: uid(), name: 'Player' };
     localStorage.setItem('kava_me', JSON.stringify(fresh));
     return fresh;
   }, []);
 
-  async function handleCreate(type: 'list' | 'tournament') {
-    if (!name.trim()) { alert('Please enter a name.'); return; }
-    setLoading(true); setError(null);
+  async function create(type: 'tournament' | 'list') {
+    if (busy) return;
+    setBusy(true);
+    setErr(null);
     try {
-      localStorage.setItem('kava_me', JSON.stringify(me));
       const res = await fetch('/api/create', {
         method: 'POST',
-        headers: { 'content-type':'application/json' },
-        body: JSON.stringify({ name, type, hostId: me.id }),
+        headers: {
+          'content-type': 'application/json',
+          'x-me': me.id, // <— ensure API gets a hostId
+        },
+        body: JSON.stringify({ type }),
       });
-      if (!res.ok) throw new Error(await res.text());
-      const game = await res.json(); // { id, code, hostId, type }
-      localStorage.setItem('kava_lastGame', JSON.stringify(game));
-      router.push(game.type === 'list' ? `/list/${game.id}` : `/t/${game.id}`);
-    } catch (e:any) {
-      setError(e?.message || 'Failed to create game.');
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setErr(j?.error || `HTTP ${res.status}`);
+        setBusy(false);
+        return;
+      }
+      const data = await res.json();
+      const href: string = data?.href || (type === 'tournament' ? `/t/${data?.id}` : `/list/${data?.id}`);
+      r.push(href);
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to create');
     } finally {
-      setLoading(false);
+      setBusy(false);
     }
   }
 
   return (
-    <main style={{ minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui' }}>
-      <BackButton href="/" />
-      <h1 style={{ marginBottom: 10 }}>Create Game</h1>
-      <input
-        placeholder="Game name..."
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        style={{ width:'100%', maxWidth:400, padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff', fontSize:16, fontWeight:500, marginBottom:12 }}
-        disabled={loading}
-      />
-      {error && <div style={{ background:'#3b0d0d', border:'1px solid #7f1d1d', borderRadius:12, padding:12, marginTop:10 }}><b>Error:</b> {error}</div>}
-      <div style={{ display:'flex', gap:12, marginTop:16 }}>
-        <button style={{ padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' }} onClick={() => handleCreate('list')} disabled={loading}>Create List</button>
-        <button style={{ padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', fontWeight:700, cursor:'pointer' }} onClick={() => handleCreate('tournament')} disabled={loading}>Create Tournament</button>
+    <main style={wrap}>
+      <h1 style={{ margin: '8px 0 16px' }}>Create game</h1>
+
+      {err && (
+        <div style={errorBox}>
+          <b>Couldn’t create</b>
+          <div style={{ marginTop: 6, fontSize: 13, opacity: 0.9 }}>{String(err)}</div>
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gap: 10, maxWidth: 420 }}>
+        <button style={btn} disabled={busy} onClick={() => create('tournament')}>
+          {busy ? 'Creating…' : 'Create a tournament'}
+        </button>
+        <button style={btnGhost} disabled={busy} onClick={() => create('list')}>
+          {busy ? 'Creating…' : 'Create a list'}
+        </button>
       </div>
-      <p style={{ opacity:.6, marginTop:16 }}>me.id: {me.id}</p>
     </main>
   );
 }
+
+const wrap: React.CSSProperties = {
+  minHeight: '100vh',
+  background: '#0b0b0b',
+  color: '#fff',
+  padding: 24,
+  fontFamily: 'system-ui',
+};
+
+const btn: React.CSSProperties = {
+  padding: '12px 14px',
+  borderRadius: 12,
+  border: 'none',
+  background: '#0ea5e9',
+  color: '#fff',
+  fontWeight: 700,
+  cursor: 'pointer',
+};
+
+const btnGhost: React.CSSProperties = {
+  padding: '12px 14px',
+  borderRadius: 12,
+  border: '1px solid rgba(255,255,255,0.25)',
+  background: 'transparent',
+  color: '#fff',
+  fontWeight: 600,
+  cursor: 'pointer',
+};
+
+const errorBox: React.CSSProperties = {
+  background: 'rgba(239, 68, 68, .15)',
+  border: '1px solid rgba(239, 68, 68, .4)',
+  color: '#fecaca',
+  padding: '10px 12px',
+  borderRadius: 12,
+  marginBottom: 12,
+};
