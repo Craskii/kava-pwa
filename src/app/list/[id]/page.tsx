@@ -717,6 +717,6 @@ const btnMini: React.CSSProperties = { padding: '6px 10px', borderRadius: 8, bor
 const btnTiny: React.CSSProperties = { padding: '4px 8px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.25)', background: 'transparent', color: '#fff', cursor: 'pointer', fontSize: 12, lineHeight: 1 };
 const btnTinyActive: React.CSSProperties = { ...btnTiny, background: '#0ea5e9', border: 'none' };
 const pillBadge: React.CSSProperties = { padding: '6px 10px', borderRadius: 999, background: 'rgba(16,185,129,.2)', border: '1px solid rgba(16,185,129,.35)', fontSize: 12 };
-const input: React.CSSProperties = { width: 260, maxWidth: '90vw', padding: '10px 12px', borderRadius: 10, border: '1px solid '#333', background: '#111', color: '#fff' } as any;
+const input: React.CSSProperties = { width: 260, maxWidth: '90vw', padding: '10px 12px', borderRadius: 10, border: '1px solid #333', background: '#111', color: '#fff' } as any;
 const nameInput: React.CSSProperties = { background: '#111', border: '1px solid #333', color: '#fff', borderRadius: 10, padding: '8px 10px', width: 'min(420px, 80vw)' };
 const select: React.CSSProperties = { background: '#111', border: '1px solid #333', color: '#fff', borderRadius: 8, padding: '6px 8px' };
