@@ -26,7 +26,7 @@ type ListGame = {
   players: Player[];
   queue: string[];              // single main queue (IDs only)
   prefs?: Record<string, Pref>; // per-player preference
-  v?: number;
+  v?: number;                   // monotonic client version
   schema?: 'v2';
 };
 
@@ -55,8 +55,7 @@ function coerceList(raw: any): ListGame | null {
       : [];
 
     const hasSingleQueue = Array.isArray(raw.queue);
-
-    // IMPORTANT: do **not** filter queue by players[] anymore.
+    // DO NOT filter by players[] — keep raw IDs to avoid dropping during races.
     let queue: string[] = [];
     if (hasSingleQueue) {
       queue = raw.queue.map((id: any) => String(id)).filter(Boolean);
@@ -64,12 +63,7 @@ function coerceList(raw: any): ListGame | null {
       const q8 = Array.isArray(raw.queue8) ? raw.queue8.map((id: any) => String(id)) : [];
       const q9 = Array.isArray(raw.queue9) ? raw.queue9.map((id: any) => String(id)) : [];
       const seen = new Set<string>();
-      [...q8, ...q9].forEach((id) => {
-        if (!seen.has(id)) {
-          seen.add(id);
-          queue.push(id);
-        }
-      });
+      [...q8, ...q9].forEach((id) => { if (!seen.has(id)) { seen.add(id); queue.push(id); } });
     }
 
     const prefs: Record<string, Pref> = {};
@@ -78,7 +72,6 @@ function coerceList(raw: any): ListGame | null {
         prefs[pid] = pref === '9 foot' || pref === '8 foot' ? pref : 'any';
       });
     } else if (!hasSingleQueue) {
-      // infer only for truly-legacy docs
       const q8 = Array.isArray(raw.queue8) ? raw.queue8.map((id: any) => String(id)) : [];
       const q9 = Array.isArray(raw.queue9) ? raw.queue9.map((id: any) => String(id)) : [];
       q8.forEach((id) => (prefs[id] = '8 foot'));
@@ -96,7 +89,7 @@ function coerceList(raw: any): ListGame | null {
       players,
       queue,
       prefs,
-      v: Number(raw.v ?? 0),
+      v: Number.isFinite(raw.v) ? Number(raw.v) : 0,
       schema: 'v2',
     };
   } catch {
@@ -109,7 +102,7 @@ async function putList(doc: ListGame) {
   await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    // also clear legacy fields on the wire (if your API still stores them)
+    // also send legacy fields empty to avoid server-side migration overwriting us
     body: JSON.stringify({ ...doc, schema: 'v2', queue8: [], queue9: [] }),
   });
 }
@@ -125,6 +118,7 @@ export default function ListLobby() {
   const excludeSeatPidRef = useRef<string | null>(null);
   const commitQ = useRef<(() => Promise<void>)[]>([]);
   const watchdogTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastVersionRef = useRef<number>(0); // <- monotonic gate
 
   const id =
     typeof window !== 'undefined'
@@ -157,20 +151,10 @@ export default function ListLobby() {
   function detectMySeatingChanged(next: ListGame | null) {
     if (!next) return false;
     const i = next.tables.findIndex((t) => t.a === me.id || t.b === me.id);
-    if (i < 0) {
-      if (lastSeating.current !== '') {
-        lastSeating.current = '';
-        return true;
-      }
-      return false;
-    }
-    const a = next.tables[i]?.a ?? 'x';
-    const b = next.tables[i]?.b ?? 'x';
+    if (i < 0) { if (lastSeating.current !== '') { lastSeating.current = ''; return true; } return false; }
+    const a = next.tables[i]?.a ?? 'x', b = next.tables[i]?.b ?? 'x';
     const key = `table-${i}-${a}-${b}`;
-    if (key !== lastSeating.current) {
-      lastSeating.current = key;
-      return true;
-    }
+    if (key !== lastSeating.current) { lastSeating.current = key; return true; }
     return false;
   }
 
@@ -184,6 +168,11 @@ export default function ListLobby() {
         if (suppressPollRef.current) return;
         const doc = coerceList(payload);
         if (!doc || !doc.id || !doc.hostId) return;
+
+        // **Ignore stale payloads** — fixes “queue vanishes” from older replicas.
+        if (doc.v! < lastVersionRef.current) return;
+
+        lastVersionRef.current = doc.v || 0;
         setG(doc);
         if (detectMySeatingChanged(doc)) bumpAlerts();
       },
@@ -207,29 +196,20 @@ export default function ListLobby() {
   const prefs = g.prefs || {};
   const safePlayers = g.players;
 
-  const nameOf = (pid?: string) =>
-    pid ? safePlayers.find((p) => p.id === pid)?.name || '??' : '—';
+  const nameOf = (pid?: string) => (pid ? safePlayers.find((p) => p.id === pid)?.name || '??' : '—');
   const inQueue = (pid: string) => queue.includes(pid);
 
-  /* ---------- auto-seat (use NEXT.prefs; never mutates current g) ---------- */
+  /* ---------- auto-seat (use NEXT.prefs) ---------- */
   function autoSeat(next: ListGame): void {
-    const has = (pid?: string) => !!pid; // keep IDs even if player object not arrived yet
     const excluded = excludeSeatPidRef.current;
     const nextPrefs = next.prefs || {};
 
     const takeMatch = (predicate: (pid: string) => boolean) => {
       for (let i = 0; i < next.queue.length; i++) {
         const pid = next.queue[i];
-        if (!has(pid)) {
-          next.queue.splice(i, 1);
-          i--;
-          continue;
-        }
+        if (!pid) { next.queue.splice(i, 1); i--; continue; }
         if (excluded && pid === excluded) continue;
-        if (predicate(pid)) {
-          next.queue.splice(i, 1);
-          return pid;
-        }
+        if (predicate(pid)) { next.queue.splice(i, 1); return pid; }
       }
       return undefined;
     };
@@ -237,15 +217,11 @@ export default function ListLobby() {
     next.tables.forEach((t) => {
       const want: Pref = t.label === '9 foot' ? '9 foot' : '8 foot';
       if (!t.a) {
-        const pid = takeMatch(
-          (pid) => (nextPrefs[pid] ?? 'any') === 'any' || (nextPrefs[pid] ?? 'any') === want
-        );
+        const pid = takeMatch((pid) => (nextPrefs[pid] ?? 'any') === 'any' || (nextPrefs[pid] ?? 'any') === want);
         if (pid) t.a = pid;
       }
       if (!t.b) {
-        const pid = takeMatch(
-          (pid) => (nextPrefs[pid] ?? 'any') === 'any' || (nextPrefs[pid] ?? 'any') === want
-        );
+        const pid = takeMatch((pid) => (nextPrefs[pid] ?? 'any') === 'any' || (nextPrefs[pid] ?? 'any') === want);
         if (pid) t.b = pid;
       }
     });
@@ -253,7 +229,7 @@ export default function ListLobby() {
     excludeSeatPidRef.current = null;
   }
 
-  /* ---------- commit queue (serialize + block poll) ---------- */
+  /* ---------- commit queue (serialize + block poll + bump v) ---------- */
   async function runNext() {
     const fn = commitQ.current.shift();
     if (!fn) return;
@@ -265,16 +241,18 @@ export default function ListLobby() {
     commitQ.current.push(async () => {
       if (!g) return;
       const next: ListGame = JSON.parse(JSON.stringify(g));
+
+      // bump version BEFORE mutating so we gate stale payloads immediately
+      next.v = (Number(next.v) || 0) + 1;
+      lastVersionRef.current = next.v;
+
       mut(next);
       autoSeat(next);
 
       suppressPollRef.current = true;
       setBusy(true);
       if (watchdogTimer.current) clearTimeout(watchdogTimer.current);
-      watchdogTimer.current = setTimeout(() => {
-        setBusy(false);
-        suppressPollRef.current = false;
-      }, 10000);
+      watchdogTimer.current = setTimeout(() => { setBusy(false); suppressPollRef.current = false; }, 10000);
 
       try {
         setG(next);
@@ -283,10 +261,7 @@ export default function ListLobby() {
       } catch (e) {
         console.error('save failed', e);
       } finally {
-        if (watchdogTimer.current) {
-          clearTimeout(watchdogTimer.current);
-          watchdogTimer.current = null;
-        }
+        if (watchdogTimer.current) { clearTimeout(watchdogTimer.current); watchdogTimer.current = null; }
         setBusy(false);
         suppressPollRef.current = false;
       }
@@ -296,16 +271,12 @@ export default function ListLobby() {
 
   /* ---------- actions ---------- */
   function renameList(newName: string) {
-    const v = newName.trim();
-    if (!v) return;
-    scheduleCommit((d) => {
-      d.name = v;
-    });
+    const v = newName.trim(); if (!v) return;
+    scheduleCommit((d) => { d.name = v; });
   }
 
   function addPlayerManual() {
-    const nm = nameField.trim();
-    if (!nm) return;
+    const nm = nameField.trim(); if (!nm) return;
     setNameField('');
     const p: Player = { id: uid(), name: nm };
     scheduleCommit((d) => {
@@ -321,11 +292,7 @@ export default function ListLobby() {
       d.players = d.players.filter((p) => p.id !== pid);
       d.queue = d.queue.filter((x) => x !== pid);
       if (d.prefs) delete d.prefs[pid];
-      d.tables = d.tables.map((t) => ({
-        ...t,
-        a: t.a === pid ? undefined : t.a,
-        b: t.b === pid ? undefined : t.b,
-      }));
+      d.tables = d.tables.map((t) => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b }));
     });
   }
 
@@ -333,8 +300,7 @@ export default function ListLobby() {
     const cur = safePlayers.find((p) => p.id === pid)?.name || '';
     const nm = prompt('Rename player', cur);
     if (!nm) return;
-    const v = nm.trim();
-    if (!v) return;
+    const v = nm.trim(); if (!v) return;
     scheduleCommit((d) => {
       const p = d.players.find((pp) => pp.id === pid);
       if (p) p.name = v;
@@ -354,27 +320,18 @@ export default function ListLobby() {
     });
   }
   function leaveQueue() {
-    scheduleCommit((d) => {
-      d.queue = d.queue.filter((x) => x !== me.id);
-    });
+    scheduleCommit((d) => { d.queue = d.queue.filter((x) => x !== me.id); });
   }
 
   function setPrefFor(pid: string, p: Pref) {
-    scheduleCommit((d) => {
-      if (!d.prefs) d.prefs = {};
-      d.prefs[pid] = p;
-    });
+    scheduleCommit((d) => { if (!d.prefs) d.prefs = {}; d.prefs[pid] = p; });
   }
 
   function addPidToQueue(pid: string) {
-    scheduleCommit((d) => {
-      if (!d.queue.includes(pid)) d.queue.push(pid);
-    });
+    scheduleCommit((d) => { if (!d.queue.includes(pid)) d.queue.push(pid); });
   }
   function removePidFromQueue(pid: string) {
-    scheduleCommit((d) => {
-      d.queue = d.queue.filter((x) => x !== pid);
-    });
+    scheduleCommit((d) => { d.queue = d.queue.filter((x) => x !== pid); });
   }
 
   function iLost(pid?: string) {
@@ -400,22 +357,14 @@ export default function ListLobby() {
     e.dataTransfer.setData('application/json', JSON.stringify(info));
     e.dataTransfer.effectAllowed = 'move';
   }
-  function onDragOver(e: React.DragEvent) {
-    e.preventDefault();
-  }
+  function onDragOver(e: React.DragEvent) { e.preventDefault(); }
   function parseInfo(ev: React.DragEvent): DragInfo | null {
-    try {
-      return JSON.parse(ev.dataTransfer.getData('application/json'));
-    } catch {
-      return null;
-    }
+    try { return JSON.parse(ev.dataTransfer.getData('application/json')); } catch { return null; }
   }
-
   function handleDrop(ev: React.DragEvent, target: DragInfo) {
     ev.preventDefault();
     const src = parseInfo(ev);
     if (!src) return;
-
     scheduleCommit((d) => {
       const moveWithin = (arr: string[], from: number, to: number) => {
         const safe = [...arr];
@@ -425,11 +374,7 @@ export default function ListLobby() {
       };
       const removeEverywhere = (pid: string) => {
         d.queue = d.queue.filter((x) => x !== pid);
-        d.tables = d.tables.map((t) => ({
-          ...t,
-          a: t.a === pid ? undefined : t.a,
-          b: t.b === pid ? undefined : t.b,
-        }));
+        d.tables = d.tables.map((t) => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b }));
       };
       const placeSeat = (ti: number, side: 'a' | 'b', pid?: string) => {
         if (!pid) return;
@@ -468,9 +413,7 @@ export default function ListLobby() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={pillBadge}>Live</span>
           <AlertsToggle />
-          <button style={btnGhostSm} onClick={() => location.reload()}>
-            Refresh
-          </button>
+          <button style={btnGhostSm} onClick={() => location.reload()}>Refresh</button>
         </div>
       </div>
 
@@ -491,14 +434,10 @@ export default function ListLobby() {
 
         <div style={{ display: 'grid', gap: 6, justifyItems: 'end' }}>
           {!seated && !queue.includes(me.id) && (
-            <button style={btn} onClick={joinMainQueue} disabled={busy}>
-              Join queue
-            </button>
+            <button style={btn} onClick={joinMainQueue} disabled={busy}>Join queue</button>
           )}
           {queue.includes(me.id) && (
-            <button style={btnGhost} onClick={leaveQueue} disabled={busy}>
-              Leave queue
-            </button>
+            <button style={btnGhost} onClick={leaveQueue} disabled={busy}>Leave queue</button>
           )}
         </div>
       </header>
@@ -522,11 +461,7 @@ export default function ListLobby() {
                   <div style={{ fontWeight: 600, opacity: 0.9 }}>Table {i + 1}</div>
                   <select
                     value={t.label}
-                    onChange={(e) =>
-                      scheduleCommit((d) => {
-                        d.tables[i].label = e.currentTarget.value === '9 foot' ? '9 foot' : '8 foot';
-                      })
-                    }
+                    onChange={(e) => scheduleCommit((d) => { d.tables[i].label = e.currentTarget.value === '9 foot' ? '9 foot' : '8 foot'; })}
                     style={select}
                     disabled={busy}
                   >
@@ -539,22 +474,14 @@ export default function ListLobby() {
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button
                 style={btnGhostSm}
-                onClick={() =>
-                  scheduleCommit((d) => {
-                    if (d.tables.length < 2) d.tables.push({ label: d.tables[0]?.label === '9 foot' ? '8 foot' : '9 foot' });
-                  })
-                }
+                onClick={() => scheduleCommit((d) => { if (d.tables.length < 2) d.tables.push({ label: d.tables[0]?.label === '9 foot' ? '8 foot' : '9 foot' }); })}
                 disabled={busy || g.tables.length >= 2}
-              >
-                Add second table
-              </button>
+              >Add second table</button>
               <button
                 style={btnGhostSm}
-                onClick={() => scheduleCommit((d) => (d.tables.length > 1 ? (d.tables = d.tables.slice(0, 1)) : void 0))}
+                onClick={() => scheduleCommit((d) => { if (d.tables.length > 1) d.tables = d.tables.slice(0, 1); })}
                 disabled={busy || g.tables.length <= 1}
-              >
-                Use one table
-              </button>
+              >Use one table</button>
             </div>
           </div>
         )}
@@ -569,24 +496,12 @@ export default function ListLobby() {
                   onDragStart={(e) => pid && onDragStart(e, { type: 'seat', table: i, side, pid })}
                   onDragOver={onDragOver}
                   onDrop={(e) => handleDrop(e, { type: 'seat', table: i, side, pid })}
-                  style={{
-                    minHeight: 24,
-                    padding: '8px 10px',
-                    border: '1px dashed rgba(255,255,255,.25)',
-                    borderRadius: 8,
-                    background: 'rgba(56,189,248,.10)',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                    gap: 8,
-                  }}
+                  style={{ minHeight: 24, padding: '8px 10px', border: '1px dashed rgba(255,255,255,.25)', borderRadius: 8, background: 'rgba(56,189,248,.10)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}
                   title="Drag from queue or swap seats"
                 >
                   <span>{nameOf(pid)}</span>
                   {pid && (iAmHost || pid === me.id) && (
-                    <button style={btnMini} onClick={() => iLost(pid)} disabled={busy}>
-                      Lost
-                    </button>
+                    <button style={btnMini} onClick={() => iLost(pid)} disabled={busy}>Lost</button>
                   )}
                 </div>
               );
@@ -669,7 +584,7 @@ export default function ListLobby() {
         </section>
       )}
 
-      {/* Players (Queue/Dequeue + Prefs) */}
+      {/* Players */}
       <section style={card}>
         <h3 style={{ marginTop: 0 }}>List (Players) — {safePlayers.length}</h3>
         {safePlayers.length === 0 ? (
