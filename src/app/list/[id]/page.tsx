@@ -8,28 +8,34 @@ import AlertsToggle from '../../../components/AlertsToggle';
 import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
 import { uid } from '@/lib/storage';
 
-/* Types */
+/* ============ Types ============ */
 type TableLabel = '8 foot' | '9 foot';
 type Table = { a?: string; b?: string; label: TableLabel };
 type Player = { id: string; name: string };
 type Pref = '8 foot' | '9 foot' | 'any';
-
 type ListGame = {
-  id: string;
-  name: string;
-  code?: string;
-  hostId: string;
-  status: 'active';
-  createdAt: number;
-  tables: Table[];
-  players: Player[];
-  queue: string[];              // single queue (IDs)
-  prefs?: Record<string, Pref>; // per-player table preference
-  v?: number;                   // monotonic version (client gate)
-  schema?: 'v2';
+  id: string; name: string; code?: string; hostId: string;
+  status: 'active'; createdAt: number;
+  tables: Table[]; players: Player[];
+  queue: string[]; prefs?: Record<string, Pref>;
+  v?: number; schema?: 'v2';
 };
 
-/* ---- Coerce & migrate ---- */
+/* ============ Global singletons (per origin) ============ */
+type KavaGlobals = {
+  streams: Record<string, { es: EventSource | null; refs: number; backoff: number }>;
+  heartbeats: Record<string, { t: number | null; refs: number }>;
+  visHook: boolean;
+};
+function getGlobals(): KavaGlobals {
+  const any = globalThis as any;
+  if (!any.__kava_globs) {
+    any.__kava_globs = { streams: {}, heartbeats: {}, visHook: false } as KavaGlobals;
+  }
+  return any.__kava_globs as KavaGlobals;
+}
+
+/* ============ Helpers ============ */
 function coerceList(raw: any): ListGame | null {
   if (!raw) return null;
   try {
@@ -40,32 +46,24 @@ function coerceList(raw: any): ListGame | null {
           label:
             t?.label === '9 foot' || t?.label === '8 foot'
               ? t.label
-              : i === 1
-              ? '9 foot'
-              : '8 foot',
+              : i === 1 ? '9 foot' : '8 foot',
         }))
       : [{ label: '8 foot' }, { label: '9 foot' }];
 
     const players: Player[] = Array.isArray(raw.players)
-      ? raw.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') || 'Player' }))
+      ? raw.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') }))
       : [];
 
-    // Keep raw IDs; do NOT filter by players[] (prevents drops during races)
-    let queue: string[] = [];
-    if (Array.isArray(raw.queue)) {
-      queue = raw.queue.map((id: any) => String(id)).filter(Boolean);
-    } else {
-      const q8 = Array.isArray(raw.queue8) ? raw.queue8.map((id: any) => String(id)) : [];
-      const q9 = Array.isArray(raw.queue9) ? raw.queue9.map((id: any) => String(id)) : [];
-      const seen = new Set<string>();
-      [...q8, ...q9].forEach((id) => { if (!seen.has(id)) { seen.add(id); queue.push(id); } });
-    }
+    // keep IDs even if a player object isn't present (prevents races)
+    let queue: string[] = Array.isArray(raw.queue)
+      ? raw.queue.map((x: any) => String(x)).filter(Boolean)
+      : [];
 
     const prefs: Record<string, Pref> = {};
     if (raw.prefs && typeof raw.prefs === 'object') {
-      Object.entries(raw.prefs as Record<string, any>).forEach(([pid, pref]) => {
-        prefs[pid] = pref === '9 foot' || pref === '8 foot' ? pref : 'any';
-      });
+      for (const [pid, v] of Object.entries(raw.prefs)) {
+        prefs[pid] = v === '9 foot' || v === '8 foot' ? (v as Pref) : 'any';
+      }
     }
 
     return {
@@ -75,48 +73,31 @@ function coerceList(raw: any): ListGame | null {
       hostId: String(raw.hostId ?? ''),
       status: 'active',
       createdAt: Number(raw.createdAt ?? Date.now()),
-      tables,
-      players,
-      queue,
-      prefs,
+      tables, players, queue, prefs,
       v: Number.isFinite(raw.v) ? Number(raw.v) : 0,
       schema: 'v2',
     };
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-/* ---- PUT ---- */
 async function putList(doc: ListGame) {
   await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ ...doc, schema: 'v2', queue8: [], queue9: [] }), // ensure legacy fields are empty
+    body: JSON.stringify({ ...doc, schema: 'v2' }),
   });
 }
 
+/* ============ Component ============ */
 export default function ListLobby() {
   const [g, setG] = useState<ListGame | null>(null);
   const [busy, setBusy] = useState(false);
   const [nameField, setNameField] = useState('');
   const [showTableControls, setShowTableControls] = useState(false);
 
-  // singletons / guards
-  const esRef = useRef<EventSource | null>(null);
-  const hbRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const backoffRef = useRef<number>(1000);
-  const closedByUsRef = useRef<boolean>(false);
-  const suppressPollRef = useRef(false);
-  const excludeSeatPidRef = useRef<string | null>(null);
-  const lastVersionRef = useRef<number>(0);
-  const commitQ = useRef<(() => Promise<void>)[]>([]);
-  const watchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const id =
-    typeof window !== 'undefined'
-      ? decodeURIComponent(window.location.pathname.split('/').pop() || '')
-      : '';
+  const id = typeof window !== 'undefined'
+    ? decodeURIComponent(window.location.pathname.split('/').pop() || '')
+    : '';
 
   const me = useMemo<Player>(() => {
     try { return JSON.parse(localStorage.getItem('kava_me') || 'null') || { id: uid(), name: 'Player' }; }
@@ -129,114 +110,132 @@ export default function ListLobby() {
     upNextMessage: 'your up next get ready!!',
     matchReadyMessage: (s: any) => {
       const raw = s?.tableNumber ?? s?.table?.number ?? null;
-      const n = Number(raw); const shown = Number.isFinite(n) ? (n === 0 || n === 1 ? n + 1 : n) : null;
+      const n = Number(raw);
+      const shown = Number.isFinite(n) ? (n === 0 || n === 1 ? n + 1 : n) : null;
       return shown ? `Your in table (#${shown})` : 'Your in table';
     },
   });
 
-  const lastSeat = useRef<string>('');
+  const lastSeatSig = useRef<string>('');
+  const lastVersion = useRef<number>(0);
+  const excludeSeatPidRef = useRef<string | null>(null);
+  const commitQ = useRef<(() => Promise<void>)[]>([]);
+  const suppressRef = useRef(false);
+  const watchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const seatChanged = (next: ListGame | null) => {
     if (!next) return false;
-    const i = next.tables.findIndex((t) => t.a === me.id || t.b === me.id);
-    if (i < 0) { if (lastSeat.current !== '') { lastSeat.current = ''; return true; } return false; }
+    const i = next.tables.findIndex(t => t.a === me.id || t.b === me.id);
+    if (i < 0) { if (lastSeatSig.current) { lastSeatSig.current = ''; return true; } return false; }
     const t = next.tables[i]; const sig = `t${i}-${t.a ?? 'x'}-${t.b ?? 'x'}`;
-    if (sig !== lastSeat.current) { lastSeat.current = sig; return true; } return false;
+    if (sig !== lastSeatSig.current) { lastSeatSig.current = sig; return true; }
+    return false;
   };
 
-  /* ---- ONE stream + ONE heartbeat (no leaks) ---- */
+  /* ---- ONE EventSource per list (ref-counted) ---- */
   useEffect(() => {
     if (!id) return;
+    const gl = getGlobals();
+    if (!gl.streams[id]) gl.streams[id] = { es: null, refs: 0, backoff: 1000 };
+    gl.streams[id].refs++;
 
-    const open = () => {
-      if (esRef.current) return;
-      closedByUsRef.current = false;
-      try {
-        const es = new EventSource(`/api/list/${encodeURIComponent(id)}/stream`);
-        esRef.current = es;
+    const attach = () => {
+      const s = gl.streams[id];
+      if (s.es) return; // already open
+      const es = new EventSource(`/api/list/${encodeURIComponent(id)}/stream`);
+      s.es = es;
 
-        es.onmessage = (e) => {
-          if (suppressPollRef.current) return;
-          try {
-            const payload = JSON.parse(e.data);
-            const doc = coerceList(payload);
-            if (!doc || !doc.id || !doc.hostId) return;
+      es.onmessage = (e) => {
+        if (suppressRef.current) return;
+        try {
+          const doc = coerceList(JSON.parse(e.data));
+          if (!doc || !doc.id || !doc.hostId) return;
+          if ((doc.v ?? 0) < lastVersion.current) return; // ignore stale
+          lastVersion.current = doc.v ?? 0;
+          setG(doc);
+          if (seatChanged(doc)) bumpAlerts();
+        } catch {}
+      };
 
-            // ignore stale payloads
-            if ((doc.v ?? 0) < lastVersionRef.current) return;
+      es.onerror = () => {
+        try { es.close(); } catch {}
+        s.es = null;
+        const delay = Math.min(15000, s.backoff);
+        s.backoff = Math.min(15000, s.backoff * 2);
+        setTimeout(() => { if (gl.streams[id]?.refs) attach(); }, delay);
+      };
 
-            lastVersionRef.current = doc.v ?? 0;
-            setG(doc);
-            if (seatChanged(doc)) bumpAlerts();
-          } catch {}
-        };
-
-        es.onerror = () => {
-          // will reconnect with backoff unless we closed it
-          es.close();
-          esRef.current = null;
-          if (!closedByUsRef.current) {
-            const ms = Math.min(15000, backoffRef.current);
-            backoffRef.current *= 2;
-            setTimeout(open, ms);
-          }
-        };
-
-        // reset backoff on successful open
-        backoffRef.current = 1000;
-      } catch {
-        // fallback polling if EventSource fails entirely
-        setTimeout(open, Math.min(15000, backoffRef.current *= 2));
-      }
+      s.backoff = 1000; // reset on open
     };
 
-    open();
+    attach();
 
-    // single presence heartbeat every 25s
-    if (!hbRef.current) {
-      hbRef.current = setInterval(() => {
-        fetch(`/api/me/status?userid=${encodeURIComponent(me.id)}&listid=${encodeURIComponent(id)}`, { cache: 'no-store' }).catch(() => {});
-      }, 25000);
-    }
-
-    const onVis = () => {
-      if (document.visibilityState === 'hidden') {
-        if (esRef.current) { closedByUsRef.current = true; esRef.current.close(); esRef.current = null; }
-      } else {
-        open();
-      }
-    };
-    document.addEventListener('visibilitychange', onVis);
-
-    return () => {
-      document.removeEventListener('visibilitychange', onVis);
-      if (esRef.current) { closedByUsRef.current = true; esRef.current.close(); esRef.current = null; }
-      if (hbRef.current) { clearInterval(hbRef.current); hbRef.current = null; }
-    };
-  }, [id, me.id]);
-
-  /* ---- first snapshot (in case stream is momentarily slow) ---- */
-  useEffect(() => {
-    let cancelled = false;
+    // First snapshot once (helps the UI appear instantly)
     (async () => {
-      if (!id) return;
       try {
         const res = await fetch(`/api/list/${encodeURIComponent(id)}`, { cache: 'no-store' });
         if (!res.ok) return;
-        const payload = await res.json();
-        if (cancelled) return;
-        const doc = coerceList(payload);
-        if (!doc) return;
-        // gate by version
-        if ((doc.v ?? 0) < lastVersionRef.current) return;
-        lastVersionRef.current = doc.v ?? 0;
+        const doc = coerceList(await res.json()); if (!doc) return;
+        if ((doc.v ?? 0) < lastVersion.current) return;
+        lastVersion.current = doc.v ?? 0;
         setG(doc);
         if (seatChanged(doc)) bumpAlerts();
       } catch {}
     })();
-    return () => { cancelled = true; };
-  }, [id]);
 
-  /* ---- UI guards ---- */
+    /* Presence heartbeat – ONE interval per list */
+    const hbKey = `hb:${id}:${me.id}`;
+    if (!gl.heartbeats[hbKey]) gl.heartbeats[hbKey] = { t: null, refs: 0 };
+    gl.heartbeats[hbKey].refs++;
+    if (!gl.heartbeats[hbKey].t) {
+      gl.heartbeats[hbKey].t = window.setInterval(() => {
+        navigator.sendBeacon?.(
+          `/api/me/status?userid=${encodeURIComponent(me.id)}&listid=${encodeURIComponent(id)}`
+        );
+      }, 25000);
+    }
+
+    // one global visibility handler that pauses streams on hidden
+    if (!gl.visHook) {
+      gl.visHook = true;
+      document.addEventListener('visibilitychange', () => {
+        const hidden = document.visibilityState === 'hidden';
+        const g1 = getGlobals();
+        for (const [lid, rec] of Object.entries(g1.streams)) {
+          if (!rec.refs) continue;
+          if (hidden) {
+            if (rec.es) { try { rec.es.close(); } catch {} rec.es = null; }
+          } else {
+            if (!rec.es) {
+              // reopen
+              const es = new EventSource(`/api/list/${encodeURIComponent(lid)}/stream`);
+              rec.es = es;
+              es.onmessage = (e) => {
+                if (suppressRef.current) return;
+                try {
+                  const doc = coerceList(JSON.parse(e.data));
+                  if (!doc || !doc.id || !doc.hostId) return;
+                  if ((doc.v ?? 0) < lastVersion.current) return;
+                  lastVersion.current = doc.v ?? 0;
+                  setG(prev => (doc.id === prev?.id ? doc : doc));
+                  if (seatChanged(doc)) bumpAlerts();
+                } catch {}
+              };
+              es.onerror = () => { try { es.close(); } catch {}; rec.es = null; };
+            }
+          }
+        }
+      });
+    }
+
+    return () => {
+      // release refs
+      const s = gl.streams[id]; if (s) { s.refs--; if (s.refs <= 0) { if (s.es) { try { s.es.close(); } catch {} } delete gl.streams[id]; } }
+      const hb = gl.heartbeats[hbKey]; if (hb) { hb.refs--; if (hb.refs <= 0) { if (hb.t) clearInterval(hb.t); delete gl.heartbeats[hbKey]; } }
+    };
+  }, [id, me.id]);
+
+  /* ---- UI ---- */
   if (!g) {
     return (
       <main style={wrap}>
@@ -252,20 +251,19 @@ export default function ListLobby() {
   const players = g.players;
   const seatedIndex = g.tables.findIndex((t) => t.a === me.id || t.b === me.id);
   const seated = seatedIndex >= 0;
-
-  const nameOf = (pid?: string) => (pid ? players.find((p) => p.id === pid)?.name || '??' : '—');
+  const nameOf = (pid?: string) => (pid ? players.find(p => p.id === pid)?.name || '??' : '—');
   const inQueue = (pid: string) => queue.includes(pid);
 
-  /* ---- auto-seat ---- */
+  /* ---- auto seat ---- */
   function autoSeat(next: ListGame) {
     const excluded = excludeSeatPidRef.current;
-    const nextPrefs = next.prefs || {};
+    const pmap = next.prefs || {};
     const take = (want: TableLabel) => {
       for (let i = 0; i < next.queue.length; i++) {
         const pid = next.queue[i];
         if (!pid) { next.queue.splice(i, 1); i--; continue; }
         if (excluded && pid === excluded) continue;
-        const pref = (nextPrefs[pid] ?? 'any') as Pref;
+        const pref = (pmap[pid] ?? 'any') as Pref;
         if (pref === 'any' || pref === want) { next.queue.splice(i, 1); return pid; }
       }
       return undefined;
@@ -277,7 +275,7 @@ export default function ListLobby() {
     excludeSeatPidRef.current = null;
   }
 
-  /* ---- commit (serialize + version bump + poll suppression) ---- */
+  /* ---- commit queue (serial) ---- */
   async function runNext() {
     const job = commitQ.current.shift(); if (!job) return;
     await job();
@@ -287,15 +285,15 @@ export default function ListLobby() {
     commitQ.current.push(async () => {
       if (!g) return;
       const next: ListGame = JSON.parse(JSON.stringify(g));
-      next.v = (Number(next.v) || 0) + 1;                 // bump version up-front
-      lastVersionRef.current = next.v!;
+      next.v = (Number(next.v) || 0) + 1;
+      lastVersion.current = next.v!;
       mut(next);
       autoSeat(next);
 
-      suppressPollRef.current = true;                     // ignore stream while saving
+      suppressRef.current = true;
       setBusy(true);
       if (watchRef.current) clearTimeout(watchRef.current);
-      watchRef.current = setTimeout(() => { setBusy(false); suppressPollRef.current = false; }, 10000);
+      watchRef.current = setTimeout(() => { setBusy(false); suppressRef.current = false; }, 10000);
 
       try {
         setG(next);
@@ -306,7 +304,7 @@ export default function ListLobby() {
       } finally {
         if (watchRef.current) { clearTimeout(watchRef.current); watchRef.current = null; }
         setBusy(false);
-        suppressPollRef.current = false;
+        suppressRef.current = false;
       }
     });
     if (commitQ.current.length === 1) runNext();
@@ -314,72 +312,28 @@ export default function ListLobby() {
 
   /* ---- actions ---- */
   const renameList = (nm: string) => { const v = nm.trim(); if (!v) return; scheduleCommit(d => { d.name = v; }); };
-
-  const ensureMe = (d: ListGame) => {
-    if (!d.players.some(p => p.id === me.id)) d.players.push(me);
-    if (!d.prefs) d.prefs = {};
-    if (!d.prefs[me.id]) d.prefs[me.id] = 'any';
-  };
-
+  const ensureMe = (d: ListGame) => { if (!d.players.some(p => p.id === me.id)) d.players.push(me); d.prefs ??= {}; if (!d.prefs[me.id]) d.prefs[me.id] = 'any'; };
   const joinQueue = () => scheduleCommit(d => { ensureMe(d); if (!d.queue.includes(me.id)) d.queue.push(me.id); });
   const leaveQueue = () => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== me.id); });
-
-  const addPlayer = () => {
-    const v = nameField.trim(); if (!v) return;
-    setNameField('');
-    const p: Player = { id: uid(), name: v };
-    scheduleCommit(d => { d.players.push(p); if (!d.queue.includes(p.id)) d.queue.push(p.id); d.prefs ??= {}; d.prefs[p.id] = 'any'; });
-  };
-
-  const removePlayer = (pid: string) => scheduleCommit(d => {
-    d.players = d.players.filter(p => p.id !== pid);
-    d.queue = d.queue.filter(x => x !== pid);
-    if (d.prefs) delete d.prefs[pid];
-    d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b }));
-  });
-
-  const renamePlayer = (pid: string) => {
-    const cur = players.find(p => p.id === pid)?.name || '';
-    const nm = prompt('Rename player', cur); if (!nm) return;
-    const v = nm.trim(); if (!v) return;
-    scheduleCommit(d => { const p = d.players.find(pp => pp.id === pid); if (p) p.name = v; });
-  };
-
+  const addPlayer = () => { const v = nameField.trim(); if (!v) return; setNameField(''); const p: Player = { id: uid(), name: v }; scheduleCommit(d => { d.players.push(p); d.prefs ??= {}; d.prefs[p.id] = 'any'; if (!d.queue.includes(p.id)) d.queue.push(p.id); }); };
+  const removePlayer = (pid: string) => scheduleCommit(d => { d.players = d.players.filter(p => p.id !== pid); d.queue = d.queue.filter(x => x !== pid); if (d.prefs) delete d.prefs[pid]; d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b })); });
+  const renamePlayer = (pid: string) => { const cur = players.find(p => p.id === pid)?.name || ''; const nm = prompt('Rename player', cur); if (!nm) return; const v = nm.trim(); if (!v) return; scheduleCommit(d => { const p = d.players.find(pp => pp.id === pid); if (p) p.name = v; }); };
   const setPrefFor = (pid: string, pref: Pref) => scheduleCommit(d => { d.prefs ??= {}; d.prefs[pid] = pref; });
   const enqueuePid = (pid: string) => scheduleCommit(d => { if (!d.queue.includes(pid)) d.queue.push(pid); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== pid); });
-
-  const iLost = (pid?: string) => {
-    const loser = pid ?? me.id;
-    scheduleCommit(d => {
-      const t = d.tables.find(tt => tt.a === loser || tt.b === loser);
-      if (!t) return;
-      if (t.a === loser) t.a = undefined;
-      if (t.b === loser) t.b = undefined;
-      d.queue = d.queue.filter(x => x !== loser);
-      d.queue.push(loser);
-      excludeSeatPidRef.current = loser;
-    });
-  };
+  const iLost = (pid?: string) => { const loser = pid ?? me.id; scheduleCommit(d => { const t = d.tables.find(tt => tt.a === loser || tt.b === loser); if (!t) return; if (t.a === loser) t.a = undefined; if (t.b === loser) t.b = undefined; d.queue = d.queue.filter(x => x !== loser); d.queue.push(loser); excludeSeatPidRef.current = loser; }); };
 
   /* ---- DnD ---- */
-  type DragInfo =
-    | { type: 'seat'; table: number; side: 'a'|'b'; pid?: string }
-    | { type: 'queue'; index: number; pid: string };
-
+  type DragInfo = { type: 'seat'; table: number; side: 'a'|'b'; pid?: string } | { type: 'queue'; index: number; pid: string };
   const onDragStart = (e: React.DragEvent, info: DragInfo) => { e.dataTransfer.setData('application/json', JSON.stringify(info)); e.dataTransfer.effectAllowed = 'move'; };
   const onDragOver = (e: React.DragEvent) => e.preventDefault();
   const parseInfo = (ev: React.DragEvent): DragInfo | null => { try { return JSON.parse(ev.dataTransfer.getData('application/json')); } catch { return null; } };
-
   const handleDrop = (ev: React.DragEvent, target: DragInfo) => {
     ev.preventDefault();
     const src = parseInfo(ev); if (!src) return;
     scheduleCommit(d => {
       const moveWithin = (arr: string[], from: number, to: number) => { const a = [...arr]; const [p] = a.splice(from, 1); a.splice(Math.max(0, Math.min(a.length, to)), 0, p); return a; };
-      const removeEverywhere = (pid: string) => {
-        d.queue = d.queue.filter(x => x !== pid);
-        d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b }));
-      };
+      const removeEverywhere = (pid: string) => { d.queue = d.queue.filter(x => x !== pid); d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b })); };
       const placeSeat = (ti: number, side: 'a'|'b', pid?: string) => { if (!pid) return; removeEverywhere(pid); d.tables[ti][side] = pid; };
 
       if (target.type === 'seat') {
@@ -391,12 +345,8 @@ export default function ListLobby() {
           placeSeat(target.table, target.side, src.pid);
         }
       } else if (target.type === 'queue') {
-        if (src.type === 'queue') {
-          d.queue = moveWithin(d.queue, src.index, target.index);
-        } else if (src.type === 'seat') {
-          const pid = d.tables[src.table][src.side]; d.tables[src.table][src.side] = undefined;
-          if (pid) d.queue.splice(target.index, 0, pid);
-        }
+        if (src.type === 'queue') d.queue = moveWithin(d.queue, src.index, target.index);
+        else if (src.type === 'seat') { const pid = d.tables[src.table][src.side]; d.tables[src.table][src.side] = undefined; if (pid) d.queue.splice(target.index, 0, pid); }
       }
     });
   };
@@ -428,6 +378,7 @@ export default function ListLobby() {
         </div>
       </header>
 
+      {/* Tables */}
       <section style={card}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <h3 style={{marginTop:0}}>Tables</h3>
@@ -483,6 +434,7 @@ export default function ListLobby() {
         </div>
       </section>
 
+      {/* Queue */}
       <section style={card}>
         <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
         {queue.length===0 ? <div style={{opacity:.6,fontStyle:'italic'}}>Drop players here</div> : (
@@ -518,16 +470,18 @@ export default function ListLobby() {
         )}
       </section>
 
+      {/* Host controls */}
       {iAmHost && (
         <section style={card}>
           <h3 style={{marginTop:0}}>Host controls</h3>
           <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
             <input placeholder="Add player name..." value={nameField} onChange={(e)=>setNameField(e.target.value)} style={input} disabled={busy}/>
-            <button style={btn} onClick={addPlayer} disabled={busy||!nameField.trim()}>Add player (joins queue)</button>
+            <button style={btn} onClick={addPlayer} disabled={busy || !nameField.trim()}>Add player (joins queue)</button>
           </div>
         </section>
       )}
 
+      {/* Players */}
       <section style={card}>
         <h3 style={{marginTop:0}}>List (Players) — {players.length}</h3>
         {players.length===0 ? <div style={{opacity:.7}}>No players yet.</div> : (
@@ -562,7 +516,7 @@ export default function ListLobby() {
   );
 }
 
-/* ---- styles ---- */
+/* ============ Styles ============ */
 const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui' };
 const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginBottom:14 };
 const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
