@@ -121,7 +121,7 @@ export default function ListLobby() {
 
   const suppressPollRef = useRef(false);
   const excludeSeatPidRef = useRef<string|null>(null);
-  const commitQueue = useRef<(() => Promise<void>)[]>([]);
+  const commitQ = useRef<(() => Promise<void>)[]>([]);
   const watchdogTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const id =
@@ -183,6 +183,7 @@ export default function ListLobby() {
   if (!g) {
     return (
       <main style={wrap}>
+        {/* Back to home */}
         <BackButton href="/" />
         <p style={{ opacity: 0.7 }}>Loading…</p>
       </main>
@@ -193,7 +194,6 @@ export default function ListLobby() {
   const myTableIndex = g.tables.findIndex(t => t.a === me.id || t.b === me.id);
   const seated = myTableIndex >= 0;
   const queue = g.queue;
-  const prefs = g.prefs || {};
   const safePlayers = g.players;
 
   function nameOf(pid?: string) {
@@ -201,10 +201,11 @@ export default function ListLobby() {
     return safePlayers.find(p => p.id === pid)?.name || '??';
   }
 
-  /* ---------- auto-seat ---------- */
+  /* ---------- auto-seat (use NEXT PREFS!) ---------- */
   function autoSeat(next: ListGame): void {
     const has = (pid?: string) => !!pid && next.players.some(p => p.id === pid);
     const excluded = excludeSeatPidRef.current;
+    const nextPrefs = next.prefs || {};
 
     const takeMatch = (predicate: (pid: string) => boolean) => {
       for (let i = 0; i < next.queue.length; i++) {
@@ -222,11 +223,11 @@ export default function ListLobby() {
     next.tables.forEach(t => {
       const want: Pref = t.label === '9 foot' ? '9 foot' : '8 foot';
       if (!t.a) {
-        const pid = takeMatch(pid => (prefs[pid] ?? 'any') === 'any' || (prefs[pid] ?? 'any') === want);
+        const pid = takeMatch(pid => (nextPrefs[pid] ?? 'any') === 'any' || (nextPrefs[pid] ?? 'any') === want);
         if (pid) t.a = pid;
       }
       if (!t.b) {
-        const pid = takeMatch(pid => (prefs[pid] ?? 'any') === 'any' || (prefs[pid] ?? 'any') === want);
+        const pid = takeMatch(pid => (nextPrefs[pid] ?? 'any') === 'any' || (nextPrefs[pid] ?? 'any') === want);
         if (pid) t.b = pid;
       }
     });
@@ -236,14 +237,14 @@ export default function ListLobby() {
 
   /* ---------- commit queue (serialize + block poll) ---------- */
   async function runNext() {
-    const fn = commitQueue.current.shift();
+    const fn = commitQ.current.shift();
     if (!fn) return;
     await fn();
-    if (commitQueue.current.length) runNext();
+    if (commitQ.current.length) runNext();
   }
 
   function scheduleCommit(mut: (draft: ListGame) => void) {
-    commitQueue.current.push(async () => {
+    commitQ.current.push(async () => {
       if (!g) return;
       const next: ListGame = JSON.parse(JSON.stringify(g));
       mut(next);
@@ -266,7 +267,7 @@ export default function ListLobby() {
         suppressPollRef.current = false;
       }
     });
-    if (commitQueue.current.length === 1) runNext();
+    if (commitQ.current.length === 1) runNext();
   }
 
   /* ---------- actions ---------- */
@@ -281,7 +282,7 @@ export default function ListLobby() {
     const p: Player = { id: uid(), name: nm };
     scheduleCommit(d => {
       d.players.push(p);
-      if (!d.queue.includes(p.id)) d.queue.push(p.id); // new players join queue immediately
+      if (!d.queue.includes(p.id)) d.queue.push(p.id);
       if (!d.prefs) d.prefs = {};
       d.prefs[p.id] = 'any';
     });
@@ -410,7 +411,7 @@ export default function ListLobby() {
   return (
     <main style={wrap}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
-        {/* Back should take you home */}
+        {/* Back goes home */}
         <BackButton href="/" />
         <div style={{display:'flex',alignItems:'center',gap:8}}>
           <span style={pillBadge}>Live</span>
@@ -419,7 +420,7 @@ export default function ListLobby() {
         </div>
       </div>
 
-      {/* Name + code + Join only (no pref buttons here anymore) */}
+      {/* Name + code + Join only */}
       <header style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginTop:6}}>
         <div>
           <h1 style={{ margin:'8px 0 4px' }}>
@@ -525,7 +526,7 @@ export default function ListLobby() {
         </div>
       </section>
 
-      {/* ---------- QUEUE (single) with inline pref toggles ---------- */}
+      {/* ---------- QUEUE with inline pref toggles ---------- */}
       <section style={card}>
         <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
         {queue.length === 0 ? (
