@@ -36,25 +36,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <head>
-        {/* iOS A2HS extras */}
-        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-        <meta name="apple-mobile-web-app-capable" content="yes" />
-        <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+        {/* PWA meta */}
+        <meta name="mobile-web-app-capable" content="yes" />
+        {/* (Optional) Keep the old one if you want, but it’s deprecated. You can remove it. */}
+        {/* <meta name="apple-mobile-web-app-capable" content="yes" /> */}
+
+        {/* Recommended extras */}
+        <meta name="theme-color" content="#0b0b0b" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        <link rel="manifest" href="/manifest.webmanifest" />
+        <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+        <title>Kava</title>
       </head>
-      <body>
-        {/* ✅ Global error trap so platform overlay never replaces UI */}
-        <ClientErrorTrap />
-
-        {/* Global in-app banners + launch reminder */}
-        <AlertsGlobal />
-        <LaunchReminder />
-
-        {/* 🔔 OneSignal boot (Option A background push) */}
-        <OneSignalBoot />
-
-        {/* ✅ SW register + update toast wrapper */}
-        <ClientBoot>{children}</ClientBoot>
-      </body>
+      <body>{children}</body>
     </html>
   );
 }

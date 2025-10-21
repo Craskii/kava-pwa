@@ -26,12 +26,8 @@ function coerce(x: any): ListGame | null {
       hostId: String(x.hostId ?? ''),
       status: 'active',
       createdAt: Number(x.createdAt ?? Date.now()),
-      tables: Array.isArray(x.tables)
-        ? x.tables.map((t: any) => ({ a: t?.a, b: t?.b }))
-        : [{}, {}],
-      players: Array.isArray(x.players)
-        ? x.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') }))
-        : [],
+      tables: Array.isArray(x.tables) ? x.tables.map((t: any) => ({ a: t?.a, b: t?.b })) : [{}, {}],
+      players: Array.isArray(x.players) ? x.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') })) : [],
       queue: Array.isArray(x.queue) ? x.queue.map((id: any) => String(id)) : [],
       v: Number(x.v ?? 0),
     };
@@ -43,34 +39,23 @@ export default function ListLobby() {
   const [busy, setBusy] = useState(false);
   const [nameField, setNameField] = useState('');
 
-  // numeric version used for If-Match
   const verRef = useRef<string | null>(null);
-  // keep last seating signature so we can ping alerts when my seat changes
   const lastSeatSig = useRef<string>('');
 
-  // ID from URL
   const id =
     typeof window !== 'undefined'
       ? decodeURIComponent(window.location.pathname.split('/').pop() || '')
       : '';
 
-  // me
   const me = useMemo<Player>(() => {
     try {
-      return (
-        JSON.parse(localStorage.getItem('kava_me') || 'null') || {
-          id: uid(), name: 'Player'
-        }
-      );
+      return JSON.parse(localStorage.getItem('kava_me') || 'null') || { id: uid(), name: 'Player' };
     } catch {
       return { id: uid(), name: 'Player' };
     }
   }, []);
-  useEffect(() => {
-    localStorage.setItem('kava_me', JSON.stringify(me));
-  }, [me]);
+  useEffect(() => { localStorage.setItem('kava_me', JSON.stringify(me)); }, [me]);
 
-  // alerts
   useQueueAlerts({
     listId: id,
     upNextMessage: 'your up next get ready!!',
@@ -85,17 +70,12 @@ export default function ListLobby() {
   function detectSeatChange(next: ListGame | null) {
     if (!next) return false;
     const idx = next.tables.findIndex(t => t.a === me.id || t.b === me.id);
-    if (idx < 0) {
-      if (lastSeatSig.current !== '') { lastSeatSig.current = ''; return true; }
-      return false;
-    }
+    if (idx < 0) { if (lastSeatSig.current !== '') { lastSeatSig.current = ''; return true; } return false; }
     const t = next.tables[idx];
     const sig = `t${idx}-${t.a ?? 'x'}-${t.b ?? 'x'}`;
     if (sig !== lastSeatSig.current) { lastSeatSig.current = sig; return true; }
     return false;
   }
-
-  /* ------------------- GET/PUT helpers ------------------- */
 
   async function getOnce() {
     if (!id) return null;
@@ -103,36 +83,26 @@ export default function ListLobby() {
     if (!res.ok) throw new Error('load-failed');
     const json = await res.json();
     const doc = coerce(json);
-    verRef.current = res.headers.get('x-l-version'); // capture numeric version
+    verRef.current = res.headers.get('x-l-version');
     return doc;
   }
 
   async function putDoc(next: ListGame) {
     const res = await fetch(`/api/list/${encodeURIComponent(next.id)}`, {
       method: 'PUT',
-      headers: {
-        'content-type': 'application/json',
-        ...(verRef.current ? { 'if-match': verRef.current } : {}),
-      },
+      headers: { 'content-type': 'application/json', ...(verRef.current ? { 'if-match': verRef.current } : {}) },
       body: JSON.stringify(next),
     });
-    if (!res.ok && res.status !== 204) {
-      throw new Error(`save-failed-${res.status}`);
-    }
-    const v = res.headers.get('x-l-version');
-    if (v) verRef.current = v;
+    if (!res.ok && res.status !== 204) throw new Error(`save-failed-${res.status}`);
+    const v = res.headers.get('x-l-version'); if (v) verRef.current = v;
   }
 
-  // auto-seat: fill empty seats from the single queue (front of the line)
   function autoSeat(doc: ListGame): ListGame {
     const next = structuredClone(doc) as ListGame;
     const take = () => {
       while (next.queue.length > 0) {
         const pid = next.queue[0];
-        // ensure player still exists
-        if (!next.players.some(p => p.id === pid)) {
-          next.queue.shift(); continue;
-        }
+        if (!next.players.some(p => p.id === pid)) { next.queue.shift(); continue; }
         return next.queue.shift()!;
       }
       return undefined;
@@ -149,7 +119,6 @@ export default function ListLobby() {
     if (!g || busy) return;
     setBusy(true);
     try {
-      // always re-read latest (and its version) to reduce 412s
       const latest = await getOnce();
       if (!latest) throw new Error('no-latest');
       let next = structuredClone(latest) as ListGame;
@@ -159,7 +128,6 @@ export default function ListLobby() {
       setG(next);
       if (detectSeatChange(next)) bumpAlerts();
     } catch {
-      // one retry path on conflict: refetch, reapply, save
       try {
         const latest2 = await getOnce();
         if (!latest2) throw new Error('no-latest-2');
@@ -172,12 +140,9 @@ export default function ListLobby() {
       } catch {
         alert('Could not change.');
       }
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   }
 
-  /* ------------------- Polling ------------------- */
   useEffect(() => {
     if (!id) return;
     let stopped = false;
@@ -218,7 +183,6 @@ export default function ListLobby() {
     return () => { stopped = true; stopper.stop(); };
   }, [id]);
 
-  /* ------------------- Derived ------------------- */
   const players = g?.players ?? [];
   const queue = g?.queue ?? [];
   const tables = g?.tables ?? [];
@@ -227,39 +191,19 @@ export default function ListLobby() {
   const queued = queue.includes(me.id);
   const seated = seatedIdx >= 0;
 
-  function nameOf(id?: string) {
-    if (!id) return '—';
-    return players.find(p => p.id === id)?.name || '??';
-  }
+  function nameOf(id?: string) { if (!id) return '—'; return players.find(p => p.id === id)?.name || '??'; }
 
-  /* ------------------- Actions ------------------- */
-
-  async function refreshOnce() {
-    try {
-      setBusy(true);
-      const doc = await getOnce();
-      if (doc) setG(doc);
-    } catch {} finally { setBusy(false); }
-  }
-
-  async function onRenameList(newName: string) {
-    const v = newName.trim();
-    if (!g || !v) return;
-    await save(d => { d.name = v; });
-  }
-
+  async function refreshOnce() { try { setBusy(true); const doc = await getOnce(); if (doc) setG(doc); } finally { setBusy(false); } }
+  async function onRenameList(newName: string) { const v = newName.trim(); if (!g || !v) return; await save(d => { d.name = v; }); }
   async function onAddPlayer() {
     if (!g || !nameField.trim()) return;
-    const nm = nameField.trim();
-    setNameField('');
+    const nm = nameField.trim(); setNameField('');
     await save(d => {
       const p = { id: uid(), name: nm };
       d.players.push(p);
-      // default: also join queue
       if (!d.queue.includes(p.id)) d.queue.push(p.id);
     });
   }
-
   async function onAddMe() {
     if (!g) return;
     await save(d => {
@@ -268,28 +212,18 @@ export default function ListLobby() {
       if (!d.queue.includes(me.id)) d.queue.push(me.id);
     });
   }
-
   async function onRemovePlayer(pid: string) {
     await save(d => {
       d.players = d.players.filter(p => p.id !== pid);
       d.queue = d.queue.filter(x => x !== pid);
-      d.tables.forEach(t => {
-        if (t.a === pid) t.a = undefined;
-        if (t.b === pid) t.b = undefined;
-      });
+      d.tables.forEach(t => { if (t.a === pid) t.a = undefined; if (t.b === pid) t.b = undefined; });
     });
   }
-
   async function onRenamePlayer(pid: string) {
     const cur = players.find(p => p.id === pid)?.name || '';
-    const nm = prompt('Rename player', cur);
-    if (!nm) return;
-    await save(d => {
-      const p = d.players.find(pp => pp.id === pid);
-      if (p) p.name = nm.trim() || p.name;
-    });
+    const nm = prompt('Rename player', cur); if (!nm) return;
+    await save(d => { const p = d.players.find(pp => pp.id === pid); if (p) p.name = nm.trim() || p.name; });
   }
-
   async function onJoinQueue() {
     if (!g) return;
     await save(d => {
@@ -298,14 +232,7 @@ export default function ListLobby() {
       if (!d.queue.includes(me.id)) d.queue.push(me.id);
     });
   }
-
-  async function onLeaveQueue() {
-    if (!g) return;
-    await save(d => {
-      d.queue = d.queue.filter(x => x !== me.id);
-    });
-  }
-
+  async function onLeaveQueue() { if (!g) return; await save(d => { d.queue = d.queue.filter(x => x !== me.id); }); }
   async function onILost() {
     if (!g) return;
     await save(d => {
@@ -318,7 +245,6 @@ export default function ListLobby() {
     alert("It's ok — you can hop back in the queue.");
   }
 
-  // DnD between queue and seats (simple)
   type DInfo =
     | { type: 'queue'; pid: string }
     | { type: 'seat'; table: number; side: 'a'|'b'; pid?: string };
@@ -345,7 +271,6 @@ export default function ListLobby() {
       let movingPid: string | undefined;
       if (src.type === 'queue') movingPid = src.pid;
       if (src.type === 'seat') movingPid = d.tables[src.table][src.side];
-
       if (!movingPid) return;
 
       removeEverywhere(movingPid);
@@ -359,8 +284,6 @@ export default function ListLobby() {
     });
   }
 
-  /* ------------------- Render ------------------- */
-
   if (!g) {
     return (
       <main style={wrap}>
@@ -371,9 +294,10 @@ export default function ListLobby() {
     );
   }
 
+  const playersCount = g.players.length;
+
   return (
     <main style={wrap}>
-      {/* top bar */}
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
         <BackButton href="/lists" />
         <div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -383,12 +307,10 @@ export default function ListLobby() {
         </div>
       </div>
 
-      {/* instructions */}
       <section style={notice}>
         <b>How it works:</b> One shared queue feeds both tables. When a seat opens or a player joins and a table is empty, they’re seated automatically. While seated, tap <i>I lost</i> to free the seat and rejoin the queue.
       </section>
 
-      {/* header + my actions */}
       <header style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginTop:6}}>
         <div>
           <h1 style={{ margin:'8px 0 4px' }}>
@@ -400,7 +322,7 @@ export default function ListLobby() {
             />
           </h1>
           <div style={{ opacity:.8, fontSize:14, display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-            Private code: <b>{g.code || '—'}</b> • {players.length} {players.length === 1 ? 'player' : 'players'}
+            Private code: <b>{g.code || '—'}</b> • {playersCount} {playersCount === 1 ? 'player' : 'players'}
           </div>
         </div>
         <div style={{display:'flex',gap:8}}>
@@ -410,7 +332,6 @@ export default function ListLobby() {
         </div>
       </header>
 
-      {/* Host controls */}
       {isHost && (
         <section style={card}>
           <h3 style={{marginTop:0}}>Host controls</h3>
@@ -427,12 +348,12 @@ export default function ListLobby() {
           </div>
 
           <div>
-            <h4 style={{ margin:'6px 0' }}>Players ({players.length})</h4>
-            {players.length === 0 ? (
+            <h4 style={{ margin:'6px 0' }}>Players ({playersCount})</h4>
+            {playersCount === 0 ? (
               <div style={{ opacity:.7 }}>No players yet.</div>
             ) : (
               <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
-                {players.map((p) => (
+                {g.players.map((p) => (
                   <li key={p.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}>
                     <span>{p.name}</span>
                     <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
@@ -447,7 +368,6 @@ export default function ListLobby() {
         </section>
       )}
 
-      {/* Queue */}
       <section style={card}>
         <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
         {queue.length === 0 ? (
@@ -468,7 +388,6 @@ export default function ListLobby() {
         )}
       </section>
 
-      {/* Tables (blue) */}
       <section style={card}>
         <h3 style={{marginTop:0}}>Tables</h3>
         <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(280px,1fr))', gap:12}}>
@@ -541,4 +460,9 @@ const btnMini: React.CSSProperties = {
 const nameInput: React.CSSProperties = {
   background:'#111', border:'1px solid #333', color:'#fff',
   borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)'
+};
+/* 👇 this was missing; caused the crash */
+const input: React.CSSProperties = {
+  width:260, maxWidth:'90vw', padding:'10px 12px',
+  borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff'
 };
