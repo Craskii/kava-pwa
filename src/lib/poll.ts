@@ -3,7 +3,7 @@
 export type PollStopper = { stop: () => void; bump: () => void };
 
 type PollOptions<TPayload> = {
-  key: string; // a logical key to keep per-poll backoff state
+  key: string;
   minMs: number;
   maxMs: number;
   fetchOnce: (
@@ -15,7 +15,7 @@ type PollOptions<TPayload> = {
   onChange: (payload: TPayload) => void;
 };
 
-// Safe helpers for optional localStorage
+// Safe localStorage helpers (SSR-friendly)
 function lsGetJSON<T = any>(key: string): T | null {
   try {
     if (typeof window === 'undefined' || !('localStorage' in window)) return null;
@@ -29,12 +29,10 @@ function lsSetJSON(key: string, value: any) {
   try {
     if (typeof window === 'undefined' || !('localStorage' in window)) return;
     window.localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* ignore */
-  }
+  } catch {}
 }
 
-/** Primary implementation used by new code */
+/** Primary adaptive poller */
 export function startAdaptivePoll<T>(opts: PollOptions<T>): PollStopper {
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -51,24 +49,18 @@ export function startAdaptivePoll<T>(opts: PollOptions<T>): PollStopper {
       if (res.status === 200) {
         etag = res.etag || etag;
         opts.onChange((res as any).payload as T);
-        // speed up on change
-        interval = Math.max(opts.minMs, Math.round(interval * 0.6));
+        interval = Math.max(opts.minMs, Math.round(interval * 0.6)); // faster after change
       } else {
-        // gentle backoff on 304
-        interval = Math.min(opts.maxMs, Math.round(interval * 1.35));
+        interval = Math.min(opts.maxMs, Math.round(interval * 1.35)); // backoff on 304
       }
     } catch {
-      // stronger backoff on network error
-      interval = Math.min(opts.maxMs, Math.round(interval * 1.5));
+      interval = Math.min(opts.maxMs, Math.round(interval * 1.5)); // stronger backoff on error
     } finally {
       lsSetJSON(stateKey, { interval });
-      if (!stopped) {
-        timer = setTimeout(() => tick(), force ? opts.minMs : interval);
-      }
+      if (!stopped) timer = setTimeout(() => tick(), force ? opts.minMs : interval);
     }
   }
 
-  // start shortly after mount
   timer = setTimeout(() => tick(true), 50);
 
   return {
@@ -85,18 +77,20 @@ export function startAdaptivePoll<T>(opts: PollOptions<T>): PollStopper {
   };
 }
 
-/**
- * Back-compat + flexible signature:
- *
- * 1) Classic:
- *    startSmartPollETag(url, onChange, { key?, minMs?, maxMs?, tagHeader?, fetchInit? })
- *
- * 2) Newer object form (what some pages use now):
- *    startSmartPollETag(url, { onUpdate, key?, minMs?, maxMs?, versionHeader?, fetchInit? })
- */
+/** Flexible, ETag-based smart polling with 3 acceptable signatures. */
 export function startSmartPollETag<T = any>(
-  url: string,
-  arg2:
+  urlOrOpts:
+    | string
+    | {
+        url: string;
+        onUpdate: (payload: T) => void;
+        key?: string;
+        minMs?: number;
+        maxMs?: number;
+        versionHeader?: string;
+        fetchInit?: RequestInit;
+      },
+  arg2?:
     | ((payload: T) => void)
     | {
         onUpdate: (payload: T) => void;
@@ -110,26 +104,60 @@ export function startSmartPollETag<T = any>(
     key?: string;
     minMs?: number;
     maxMs?: number;
-    tagHeader?: string;
+    tagHeader?: string; // legacy name
     fetchInit?: RequestInit;
   }
 ): PollStopper {
-  // Normalize arguments
-  const isFn = typeof arg2 === 'function';
-  const onChange: (payload: T) => void = isFn ? (arg2 as any) : (arg2 as any).onUpdate;
+  // Normalize the three shapes
+  let url: string;
+  let onChange: (payload: T) => void;
+  let key: string;
+  let minMs = 4000;
+  let maxMs = 60000;
+  let tagHeader: string | undefined; // custom version header fallback
+  let fetchInit: RequestInit | undefined;
 
-  const key =
-    (isFn ? arg3?.key : (arg2 as any).key) ?? `url:${url}`;
-  const minMs =
-    (isFn ? arg3?.minMs : (arg2 as any).minMs) ?? 4000;
-  const maxMs =
-    (isFn ? arg3?.maxMs : (arg2 as any).maxMs) ?? 60000;
-
-  const tagHeader =
-    (isFn ? arg3?.tagHeader : (arg2 as any).versionHeader) ?? // prefer versionHeader name if given
-    (isFn ? arg3?.tagHeader : undefined);
-
-  const fetchInit: RequestInit | undefined = (isFn ? arg3?.fetchInit : (arg2 as any).fetchInit) ?? undefined;
+  if (typeof urlOrOpts === 'string') {
+    url = urlOrOpts;
+    if (typeof arg2 === 'function') {
+      // classic: (url, onChange, opts?)
+      onChange = arg2 as (p: T) => void;
+      key = arg3?.key ?? `url:${url}`;
+      minMs = arg3?.minMs ?? minMs;
+      maxMs = arg3?.maxMs ?? maxMs;
+      tagHeader = arg3?.tagHeader;
+      fetchInit = arg3?.fetchInit;
+    } else if (arg2 && typeof arg2 === 'object') {
+      // newer: (url, { onUpdate, key?, ... })
+      const o = arg2 as any;
+      if (!o || typeof o.onUpdate !== 'function') {
+        throw new Error('startSmartPollETag: missing onUpdate');
+      }
+      onChange = o.onUpdate;
+      key = o.key ?? `url:${url}`;
+      minMs = o.minMs ?? minMs;
+      maxMs = o.maxMs ?? maxMs;
+      tagHeader = o.versionHeader; // prefer versionHeader name
+      fetchInit = o.fetchInit;
+    } else {
+      throw new Error('startSmartPollETag: invalid arguments');
+    }
+  } else if (urlOrOpts && typeof urlOrOpts === 'object') {
+    // object-only: ({ url, onUpdate, ... })
+    const o = urlOrOpts as any;
+    if (!o.url || typeof o.onUpdate !== 'function') {
+      throw new Error('startSmartPollETag: { url, onUpdate } required');
+    }
+    url = o.url;
+    onChange = o.onUpdate;
+    key = o.key ?? `url:${url}`;
+    minMs = o.minMs ?? minMs;
+    maxMs = o.maxMs ?? maxMs;
+    tagHeader = o.versionHeader;
+    fetchInit = o.fetchInit;
+  } else {
+    throw new Error('startSmartPollETag: invalid arguments');
+  }
 
   return startAdaptivePoll<T>({
     key,
@@ -145,18 +173,14 @@ export function startSmartPollETag<T = any>(
         headers: { ...(fetchInit?.headers as any), ...headers },
       });
 
-      if (res.status === 304) {
-        return { status: 304, etag: curTag ?? null };
-      }
-      if (!res.ok) {
-        // Treat errors like no-change so we back off instead of crashing
-        return { status: 304, etag: curTag ?? null };
-      }
+      if (res.status === 304) return { status: 304, etag: curTag ?? null };
+      if (!res.ok) return { status: 304, etag: curTag ?? null };
 
       const payload = (await res.json()) as T;
-
-      // Prefer real ETag. Fall back to custom version header if present.
-      const newTag = res.headers.get('etag') || (tagHeader ? res.headers.get(tagHeader) : null) || null;
+      const newTag =
+        res.headers.get('etag') ||
+        (tagHeader ? res.headers.get(tagHeader) : null) ||
+        null;
 
       return { status: 200, etag: newTag, payload };
     },
@@ -164,5 +188,5 @@ export function startSmartPollETag<T = any>(
   });
 }
 
-/** Extra alias for any old imports that used startSmartPoll */
+// Legacy alias
 export const startSmartPoll = startSmartPollETag;
