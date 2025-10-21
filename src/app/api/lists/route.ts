@@ -4,52 +4,71 @@ export const runtime = "edge";
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
-type KVListResult = { keys: { name: string }[]; cursor?: string; list_complete?: boolean };
-type KVNamespace = {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
-  delete(key: string): Promise<void>;
-  list(input?: { prefix?: string; limit?: number; cursor?: string }): Promise<KVListResult>;
-};
+/** KV */
+type KVNamespace = { get(key: string): Promise<string | null> };
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-const LKEY = (id: string) => `l:${id}`;
-const LPLAYER = (playerId: string) => `lidx:p:${playerId}`;
-const LHOST = (hostId: string) => `lidx:h:${hostId}`;
+const LHOST   = (hostId: string)   => `lidx:h:${hostId}`;     // string[]
+const LPLAYER = (playerId: string) => `lidx:p:${playerId}`;   // string[]
+const LKEY    = (id: string)       => `l:${id}`;
+const LVER    = (id: string)       => `lv:${id}`;
+
+type Player = { id: string; name: string };
+type Table  = { a?: string; b?: string };
+type ListGame = {
+  id: string; name: string; code?: string; hostId: string;
+  status: "active"; createdAt: number; tables: Table[]; players: Player[]; queue: string[];
+};
+
+async function readIds(env: Env, key: string): Promise<string[]> {
+  const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
+  try { return JSON.parse(raw) as string[]; } catch { return []; }
+}
+async function fetchMany(env: Env, ids: string[]): Promise<ListGame[]> {
+  const out: ListGame[] = [];
+  for (const id of ids) {
+    const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
+    if (raw) out.push(JSON.parse(raw));
+  }
+  return out;
+}
 
 export async function GET(req: Request) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
+
   const u = new URL(req.url);
   const userId = u.searchParams.get("userId");
   if (!userId) return NextResponse.json({ error: "Missing userId" }, { status: 400 });
 
-  async function loadIds(key: string): Promise<string[]> {
-    const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
-    try { return JSON.parse(raw); } catch { return []; }
-  }
-
+  // ids indexed by host and by player
   const [hostIds, playIds] = await Promise.all([
-    loadIds(LHOST(userId)),
-    loadIds(LPLAYER(userId)),
+    readIds(env, LHOST(userId)),
+    readIds(env, LPLAYER(userId)),
   ]);
 
-  const uniq = (arr: string[]) => Array.from(new Set(arr));
-  const hostUniq = uniq(hostIds);
-  const playUniq = uniq(playIds.filter(id => !hostUniq.includes(id)));
+  const [hosting, playing] = await Promise.all([
+    fetchMany(env, hostIds),
+    fetchMany(env, playIds),
+  ]);
 
-  async function fetchMany(ids: string[]) {
-    const out: any[] = [];
-    for (const id of ids) {
-      const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
-      if (!raw) continue;
-      try { out.push(JSON.parse(raw)); } catch {}
-    }
-    return out;
+  // compute a combined version so the page can ETag/304 and smart-poll
+  let maxV = 0;
+  const unique = [...new Set([...hostIds, ...playIds])];
+  for (const id of unique) {
+    const vRaw = await env.KAVA_TOURNAMENTS.get(LVER(id));
+    const v = vRaw ? Number(vRaw) : 0;
+    if (Number.isFinite(v)) maxV = Math.max(maxV, v);
   }
 
-  const [hosting, playing] = await Promise.all([fetchMany(hostUniq), fetchMany(playUniq)]);
-  hosting.sort((a,b)=> (b.createdAt||0)-(a.createdAt||0));
-  playing.sort((a,b)=> (b.createdAt||0)-(a.createdAt||0));
+  hosting.sort((a,b)=> (b.createdAt||0) - (a.createdAt||0));
+  playing.sort((a,b)=> (b.createdAt||0) - (a.createdAt||0));
 
-  return NextResponse.json({ hosting, playing }, { headers: { "cache-control":"no-store" } });
+  return new NextResponse(JSON.stringify({ hosting, playing }), {
+    headers: {
+      "content-type": "application/json",
+      "x-l-version": String(maxV),
+      "cache-control": "no-store",
+      ETag: `"li-${maxV}"`,
+    }
+  });
 }
