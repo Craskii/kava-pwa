@@ -1,62 +1,75 @@
 // src/lib/poll.ts
-// SSR-safe smart polling with ETag + adaptive backoff.
-// No top-level access to `window` or other browser globals.
 
-export type SmartPoll = { stop: () => void; bump: () => void };
+export type PollStopper = { stop: () => void; bump: () => void };
 
-type Options<T> = {
-  key: string;                       // used only if you want to key multiple polls; no storage here
-  versionHeader?: string;            // e.g. 'x-t-version' or 'x-l-version' (optional)
-  onUpdate: (payload: T | null) => void;
-  minMs?: number;                    // default 4000
-  maxMs?: number;                    // default 60000
+type PollOptions<TPayload> = {
+  key: string; // a logical key to keep per-poll backoff state
+  minMs: number;
+  maxMs: number;
+  fetchOnce: (
+    etag: string | null
+  ) => Promise<
+    | { status: 304; etag: string | null }
+    | { status: 200; etag: string | null; payload: TPayload }
+  >;
+  onChange: (payload: TPayload) => void;
 };
 
-export function startSmartPollETag<T>(
-  url: string,
-  opts: Options<T>
-): SmartPoll {
+// Safe helpers for optional localStorage
+function lsGetJSON<T = any>(key: string): T | null {
+  try {
+    if (typeof window === 'undefined' || !('localStorage' in window)) return null;
+    const raw = window.localStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
+function lsSetJSON(key: string, value: any) {
+  try {
+    if (typeof window === 'undefined' || !('localStorage' in window)) return;
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Primary implementation used by new code */
+export function startAdaptivePoll<T>(opts: PollOptions<T>): PollStopper {
   let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   let etag: string | null = null;
 
-  let delay = opts.minMs ?? 4000;
-  const maxDelay = opts.maxMs ?? 60000;
+  const stateKey = `poll:${opts.key}`;
+  const prev = lsGetJSON<{ interval?: number }>(stateKey) || {};
+  let interval = prev.interval ?? opts.minMs;
 
-  let timer: ReturnType<typeof setTimeout> | null = null;
-
-  async function tick() {
+  async function tick(force = false) {
     if (stopped) return;
-
     try {
-      const res = await fetch(url, {
-        headers: etag ? { 'If-None-Match': etag } : undefined,
-        cache: 'no-store',
-      });
-
+      const res = await opts.fetchOnce(etag);
       if (res.status === 200) {
-        etag = res.headers.get('etag');
-        const data = (await res.json()) as T;
-        opts.onUpdate(data);
-        // reset backoff on change
-        delay = opts.minMs ?? 4000;
-      } else if (res.status === 304) {
-        // no change -> gentle backoff
-        delay = Math.min(Math.round(delay * 1.5), maxDelay);
+        etag = res.etag || etag;
+        opts.onChange((res as any).payload as T);
+        // speed up on change
+        interval = Math.max(opts.minMs, Math.round(interval * 0.6));
       } else {
-        // error -> stronger backoff
-        delay = Math.min(Math.round(delay * 2), maxDelay);
+        // gentle backoff on 304
+        interval = Math.min(opts.maxMs, Math.round(interval * 1.35));
       }
     } catch {
-      delay = Math.min(Math.round(delay * 2), maxDelay);
+      // stronger backoff on network error
+      interval = Math.min(opts.maxMs, Math.round(interval * 1.5));
     } finally {
+      lsSetJSON(stateKey, { interval });
       if (!stopped) {
-        timer = setTimeout(tick, delay);
+        timer = setTimeout(() => tick(), force ? opts.minMs : interval);
       }
     }
   }
 
-  // kick off shortly after hydrate to avoid blocking
-  timer = setTimeout(tick, 200);
+  // start shortly after mount
+  timer = setTimeout(() => tick(true), 50);
 
   return {
     stop() {
@@ -64,10 +77,92 @@ export function startSmartPollETag<T>(
       if (timer) clearTimeout(timer);
     },
     bump() {
-      // caller can “nudge” after a write
-      delay = opts.minMs ?? 4000;
+      if (stopped) return;
       if (timer) clearTimeout(timer);
-      timer = setTimeout(tick, 50);
+      interval = opts.minMs;
+      tick(true);
     },
   };
 }
+
+/**
+ * Back-compat + flexible signature:
+ *
+ * 1) Classic:
+ *    startSmartPollETag(url, onChange, { key?, minMs?, maxMs?, tagHeader?, fetchInit? })
+ *
+ * 2) Newer object form (what some pages use now):
+ *    startSmartPollETag(url, { onUpdate, key?, minMs?, maxMs?, versionHeader?, fetchInit? })
+ */
+export function startSmartPollETag<T = any>(
+  url: string,
+  arg2:
+    | ((payload: T) => void)
+    | {
+        onUpdate: (payload: T) => void;
+        key?: string;
+        minMs?: number;
+        maxMs?: number;
+        versionHeader?: string; // alias of tagHeader
+        fetchInit?: RequestInit;
+      },
+  arg3?: {
+    key?: string;
+    minMs?: number;
+    maxMs?: number;
+    tagHeader?: string;
+    fetchInit?: RequestInit;
+  }
+): PollStopper {
+  // Normalize arguments
+  const isFn = typeof arg2 === 'function';
+  const onChange: (payload: T) => void = isFn ? (arg2 as any) : (arg2 as any).onUpdate;
+
+  const key =
+    (isFn ? arg3?.key : (arg2 as any).key) ?? `url:${url}`;
+  const minMs =
+    (isFn ? arg3?.minMs : (arg2 as any).minMs) ?? 4000;
+  const maxMs =
+    (isFn ? arg3?.maxMs : (arg2 as any).maxMs) ?? 60000;
+
+  const tagHeader =
+    (isFn ? arg3?.tagHeader : (arg2 as any).versionHeader) ?? // prefer versionHeader name if given
+    (isFn ? arg3?.tagHeader : undefined);
+
+  const fetchInit: RequestInit | undefined = (isFn ? arg3?.fetchInit : (arg2 as any).fetchInit) ?? undefined;
+
+  return startAdaptivePoll<T>({
+    key,
+    minMs,
+    maxMs,
+    async fetchOnce(curTag) {
+      const headers: Record<string, string> = {};
+      if (curTag) headers['If-None-Match'] = curTag;
+
+      const res = await fetch(url, {
+        cache: 'no-store',
+        ...(fetchInit || {}),
+        headers: { ...(fetchInit?.headers as any), ...headers },
+      });
+
+      if (res.status === 304) {
+        return { status: 304, etag: curTag ?? null };
+      }
+      if (!res.ok) {
+        // Treat errors like no-change so we back off instead of crashing
+        return { status: 304, etag: curTag ?? null };
+      }
+
+      const payload = (await res.json()) as T;
+
+      // Prefer real ETag. Fall back to custom version header if present.
+      const newTag = res.headers.get('etag') || (tagHeader ? res.headers.get(tagHeader) : null) || null;
+
+      return { status: 200, etag: newTag, payload };
+    },
+    onChange,
+  });
+}
+
+/** Extra alias for any old imports that used startSmartPoll */
+export const startSmartPoll = startSmartPollETag;
