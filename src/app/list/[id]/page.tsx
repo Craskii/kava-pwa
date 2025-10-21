@@ -6,69 +6,36 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
 import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
-import {
-  getListRemote,
-  listJoin,
-  listLeave,
-  listILost,
-  listSetTables,
-  ListGame,
-  Player,
-  uid,
-} from '@/lib/storage';
 import { startAdaptivePoll } from '@/lib/poll';
+import { uid } from '@/lib/storage';
 
-/* ---------- helpers ---------- */
-function coerceList(x: any): ListGame | null {
+type Player = { id: string; name: string };
+type Table = { a?: string; b?: string };
+type ListGame = {
+  id: string; name: string; code?: string; hostId: string; status: 'active';
+  createdAt: number; tables: Table[]; players: Player[]; queue: string[]; v?: number;
+};
+
+function coerce(x: any): ListGame | null {
   if (!x) return null;
   try {
     return {
       id: String(x.id ?? ''),
       name: String(x.name ?? 'Untitled'),
-      code: x.code ? String(x.code) : undefined,
+      code: x?.code ? String(x.code) : undefined,
       hostId: String(x.hostId ?? ''),
       status: 'active',
       createdAt: Number(x.createdAt ?? Date.now()),
       tables: Array.isArray(x.tables)
         ? x.tables.map((t: any) => ({ a: t?.a, b: t?.b }))
-        : [],
+        : [{}, {}],
       players: Array.isArray(x.players)
-        ? x.players.map((p: any) => ({
-            id: String(p?.id ?? ''),
-            name: String(p?.name ?? 'Player'),
-          }))
+        ? x.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') }))
         : [],
       queue: Array.isArray(x.queue) ? x.queue.map((id: any) => String(id)) : [],
       v: Number(x.v ?? 0),
     };
-  } catch {
-    return null;
-  }
-}
-
-/** detect if my seating changed, to trigger sound/alerts */
-function makeSeatingChangeDetector(meId: string) {
-  const lastSeating = { current: '' };
-  return (next: ListGame | null) => {
-    if (!next) return false;
-    const tables = Array.isArray(next.tables) ? next.tables : [];
-    const i = tables.findIndex((t) => t.a === meId || t.b === meId);
-    if (i < 0) {
-      if (lastSeating.current !== '') {
-        lastSeating.current = '';
-        return true;
-      }
-      return false;
-    }
-    const a = tables[i]?.a ?? 'x';
-    const b = tables[i]?.b ?? 'x';
-    const key = `table-${i}-${a}-${b}`;
-    if (key !== lastSeating.current) {
-      lastSeating.current = key;
-      return true;
-    }
-    return false;
-  };
+  } catch { return null; }
 }
 
 export default function ListLobby() {
@@ -76,21 +43,23 @@ export default function ListLobby() {
   const [busy, setBusy] = useState(false);
   const [nameField, setNameField] = useState('');
 
-  // numeric version from x-l-version (used for If-Match on PUT)
+  // numeric version used for If-Match
   const verRef = useRef<string | null>(null);
+  // keep last seating signature so we can ping alerts when my seat changes
+  const lastSeatSig = useRef<string>('');
 
-  // derive ID from URL (client)
+  // ID from URL
   const id =
     typeof window !== 'undefined'
       ? decodeURIComponent(window.location.pathname.split('/').pop() || '')
       : '';
 
+  // me
   const me = useMemo<Player>(() => {
     try {
       return (
         JSON.parse(localStorage.getItem('kava_me') || 'null') || {
-          id: uid(),
-          name: 'Player',
+          id: uid(), name: 'Player'
         }
       );
     } catch {
@@ -101,12 +70,7 @@ export default function ListLobby() {
     localStorage.setItem('kava_me', JSON.stringify(me));
   }, [me]);
 
-  const detectMySeatingChanged = useMemo(
-    () => makeSeatingChangeDetector(me.id),
-    [me.id]
-  );
-
-  // Alerts
+  // alerts
   useQueueAlerts({
     listId: id,
     upNextMessage: 'your up next get ready!!',
@@ -118,18 +82,28 @@ export default function ListLobby() {
     },
   });
 
-  /* ---------- network helpers (GET/PUT with version) ---------- */
+  function detectSeatChange(next: ListGame | null) {
+    if (!next) return false;
+    const idx = next.tables.findIndex(t => t.a === me.id || t.b === me.id);
+    if (idx < 0) {
+      if (lastSeatSig.current !== '') { lastSeatSig.current = ''; return true; }
+      return false;
+    }
+    const t = next.tables[idx];
+    const sig = `t${idx}-${t.a ?? 'x'}-${t.b ?? 'x'}`;
+    if (sig !== lastSeatSig.current) { lastSeatSig.current = sig; return true; }
+    return false;
+  }
+
+  /* ------------------- GET/PUT helpers ------------------- */
 
   async function getOnce() {
     if (!id) return null;
-    const res = await fetch(`/api/list/${encodeURIComponent(id)}`, {
-      cache: 'no-store',
-    });
+    const res = await fetch(`/api/list/${encodeURIComponent(id)}`, { cache: 'no-store' });
     if (!res.ok) throw new Error('load-failed');
     const json = await res.json();
-    const doc = coerceList(json);
-    // capture numeric version for If-Match
-    verRef.current = res.headers.get('x-l-version');
+    const doc = coerce(json);
+    verRef.current = res.headers.get('x-l-version'); // capture numeric version
     return doc;
   }
 
@@ -142,17 +116,68 @@ export default function ListLobby() {
       },
       body: JSON.stringify(next),
     });
-    // API returns 204 No Content on success (still with headers)
     if (!res.ok && res.status !== 204) {
       throw new Error(`save-failed-${res.status}`);
     }
-    // update numeric version for subsequent saves
     const v = res.headers.get('x-l-version');
     if (v) verRef.current = v;
   }
 
-  /* ---------- initial load + adaptive polling (ETag 304) ---------- */
+  // auto-seat: fill empty seats from the single queue (front of the line)
+  function autoSeat(doc: ListGame): ListGame {
+    const next = structuredClone(doc) as ListGame;
+    const take = () => {
+      while (next.queue.length > 0) {
+        const pid = next.queue[0];
+        // ensure player still exists
+        if (!next.players.some(p => p.id === pid)) {
+          next.queue.shift(); continue;
+        }
+        return next.queue.shift()!;
+      }
+      return undefined;
+    };
+    let changed = false;
+    for (const t of next.tables) {
+      if (!t.a) { const pid = take(); if (pid) { t.a = pid; changed = true; } }
+      if (!t.b) { const pid = take(); if (pid) { t.b = pid; changed = true; } }
+    }
+    return changed ? next : doc;
+  }
 
+  async function save(mut: (x: ListGame) => void) {
+    if (!g || busy) return;
+    setBusy(true);
+    try {
+      // always re-read latest (and its version) to reduce 412s
+      const latest = await getOnce();
+      if (!latest) throw new Error('no-latest');
+      let next = structuredClone(latest) as ListGame;
+      mut(next);
+      next = autoSeat(next);
+      await putDoc(next);
+      setG(next);
+      if (detectSeatChange(next)) bumpAlerts();
+    } catch {
+      // one retry path on conflict: refetch, reapply, save
+      try {
+        const latest2 = await getOnce();
+        if (!latest2) throw new Error('no-latest-2');
+        let next2 = structuredClone(latest2) as ListGame;
+        mut(next2);
+        next2 = autoSeat(next2);
+        await putDoc(next2);
+        setG(next2);
+        if (detectSeatChange(next2)) bumpAlerts();
+      } catch {
+        alert('Could not change.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* ------------------- Polling ------------------- */
   useEffect(() => {
     if (!id) return;
     let stopped = false;
@@ -166,302 +191,230 @@ export default function ListLobby() {
           headers: etag ? { 'If-None-Match': etag } : undefined,
           cache: 'no-store',
         });
-
-        // keep numeric version in sync (needed for PUT If-Match)
         const vHdr = res.headers.get('x-l-version');
         if (vHdr) verRef.current = vHdr;
-
         if (res.status === 304) return { status: 304, etag: etag ?? null };
         if (!res.ok) return { status: 304, etag: etag ?? null };
-
         const payload = await res.json();
         const newTag = res.headers.get('etag') || res.headers.get('x-l-version') || null;
         return { status: 200, etag: newTag, payload };
       },
       onChange: (payload) => {
         if (stopped) return;
-        const doc = coerceList(payload);
-        if (!doc || !doc.id || !doc.hostId) return; // guard
+        const doc = coerce(payload);
+        if (!doc) return;
         setG(doc);
-        if (detectMySeatingChanged(doc)) bumpAlerts();
+        if (detectSeatChange(doc)) bumpAlerts();
       },
     });
 
-    // Also do a fast initial fetch to paint quickly & set version for saves.
     (async () => {
       try {
         const doc = await getOnce();
-        if (doc) {
-          setG(doc);
-          if (detectMySeatingChanged(doc)) bumpAlerts();
-        }
+        if (doc) { setG(doc); if (detectSeatChange(doc)) bumpAlerts(); }
       } catch {}
     })();
 
-    return () => {
-      stopped = true;
-      stopper.stop();
-    };
-  }, [id, detectMySeatingChanged]);
+    return () => { stopped = true; stopper.stop(); };
+  }, [id]);
 
-  /* ---------- derived data ---------- */
-  const safeTables = Array.isArray(g?.tables) ? g!.tables : [];
-  const safeQueue = Array.isArray(g?.queue) ? g!.queue : [];
-  const safePlayers = Array.isArray(g?.players) ? g!.players : [];
+  /* ------------------- Derived ------------------- */
+  const players = g?.players ?? [];
+  const queue = g?.queue ?? [];
+  const tables = g?.tables ?? [];
+  const isHost = !!g && me.id === g.hostId;
+  const seatedIdx = tables.findIndex(t => t.a === me.id || t.b === me.id);
+  const queued = queue.includes(me.id);
+  const seated = seatedIdx >= 0;
 
-  const myTableIndex = safeTables.findIndex(
-    (t) => t.a === me.id || t.b === me.id
-  );
-  const seated = myTableIndex >= 0;
-  const queued = safeQueue.includes(me.id);
-
-  const oneActive = safeTables.length === 1;
-  const twoActive = safeTables.length >= 2;
-
-  /* ---------- UI actions ---------- */
-
-  async function onCopy() {
-    if (!g?.code) return;
-    await navigator.clipboard.writeText(g.code);
-    alert('Code copied!');
+  function nameOf(id?: string) {
+    if (!id) return '—';
+    return players.find(p => p.id === id)?.name || '??';
   }
+
+  /* ------------------- Actions ------------------- */
 
   async function refreshOnce() {
     try {
       setBusy(true);
       const doc = await getOnce();
       if (doc) setG(doc);
-    } catch {
-      // no-op
-    } finally {
-      setBusy(false);
-    }
+    } catch {} finally { setBusy(false); }
   }
 
-  async function save(mut: (x: ListGame) => void) {
-    if (!g || busy) return;
-    setBusy(true);
-    try {
-      // reload latest and its version before mutating, to minimize conflicts
-      const latest = await getOnce();
-      const base = coerceList(latest) || g;
-      const next = structuredClone(base);
-      mut(next);
-      await putDoc(next);
-      setG(next);
-      bumpAlerts();
-    } catch {
-      alert('Could not save.');
-    } finally {
-      setBusy(false);
-    }
+  async function onRenameList(newName: string) {
+    const v = newName.trim();
+    if (!g || !v) return;
+    await save(d => { d.name = v; });
   }
 
-  async function onAddPlayerManual() {
+  async function onAddPlayer() {
+    if (!g || !nameField.trim()) return;
     const nm = nameField.trim();
-    if (!g || busy || !nm) return;
-    await save((draft) => {
-      const p: Player = { id: uid(), name: nm };
-      const updated = listJoin(draft, p);
-      Object.assign(draft, coerceList(updated));
-    });
     setNameField('');
+    await save(d => {
+      const p = { id: uid(), name: nm };
+      d.players.push(p);
+      // default: also join queue
+      if (!d.queue.includes(p.id)) d.queue.push(p.id);
+    });
   }
 
   async function onAddMe() {
-    if (!g || busy) return;
-    await save((draft) => {
-      const updated = listJoin(draft, me);
-      Object.assign(draft, coerceList(updated));
+    if (!g) return;
+    await save(d => {
+      if (!d.players.some(p => p.id === me.id)) d.players.push(me);
+      if (d.tables.some(t => t.a === me.id || t.b === me.id)) return;
+      if (!d.queue.includes(me.id)) d.queue.push(me.id);
     });
   }
 
   async function onRemovePlayer(pid: string) {
-    if (!g || busy) return;
-    await save((draft) => {
-      const updated = listLeave(draft, pid);
-      Object.assign(draft, coerceList(updated));
+    await save(d => {
+      d.players = d.players.filter(p => p.id !== pid);
+      d.queue = d.queue.filter(x => x !== pid);
+      d.tables.forEach(t => {
+        if (t.a === pid) t.a = undefined;
+        if (t.b === pid) t.b = undefined;
+      });
+    });
+  }
+
+  async function onRenamePlayer(pid: string) {
+    const cur = players.find(p => p.id === pid)?.name || '';
+    const nm = prompt('Rename player', cur);
+    if (!nm) return;
+    await save(d => {
+      const p = d.players.find(pp => pp.id === pid);
+      if (p) p.name = nm.trim() || p.name;
     });
   }
 
   async function onJoinQueue() {
-    if (!g || busy) return;
-    await save((draft) => {
-      const updated = listJoin(draft, me);
-      Object.assign(draft, coerceList(updated));
+    if (!g) return;
+    await save(d => {
+      if (!d.players.some(p => p.id === me.id)) d.players.push(me);
+      if (d.tables.some(t => t.a === me.id || t.b === me.id)) return;
+      if (!d.queue.includes(me.id)) d.queue.push(me.id);
     });
   }
 
   async function onLeaveQueue() {
-    if (!g || busy) return;
-    await save((draft) => {
-      const updated = listLeave(draft, me.id);
-      Object.assign(draft, coerceList(updated));
+    if (!g) return;
+    await save(d => {
+      d.queue = d.queue.filter(x => x !== me.id);
     });
   }
 
   async function onILost() {
-    if (!g || busy) return;
-    const idx = safeTables.findIndex((t) => t.a === me.id || t.b === me.id);
-    if (idx < 0) {
-      alert('You are not seated right now.');
-      return;
-    }
-    await save((draft) => {
-      const updated = listILost(draft, idx, me.id);
-      Object.assign(draft, coerceList(updated));
+    if (!g) return;
+    await save(d => {
+      const t = d.tables.find(tt => tt.a === me.id || tt.b === me.id);
+      if (!t) return;
+      if (t.a === me.id) t.a = undefined;
+      if (t.b === me.id) t.b = undefined;
+      if (!d.queue.includes(me.id)) d.queue.push(me.id);
     });
-    alert("It's ok — join again by pressing “Join queue”.");
+    alert("It's ok — you can hop back in the queue.");
   }
 
-  async function onTables(count: 1 | 2) {
+  // DnD between queue and seats (simple)
+  type DInfo =
+    | { type: 'queue'; pid: string }
+    | { type: 'seat'; table: number; side: 'a'|'b'; pid?: string };
+
+  function onDragStart(ev: React.DragEvent, info: DInfo) {
+    ev.dataTransfer.setData('application/json', JSON.stringify(info));
+    ev.dataTransfer.effectAllowed = 'move';
+  }
+  function onDragOver(ev: React.DragEvent) { ev.preventDefault(); }
+
+  async function onDrop(ev: React.DragEvent, dst: DInfo) {
     if (!g || busy) return;
-    await save((draft) => {
-      const updated = listSetTables(draft, count);
-      Object.assign(draft, coerceList(updated));
+    ev.preventDefault();
+    let src: DInfo | null = null;
+    try { src = JSON.parse(ev.dataTransfer.getData('application/json')); } catch {}
+    if (!src) return;
+
+    await save(d => {
+      const removeEverywhere = (pid: string) => {
+        d.queue = d.queue.filter(x => x !== pid);
+        d.tables.forEach(t => { if (t.a === pid) t.a = undefined; if (t.b === pid) t.b = undefined; });
+      };
+
+      let movingPid: string | undefined;
+      if (src.type === 'queue') movingPid = src.pid;
+      if (src.type === 'seat') movingPid = d.tables[src.table][src.side];
+
+      if (!movingPid) return;
+
+      removeEverywhere(movingPid);
+
+      if (dst.type === 'queue') {
+        if (!d.queue.includes(movingPid)) d.queue.push(movingPid);
+      } else {
+        const t = d.tables[dst.table];
+        if (dst.side === 'a') t.a = movingPid; else t.b = movingPid;
+      }
     });
   }
 
-  /* ---------- render ---------- */
+  /* ------------------- Render ------------------- */
 
   if (!g) {
     return (
       <main style={wrap}>
         <BackButton href="/lists" />
-        <p style={{ opacity: 0.7 }}>Loading…</p>
-        <div>
-          <button style={btnGhostSm} onClick={refreshOnce} disabled={busy}>
-            Retry
-          </button>
-        </div>
+        <p style={{ opacity: .7 }}>Loading…</p>
+        <div><button style={btnGhostSm} onClick={refreshOnce} disabled={busy}>Retry</button></div>
       </main>
     );
   }
 
   return (
     <main style={wrap}>
-      <div
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          gap: 12,
-        }}
-      >
+      {/* top bar */}
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
         <BackButton href="/lists" />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={pill}>Live</span>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <span style={pillBadge}>Live</span>
           <AlertsToggle />
-          <button style={btnGhostSm} onClick={refreshOnce} disabled={busy}>
-            Refresh
-          </button>
+          <button style={btnGhostSm} onClick={refreshOnce} disabled={busy}>Refresh</button>
         </div>
       </div>
 
-      <header
-        style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          gap: 12,
-          alignItems: 'center',
-          marginTop: 6,
-        }}
-      >
+      {/* instructions */}
+      <section style={notice}>
+        <b>How it works:</b> One shared queue feeds both tables. When a seat opens or a player joins and a table is empty, they’re seated automatically. While seated, tap <i>I lost</i> to free the seat and rejoin the queue.
+      </section>
+
+      {/* header + my actions */}
+      <header style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginTop:6}}>
         <div>
-          <h1 style={{ margin: '8px 0 4px' }}>
+          <h1 style={{ margin:'8px 0 4px' }}>
             <input
               defaultValue={g.name}
-              onBlur={(e) => {
-                const v = e.currentTarget.value.trim();
-                if (!v || v === g.name) return;
-                onRename(v);
-              }}
+              onBlur={(e) => onRenameList(e.currentTarget.value)}
               style={nameInput}
               disabled={busy}
             />
           </h1>
-          <div
-            style={{
-              opacity: 0.8,
-              fontSize: 14,
-              display: 'flex',
-              gap: 8,
-              alignItems: 'center',
-              flexWrap: 'wrap',
-            }}
-          >
-            Private code: <b>{g.code || '—'}</b>{' '}
-            {g.code && (
-              <button style={chipBtn} onClick={onCopy}>
-                Copy
-              </button>
-            )}{' '}
-            • {safePlayers.length}{' '}
-            {safePlayers.length === 1 ? 'player' : 'players'}
+          <div style={{ opacity:.8, fontSize:14, display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+            Private code: <b>{g.code || '—'}</b> • {players.length} {players.length === 1 ? 'player' : 'players'}
           </div>
         </div>
-
-        <div style={{ display: 'flex', gap: 8 }}>
-          {!seated && !queued && (
-            <button style={btn} onClick={onJoinQueue} disabled={busy}>
-              Join queue
-            </button>
-          )}
-          {queued && (
-            <button style={btnGhost} onClick={onLeaveQueue} disabled={busy}>
-              Leave queue
-            </button>
-          )}
-          {seated && (
-            <button style={btnGhost} onClick={onILost} disabled={busy}>
-              I lost
-            </button>
-          )}
+        <div style={{display:'flex',gap:8}}>
+          {!seated && !queued && <button style={btn} onClick={onJoinQueue} disabled={busy}>Join queue</button>}
+          {queued && <button style={btnGhost} onClick={onLeaveQueue} disabled={busy}>Leave queue</button>}
+          {seated && <button style={btnGhost} onClick={onILost} disabled={busy}>I lost</button>}
         </div>
       </header>
 
-      <section style={notice}>
-        <b>How it works:</b> One shared queue feeds both tables. When someone
-        taps <i>“I lost”</i>, the next person in the queue sits at whichever
-        table frees up first.
-      </section>
-
-      {g.hostId === me.id && (
+      {/* Host controls */}
+      {isHost && (
         <section style={card}>
-          <h3 style={{ marginTop: 0 }}>Host controls</h3>
-
-          <div
-            style={{
-              display: 'flex',
-              gap: 8,
-              flexWrap: 'wrap',
-              marginBottom: 10,
-            }}
-          >
-            <button
-              style={oneActive ? btnActive : btn}
-              onClick={() => onTables(1)}
-              disabled={busy}
-            >
-              1 Table
-            </button>
-            <button
-              style={twoActive ? btnActive : btnGhost}
-              onClick={() => onTables(2)}
-              disabled={busy}
-            >
-              2 Tables
-            </button>
-          </div>
-
-          <div
-            style={{
-              display: 'flex',
-              gap: 8,
-              flexWrap: 'wrap',
-              marginBottom: 12,
-            }}
-          >
+          <h3 style={{marginTop:0}}>Host controls</h3>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap', marginBottom:12}}>
             <input
               placeholder="Add player name..."
               value={nameField}
@@ -469,54 +422,23 @@ export default function ListLobby() {
               style={input}
               disabled={busy}
             />
-            <button
-              style={btn}
-              onClick={onAddPlayerManual}
-              disabled={busy || !nameField.trim()}
-            >
-              Add player
-            </button>
-            <button style={btnGhost} onClick={onAddMe} disabled={busy}>
-              Add me
-            </button>
+            <button style={btn} onClick={onAddPlayer} disabled={busy || !nameField.trim()}>Add player</button>
+            <button style={btnGhost} onClick={onAddMe} disabled={busy}>Add me</button>
           </div>
 
           <div>
-            <h4 style={{ margin: '6px 0' }}>
-              Players ({safePlayers.length})
-            </h4>
-            {safePlayers.length === 0 ? (
-              <div style={{ opacity: 0.7 }}>No players yet.</div>
+            <h4 style={{ margin:'6px 0' }}>Players ({players.length})</h4>
+            {players.length === 0 ? (
+              <div style={{ opacity:.7 }}>No players yet.</div>
             ) : (
-              <ul
-                style={{
-                  listStyle: 'none',
-                  padding: 0,
-                  margin: 0,
-                  display: 'grid',
-                  gap: 8,
-                }}
-              >
-                {safePlayers.map((p) => (
-                  <li
-                    key={p.id}
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      background: '#111',
-                      padding: '10px 12px',
-                      borderRadius: 10,
-                    }}
-                  >
+              <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
+                {players.map((p) => (
+                  <li key={p.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}>
                     <span>{p.name}</span>
-                    <button
-                      style={btnGhost}
-                      onClick={() => onRemovePlayer(p.id)}
-                      disabled={busy}
-                    >
-                      Remove
-                    </button>
+                    <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                      <button style={btnMini} onClick={()=>onRenamePlayer(p.id)} disabled={busy}>Rename</button>
+                      <button style={btnGhost} onClick={()=>onRemovePlayer(p.id)} disabled={busy}>Remove</button>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -525,64 +447,60 @@ export default function ListLobby() {
         </section>
       )}
 
+      {/* Queue */}
       <section style={card}>
-        <h3 style={{ marginTop: 0 }}>Queue ({safeQueue.length})</h3>
-        {safeQueue.length === 0 ? (
-          <div style={{ opacity: 0.7 }}>No one in queue.</div>
+        <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
+        {queue.length === 0 ? (
+          <div style={{ opacity:.7 }}>No one waiting.</div>
         ) : (
-          <ol style={{ margin: 0, paddingLeft: 18 }}>
-            {safeQueue.map((qid) => {
-              const name = safePlayers.find((p) => p.id === qid)?.name || '??';
-              return (
-                <li key={qid} style={{ margin: '6px 0' }}>
-                  {name}
-                </li>
-              );
-            })}
+          <ol style={{margin:0,paddingLeft:18,display:'grid',gap:6}}>
+            {queue.map(pid => (
+              <li
+                key={pid}
+                draggable
+                onDragStart={e=>onDragStart(e,{type:'queue', pid})}
+                style={{cursor:'grab'}}
+              >
+                {nameOf(pid)}
+              </li>
+            ))}
           </ol>
         )}
       </section>
 
+      {/* Tables (blue) */}
       <section style={card}>
-        <h3 style={{ marginTop: 0 }}>Tables</h3>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(260px,1fr))',
-            gap: 12,
-          }}
-        >
-          {safeTables.map((t, i) => {
-            const a =
-              safePlayers.find((p) => p.id === t.a)?.name ||
-              (t.a ? '??' : '—');
-            const b =
-              safePlayers.find((p) => p.id === t.b)?.name ||
-              (t.b ? '??' : '—');
+        <h3 style={{marginTop:0}}>Tables</h3>
+        <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(280px,1fr))', gap:12}}>
+          {tables.map((t, i) => {
             const meHere = t.a === me.id || t.b === me.id;
+            const Seat = ({ side }: { side:'a'|'b' }) => {
+              const pid = t[side];
+              const info: DInfo = { type:'seat', table:i, side, pid };
+              return (
+                <div
+                  draggable={!!pid}
+                  onDragStart={(e)=> pid && onDragStart(e, info)}
+                  onDragOver={onDragOver}
+                  onDrop={(e)=>onDrop(e, info)}
+                  style={{minHeight:24, padding:'8px 10px', border:'1px dashed rgba(255,255,255,.25)', borderRadius:8, background:'rgba(56,189,248,.10)'}}
+                  title="Drag from queue or the other seat"
+                >
+                  {nameOf(pid)}
+                </div>
+              );
+            };
             return (
-              <div
-                key={i}
-                style={{
-                  background: '#111',
-                  borderRadius: 12,
-                  padding: '10px 12px',
-                  border: '1px solid rgba(255,255,255,.12)',
-                }}
-              >
-                <div style={{ opacity: 0.8, fontSize: 12, marginBottom: 6 }}>
-                  Table {i + 1}
+              <div key={i} style={{ background:'#0b3a66', borderRadius:12, padding:'12px 14px', border:'1px solid rgba(56,189,248,.35)'}}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                  <div style={{ opacity:.9, fontSize:12 }}>Table {i+1}</div>
+                  {meHere && <button style={btnMini} onClick={onILost} disabled={busy}>I lost</button>}
                 </div>
-                <div style={{ minHeight: 22 }}>
-                  {a} vs {b}
+                <div style={{ display:'grid', gap:8 }}>
+                  <Seat side="a" />
+                  <div style={{opacity:.7, textAlign:'center'}}>vs</div>
+                  <Seat side="b" />
                 </div>
-                {meHere && (
-                  <div style={{ marginTop: 8 }}>
-                    <button style={btnMini} onClick={onILost} disabled={busy}>
-                      I lost
-                    </button>
-                  </div>
-                )}
               </div>
             );
           })}
@@ -590,112 +508,37 @@ export default function ListLobby() {
       </section>
     </main>
   );
-
-  // rename list title
-  async function onRename(newName: string) {
-    if (!g || busy) return;
-    await save((draft) => {
-      draft.name = newName;
-    });
-  }
 }
 
-/* ---------- styles ---------- */
+/* ------------------- styles ------------------- */
 const wrap: React.CSSProperties = {
-  minHeight: '100vh',
-  background: '#0b0b0b',
-  color: '#fff',
-  padding: 24,
-  fontFamily: 'system-ui',
+  minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui'
 };
 const notice: React.CSSProperties = {
-  background: 'rgba(14,165,233,.12)',
-  border: '1px solid rgba(14,165,233,.25)',
-  borderRadius: 12,
-  padding: '10px 12px',
-  margin: '8px 0 14px',
+  background:'rgba(14,165,233,.12)', border:'1px solid rgba(14,165,233,.25)',
+  borderRadius:12, padding:'10px 12px', margin:'8px 0 14px'
 };
 const card: React.CSSProperties = {
-  background: 'rgba(255,255,255,0.06)',
-  border: '1px solid rgba(255,255,255,0.12)',
-  borderRadius: 14,
-  padding: 14,
-  marginBottom: 14,
+  background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)',
+  borderRadius:14, padding:14, marginBottom:14
 };
-const pill: React.CSSProperties = {
-  padding: '6px 10px',
-  borderRadius: 999,
-  background: 'rgba(16,185,129,.2)',
-  border: '1px solid rgba(16,185,129,.35)',
-  fontSize: 12,
+const pillBadge: React.CSSProperties = {
+  padding:'6px 10px', borderRadius:999, background:'rgba(16,185,129,.2)',
+  border:'1px solid rgba(16,185,129,.35)', fontSize:12
 };
 const btn: React.CSSProperties = {
-  padding: '10px 14px',
-  borderRadius: 10,
-  border: 'none',
-  background: '#0ea5e9',
-  color: '#fff',
-  fontWeight: 700,
-  cursor: 'pointer',
+  padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer'
 };
 const btnGhost: React.CSSProperties = {
-  padding: '10px 14px',
-  borderRadius: 10,
-  border: '1px solid rgba(255,255,255,0.25)',
-  background: 'transparent',
-  color: '#fff',
-  cursor: 'pointer',
-};
-const btnActive: React.CSSProperties = {
-  padding: '10px 14px',
-  borderRadius: 10,
-  border: 'none',
-  background: '#0ea5e9',
-  color: '#fff',
-  fontWeight: 700,
-  cursor: 'pointer',
+  padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer'
 };
 const btnGhostSm: React.CSSProperties = {
-  padding: '6px 10px',
-  borderRadius: 10,
-  border: '1px solid rgba(255,255,255,0.25)',
-  background: 'transparent',
-  color: '#fff',
-  cursor: 'pointer',
-  fontWeight: 600,
+  padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontWeight:600
 };
 const btnMini: React.CSSProperties = {
-  padding: '6px 10px',
-  borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.25)',
-  background: 'transparent',
-  color: '#fff',
-  cursor: 'pointer',
-  fontSize: 12,
-};
-const chipBtn: React.CSSProperties = {
-  padding: '4px 8px',
-  borderRadius: 8,
-  border: '1px solid rgba(255,255,255,0.25)',
-  background: 'transparent',
-  color: '#fff',
-  cursor: 'pointer',
-  fontSize: 12,
-};
-const input: React.CSSProperties = {
-  width: 260,
-  maxWidth: '90vw',
-  padding: '10px 12px',
-  borderRadius: 10,
-  border: '1px solid #333',
-  background: '#111',
-  color: '#fff',
+  padding:'6px 10px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontSize:12
 };
 const nameInput: React.CSSProperties = {
-  background: '#111',
-  border: '1px solid #333',
-  color: '#fff',
-  borderRadius: 10,
-  padding: '8px 10px',
-  width: 'min(420px, 80vw)',
+  background:'#111', border:'1px solid #333', color:'#fff',
+  borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)'
 };
