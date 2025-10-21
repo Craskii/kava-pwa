@@ -20,12 +20,12 @@ type ListGame = {
   hostId: string;
   status: 'active';
   createdAt: number;
-  tables: Table[];                 // each with kind: 8 or 9
-  players: Player[];               // the "List" at the top
-  q8: string[];                    // 8-foot queue
-  q9: string[];                    // 9-foot queue
-  qAny: string[];                  // combined queue (any table)
-  lostToAny?: boolean;             // host toggle: send losers to Combined instead of table-specific queues
+  tables: Table[];
+  players: Player[];
+  q8: string[];
+  q9: string[];
+  qAny: string[];
+  lostToAny?: boolean;
   v?: number;
 };
 
@@ -35,7 +35,7 @@ function coerce(x: any): ListGame | null {
     const tables: Table[] = Array.isArray(x.tables)
       ? x.tables.map((t: any, i: number) => ({
           a: t?.a, b: t?.b,
-          kind: (t?.kind === 9 || t?.kind === 8) ? t.kind : (i === 0 ? 9 : 8) as TableKind
+          kind: (t?.kind === 9 || t?.kind === 8) ? t.kind : ((i === 0 ? 9 : 8) as TableKind),
         }))
       : [{ kind: 9 }, { kind: 8 }];
 
@@ -52,7 +52,10 @@ function coerce(x: any): ListGame | null {
         : [],
       q8: Array.isArray(x.q8) ? x.q8.map((id: any) => String(id)) : [],
       q9: Array.isArray(x.q9) ? x.q9.map((id: any) => String(id)) : [],
-      qAny: Array.isArray(x.qAny) ? x.qAny.map((id: any) => String(id)) : (Array.isArray(x.queue) ? x.queue.map((id: any) => String(id)) : []), // migrate old single queue → combined
+      // migrate old single-queue → Combined
+      qAny: Array.isArray(x.qAny)
+        ? x.qAny.map((id: any) => String(id))
+        : (Array.isArray(x.queue) ? x.queue.map((id: any) => String(id)) : []),
       lostToAny: Boolean(x.lostToAny ?? false),
       v: Number(x.v ?? 0),
     };
@@ -66,12 +69,14 @@ export default function ListLobby() {
   const [busy, setBusy] = useState(false);
   const [nameField, setNameField] = useState('');
   const [showTModal, setShowTModal] = useState(false);
-  const [tCount, setTCount] = useState<1|2>(2);
+  const [tCount, setTCount] = useState<1 | 2>(2);
   const [t0Kind, setT0Kind] = useState<TableKind>(9);
   const [t1Kind, setT1Kind] = useState<TableKind>(8);
 
   const verRef = useRef<string | null>(null);
   const lastSeatSig = useRef<string>('');
+  const autoJoinedRef = useRef(false); // prevents double auto-join
+  const excludeSeatPidRef = useRef<string | null>(null); // prevent instant reseat on "Lost"
 
   const id =
     typeof window !== 'undefined'
@@ -101,7 +106,10 @@ export default function ListLobby() {
   function detectSeatChange(next: ListGame | null) {
     if (!next) return false;
     const idx = next.tables.findIndex(t => t.a === me.id || t.b === me.id);
-    if (idx < 0) { if (lastSeatSig.current !== '') { lastSeatSig.current = ''; return true; } return false; }
+    if (idx < 0) {
+      if (lastSeatSig.current !== '') { lastSeatSig.current = ''; return true; }
+      return false;
+    }
     const t = next.tables[idx];
     const sig = `t${idx}-${t.a ?? 'x'}-${t.b ?? 'x'}-${t.kind}`;
     if (sig !== lastSeatSig.current) { lastSeatSig.current = sig; return true; }
@@ -137,13 +145,28 @@ export default function ListLobby() {
 
   function takeFromQueues(next: ListGame, kind: TableKind): string | undefined {
     const has = (pid?: string) => !!pid && next.players.some(p => p.id === pid);
+    const excluded = excludeSeatPidRef.current;
+
+    const takeFrom = (arr: string[]) => {
+      while (arr.length) {
+        const pid = arr[0];
+        if (!has(pid)) { arr.shift(); continue; }
+        if (excluded && pid === excluded) { // skip once for the loser this tick
+          // move skipped pid to end and continue
+          arr.push(arr.shift()!);
+          continue;
+        }
+        return arr.shift()!;
+      }
+      return undefined;
+    };
+
     if (kind === 8) {
-      while (next.q8.length) { const pid = next.q8.shift()!; if (has(pid)) return pid; }
+      const p = takeFrom(next.q8); if (p) return p;
     } else {
-      while (next.q9.length) { const pid = next.q9.shift()!; if (has(pid)) return pid; }
+      const p = takeFrom(next.q9); if (p) return p;
     }
-    while (next.qAny.length) { const pid = next.qAny.shift()!; if (has(pid)) return pid; }
-    return undefined;
+    return takeFrom(next.qAny);
   }
 
   function autoSeat(doc: ListGame): ListGame {
@@ -154,10 +177,12 @@ export default function ListLobby() {
       if (!t.a) { const pid = takeFromQueues(next, t.kind); if (pid) { t.a = pid; changed = true; } }
       if (!t.b) { const pid = takeFromQueues(next, t.kind); if (pid) { t.b = pid; changed = true; } }
     }
+    // clear the exclude after a single autoSeat pass
+    excludeSeatPidRef.current = null;
     return changed ? next : doc;
   }
 
-  async function save(mut: (x: ListGame) => void) {
+  async function save(mut: (x: ListGame) => void, opts?: { skipAutoSeat?: boolean }) {
     if (!g || busy) return;
     setBusy(true);
     try {
@@ -165,7 +190,7 @@ export default function ListLobby() {
       if (!latest) throw new Error('no-latest');
       let next = structuredClone(latest) as ListGame;
       mut(next);
-      next = autoSeat(next);
+      if (!opts?.skipAutoSeat) next = autoSeat(next);
       await putDoc(next);
       setG(next);
       if (detectSeatChange(next)) bumpAlerts();
@@ -175,7 +200,7 @@ export default function ListLobby() {
         if (!latest2) throw new Error('no-latest-2');
         let next2 = structuredClone(latest2) as ListGame;
         mut(next2);
-        next2 = autoSeat(next2);
+        if (!opts?.skipAutoSeat) next2 = autoSeat(next2);
         await putDoc(next2);
         setG(next2);
         if (detectSeatChange(next2)) bumpAlerts();
@@ -225,6 +250,26 @@ export default function ListLobby() {
     return () => { stopped = true; stopper.stop(); };
   }, [id]);
 
+  // ---------- AUTO-JOIN visitor (non-host) to Combined ----------
+  useEffect(() => {
+    if (!g || autoJoinedRef.current) return;
+    const isHost = me.id === g.hostId;
+    const inPlayers = g.players.some(p => p.id === me.id);
+    const inQueues = g.q8.includes(me.id) || g.q9.includes(me.id) || g.qAny.includes(me.id);
+    const seated = g.tables.some(t => t.a === me.id || t.b === me.id);
+
+    if (!isHost && !inPlayers && !inQueues && !seated) {
+      autoJoinedRef.current = true;
+      // add & queue to Combined
+      save(d => {
+        if (!d.players.some(p => p.id === me.id)) d.players.push(me);
+        d.q8 = d.q8.filter(x => x !== me.id);
+        d.q9 = d.q9.filter(x => x !== me.id);
+        if (!d.qAny.includes(me.id)) d.qAny.push(me.id);
+      });
+    }
+  }, [g, me.id]);
+
   const players = g?.players ?? [];
   const tables = g?.tables ?? [];
   const isHost = !!g && me.id === g.hostId;
@@ -243,22 +288,22 @@ export default function ListLobby() {
     await save(d => {
       const p: Player = { id: uid(), name: nm };
       d.players.push(p);
-      if (!d.qAny.includes(p.id)) d.qAny.push(p.id); // default to combined
+      if (!d.qAny.includes(p.id)) d.qAny.push(p.id); // default to Combined
     });
   }
+
   async function onAddMe(to: 'q8'|'q9'|'qAny') {
     if (!g) return;
     await save(d => {
       if (!d.players.some(p => p.id === me.id)) d.players.push(me);
-      // leave seats if already seated
       if (d.tables.some(t => t.a === me.id || t.b === me.id)) return;
-      // remove from other queues
       d.q8 = d.q8.filter(x => x !== me.id);
       d.q9 = d.q9.filter(x => x !== me.id);
       d.qAny = d.qAny.filter(x => x !== me.id);
       d[to].push(me.id);
     });
   }
+
   async function onRemovePlayer(pid: string) {
     await save(d => {
       d.players = d.players.filter(p => p.id !== pid);
@@ -268,11 +313,13 @@ export default function ListLobby() {
       d.tables.forEach(t => { if (t.a === pid) t.a = undefined; if (t.b === pid) t.b = undefined; });
     });
   }
+
   async function onRenamePlayer(pid: string) {
     const cur = players.find(p => p.id === pid)?.name || '';
     const nm = prompt('Rename player', cur); if (!nm) return;
     await save(d => { const p = d.players.find(pp => pp.id === pid); if (p) p.name = nm.trim() || p.name; });
   }
+
   async function onLeaveAllQueues(pid: string) {
     await save(d => {
       d.q8 = d.q8.filter(x => x !== pid);
@@ -281,7 +328,7 @@ export default function ListLobby() {
     });
   }
 
-  // "I lost" — can be invoked by seated user or host
+  // "Lost": remove from table & push to queue without reseating immediately
   async function onILost(pid?: string) {
     if (!g) return;
     const myId = pid ?? me.id;
@@ -292,26 +339,23 @@ export default function ListLobby() {
       if (t.a === myId) t.a = undefined;
       if (t.b === myId) t.b = undefined;
 
-      // clear from all queues first
       d.q8 = d.q8.filter(x => x !== myId);
       d.q9 = d.q9.filter(x => x !== myId);
       d.qAny = d.qAny.filter(x => x !== myId);
 
-      // send to appropriate queue
-      if (d.lostToAny) {
-        d.qAny.push(myId);
-      } else {
-        (t.kind === 8 ? d.q8 : d.q9).push(myId);
-      }
+      if (d.lostToAny) d.qAny.push(myId);
+      else (t.kind === 8 ? d.q8 : d.q9).push(myId);
+
+      // prevent instant reseat of the same player in this cycle
+      excludeSeatPidRef.current = myId;
     });
-    if (!pid) alert("It's ok — you can hop back in the queue.");
   }
 
   // ---------- Drag & Drop ----------
   type QKey = 'q8'|'q9'|'qAny';
   type DInfo =
     | { type: 'queue'; q: QKey; index: number; pid: string }
-    | { type: 'queue-empty'; q: QKey }                        // drop to end of queue
+    | { type: 'queue-empty'; q: QKey }
     | { type: 'players'; index: number; pid: string }
     | { type: 'players-empty' }
     | { type: 'seat'; table: number; side: 'a'|'b'; pid?: string };
@@ -348,36 +392,27 @@ export default function ListLobby() {
       if (src.type === 'queue') movingPid = src.pid;
       if (src.type === 'players') movingPid = src.pid;
       if (src.type === 'seat') movingPid = d.tables[src.table][src.side];
-
       if (!movingPid) return;
 
-      // If source is players, we might also be reordering players
       if (src.type === 'players' && (dst.type === 'players' || dst.type === 'players-empty')) {
         const arr = d.players.map(p => p.id);
         const newIds = moveInArray(arr, movingPid, dst.type === 'players' ? dst.index : arr.length);
-        // apply new order by ids
         d.players = newIds.map(id => d.players.find(p => p.id === id)!).filter(Boolean);
         return;
       }
 
-      // Any other move: clean from seats and queues
       removeEverywhere(movingPid);
 
       if (dst.type === 'queue' || dst.type === 'queue-empty') {
-        const qk = dst.type === 'queue' ? dst.q : dst.q;
-        if (dst.type === 'queue') {
-          d[qk] = moveInArray(d[qk], movingPid, dst.index);
-        } else {
-          d[qk].push(movingPid);
-        }
+        const qk = dst.q;
+        if (dst.type === 'queue') d[qk] = moveInArray(d[qk], movingPid, dst.index);
+        else d[qk].push(movingPid);
       } else if (dst.type === 'players' || dst.type === 'players-empty') {
-        // Ensure pid in players; reorder if dropping on a specific index
-        if (!d.players.some(p => p.id === movingPid)) d.players.push({ id: movingPid, name: nameOf(movingPid) || 'Player' });
+        if (!d.players.some(p => p.id === movingPid)) d.players.push({ id: movingPid, name: 'Player' });
         const arr = d.players.map(p => p.id);
         const newIds = moveInArray(arr, movingPid, dst.type === 'players' ? dst.index : arr.length);
         d.players = newIds.map(id => d.players.find(p => p.id === id)!).filter(Boolean);
       } else {
-        // seat
         const t = d.tables[dst.table];
         if (dst.side === 'a') t.a = movingPid; else t.b = movingPid;
       }
@@ -407,7 +442,57 @@ export default function ListLobby() {
         </div>
       </div>
 
-      {/* ---------- LIST (Players) AT TOP ---------- */}
+      {/* ---------- TABLES (TOP) ---------- */}
+      <section style={card}>
+        <h3 style={{marginTop:0}}>Tables</h3>
+        <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(280px,1fr))', gap:12}}>
+          {g.tables.map((t, i) => {
+            const label = t.kind === 9 ? '9-Foot Table' : '8-Foot Table';
+            const Seat = ({ side }: { side:'a'|'b' }) => {
+              const pid = t[side];
+              const info: DInfo = { type:'seat', table:i, side, pid };
+              const canShowLost = isHost || pid === me.id;
+              return (
+                <div
+                  draggable={!!pid}
+                  onDragStart={(e)=> pid && onDragStart(e, info)}
+                  onDragOver={onDragOver}
+                  onDrop={(e)=>onDrop(e, info)}
+                  style={{minHeight:24, padding:'8px 10px', border:'1px dashed rgba(255,255,255,.25)', borderRadius:8, background:'rgba(56,189,248,.10)', display:'flex', justifyContent:'space-between', alignItems:'center', gap:8}}
+                  title="Drag from queues/players or swap seats"
+                >
+                  <span>{nameOf(pid)}</span>
+                  {pid && canShowLost && <button style={btnMini} onClick={()=>onILost(pid)} disabled={busy}>Lost</button>}
+                </div>
+              );
+            };
+            return (
+              <div key={i} style={{ background:'#0b3a66', borderRadius:12, padding:'12px 14px', border:'1px solid rgba(56,189,248,.35)'}}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                  <div style={{ opacity:.9, fontSize:12 }}>{label}</div>
+                </div>
+                <div style={{ display:'grid', gap:8 }}>
+                  <Seat side="a" />
+                  <div style={{opacity:.7, textAlign:'center'}}>vs</div>
+                  <Seat side="b" />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      {/* ---------- QUEUES ---------- */}
+      <section style={card}>
+        <h3 style={{marginTop:0}}>Queues</h3>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))',gap:12}}>
+          <QueueColumn title="9-Foot Queue" items={g.q9} q="q9" nameOf={nameOf} onDragOver={onDragOver} onDrop={onDrop} onDragStart={onDragStart} />
+          <QueueColumn title="8-Foot Queue" items={g.q8} q="q8" nameOf={nameOf} onDragOver={onDragOver} onDrop={onDrop} onDragStart={onDragStart} />
+          <QueueColumn title="Combined Queue" items={g.qAny} q="qAny" nameOf={nameOf} onDragOver={onDragOver} onDrop={onDrop} onDragStart={onDragStart} />
+        </div>
+      </section>
+
+      {/* ---------- LIST (PLAYERS) ---------- */}
       <section style={card}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <h3 style={{margin:'0 0 8px'}}>List (Players) — {playersCount}</h3>
@@ -454,8 +539,9 @@ export default function ListLobby() {
         )}
       </section>
 
+      {/* ---------- INFO + JOIN + HOST CONTROLS ---------- */}
       <section style={notice}>
-        <b>How it works:</b> There are three queues. Table-specific queues seat first (9-Foot → 9-foot table, 8-Foot → 8-foot table). The Combined Queue fills whichever table opens next. Drag names between Players, Queues, and Tables to manage manually. While seated, tap <i>Lost</i> to free the seat and rejoin a queue.
+        <b>How it works:</b> Table-specific queues seat first (9-Foot → 9-foot table, 8-Foot → 8-foot table). The Combined Queue fills whichever table opens next. Drag names between Players, Queues, and Tables. Click <i>Lost</i> to rejoin a queue.
       </section>
 
       <header style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginTop:6}}>
@@ -472,6 +558,7 @@ export default function ListLobby() {
             Private code: <b>{g.code || '—'}</b> • {playersCount} {playersCount === 1 ? 'player' : 'players'}
           </div>
         </div>
+
         <div style={{display:'grid',gridAutoFlow:'row',gap:6}}>
           {!seated && !queued && (
             <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
@@ -485,7 +572,6 @@ export default function ListLobby() {
         </div>
       </header>
 
-      {/* ---------- HOST CONTROLS ---------- */}
       {isHost && (
         <section style={card}>
           <h3 style={{marginTop:0}}>Host controls</h3>
@@ -530,80 +616,6 @@ export default function ListLobby() {
         </section>
       )}
 
-      {/* ---------- QUEUES ---------- */}
-      <section style={card}>
-        <h3 style={{marginTop:0}}>Queues</h3>
-        <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(260px,1fr))',gap:12}}>
-          <QueueColumn
-            title="9-Foot Queue"
-            items={g.q9}
-            q="q9"
-            nameOf={nameOf}
-            onDragOver={onDragOver}
-            onDrop={onDrop}
-            onDragStart={onDragStart}
-          />
-          <QueueColumn
-            title="8-Foot Queue"
-            items={g.q8}
-            q="q8"
-            nameOf={nameOf}
-            onDragOver={onDragOver}
-            onDrop={onDrop}
-            onDragStart={onDragStart}
-          />
-          <QueueColumn
-            title="Combined Queue"
-            items={g.qAny}
-            q="qAny"
-            nameOf={nameOf}
-            onDragOver={onDragOver}
-            onDrop={onDrop}
-            onDragStart={onDragStart}
-          />
-        </div>
-      </section>
-
-      {/* ---------- TABLES ---------- */}
-      <section style={card}>
-        <h3 style={{marginTop:0}}>Tables</h3>
-        <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(280px,1fr))', gap:12}}>
-          {g.tables.map((t, i) => {
-            const label = t.kind === 9 ? '9-Foot Table' : '8-Foot Table';
-            const Seat = ({ side }: { side:'a'|'b' }) => {
-              const pid = t[side];
-              const info: DInfo = { type:'seat', table:i, side, pid };
-              const canShowLost = isHost || pid === me.id;
-              return (
-                <div
-                  draggable={!!pid}
-                  onDragStart={(e)=> pid && onDragStart(e, info)}
-                  onDragOver={onDragOver}
-                  onDrop={(e)=>onDrop(e, info)}
-                  style={{minHeight:24, padding:'8px 10px', border:'1px dashed rgba(255,255,255,.25)', borderRadius:8, background:'rgba(56,189,248,.10)', display:'flex', justifyContent:'space-between', alignItems:'center', gap:8}}
-                  title="Drag from queues/players or swap seats"
-                >
-                  <span>{nameOf(pid)}</span>
-                  {pid && canShowLost && <button style={btnMini} onClick={()=>onILost(pid)} disabled={busy}>Lost</button>}
-                </div>
-              );
-            };
-            return (
-              <div key={i} style={{ background:'#0b3a66', borderRadius:12, padding:'12px 14px', border:'1px solid rgba(56,189,248,.35)'}}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-                  <div style={{ opacity:.9, fontSize:12 }}>{label}</div>
-                </div>
-                <div style={{ display:'grid', gap:8 }}>
-                  <Seat side="a" />
-                  <div style={{opacity:.7, textAlign:'center'}}>vs</div>
-                  <Seat side="b" />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
       {/* ---------- TOURNAMENT CONFIG MODAL ---------- */}
       {showTModal && (
         <div style={modalWrap} onClick={()=>setShowTModal(false)}>
@@ -635,8 +647,7 @@ export default function ListLobby() {
               <button style={btnGhostSm} onClick={()=>setShowTModal(false)}>Cancel</button>
               <button
                 style={btn}
-                onClick={async ()=>{
-                  // Save a simple stub config you can read on your tournament page/route.
+                onClick={()=>{
                   localStorage.setItem('tournament_config', JSON.stringify({
                     listId: g.id,
                     players: g.players,
@@ -680,7 +691,7 @@ function QueueColumn(props: {
         <ol style={{margin:0,paddingLeft:18,display:'grid',gap:6}}>
           {items.map((pid, idx) => (
             <li
-              key={pid}
+              key={`${pid}-${idx}`}
               draggable
               onDragStart={e=>onDragStart(e,{type:'queue', q, index: idx, pid})}
               onDragOver={onDragOver}
@@ -737,8 +748,6 @@ const label: React.CSSProperties = { display:'flex', gap:8, alignItems:'center' 
 const select: React.CSSProperties = {
   background:'#111', border:'1px solid #333', color:'#fff', borderRadius:8, padding:'6px 8px'
 };
-
-/* Modal */
 const modalWrap: React.CSSProperties = {
   position:'fixed', inset:0, background:'rgba(0,0,0,.6)', display:'grid', placeItems:'center', zIndex:50
 };
