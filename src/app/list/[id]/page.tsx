@@ -6,35 +6,32 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
 import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
-import { startSmartPollETag } from '@/lib/poll';
 import { uid } from '@/lib/storage';
 
-/* Types (keep local to avoid coupling) */
-type Table = { a?: string; b?: string; label: '8 foot' | '9 foot' };
+/* ---------- Types (front-end) ---------- */
 type Player = { id: string; name: string };
+type Table = { a?: string; b?: string; kind: '8' | '9' };           // table size
+type ListQueues = { any: string[]; q8: string[]; q9: string[] };    // three queues
 type ListGame = {
-  id: string;
-  name: string;
-  code?: string;
-  hostId: string;
-  status: 'active';
-  createdAt: number;
-  tables: Table[];
-  players: Player[];
-  queue8: string[];
-  queue9: string[];
+  id: string; name: string; code?: string; hostId: string; status: 'active';
+  createdAt: number; tables: Table[]; players: Player[]; queues: ListQueues; v?: number;
 };
 
-/* coerce & helpers */
-function coerceList(x: any): ListGame | null {
+/* ---------- utilities ---------- */
+const coerce = (x: any): ListGame | null => {
   if (!x) return null;
   try {
+    const q: ListQueues = {
+      any: Array.isArray(x.queues?.any) ? x.queues.any.map(String) : Array.isArray(x.queue) ? x.queue.map(String) : [],
+      q8: Array.isArray(x.queues?.q8) ? x.queues.q8.map(String) : [],
+      q9: Array.isArray(x.queues?.q9) ? x.queues.q9.map(String) : [],
+    };
     const tables: Table[] = Array.isArray(x.tables)
       ? x.tables.map((t: any, i: number) => ({
           a: t?.a, b: t?.b,
-          label: t?.label === '9 foot' || t?.label === '8 foot' ? t.label : (i === 1 ? '9 foot' : '8 foot')
+          kind: t?.kind === '9' ? '9' : '8', // default 8′
         }))
-      : [{ label: '8 foot' }, { label: '9 foot' }];
+      : [];
     return {
       id: String(x.id ?? ''),
       name: String(x.name ?? 'Untitled'),
@@ -42,29 +39,27 @@ function coerceList(x: any): ListGame | null {
       hostId: String(x.hostId ?? ''),
       status: 'active',
       createdAt: Number(x.createdAt ?? Date.now()),
+      players: Array.isArray(x.players) ? x.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') })) : [],
       tables,
-      players: Array.isArray(x.players)
-        ? x.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') }))
-        : [],
-      queue8: Array.isArray(x.queue8) ? x.queue8.map((id: any) => String(id)) : (Array.isArray(x.queue) ? x.queue.map((id: any) => String(id)) : []),
-      queue9: Array.isArray(x.queue9) ? x.queue9.map((id: any) => String(id)) : [],
+      queues: q,
+      v: Number(x.v ?? 0),
     };
-  } catch { return null; }
+  } catch {
+    return null;
+  }
+};
+
+function findName(players: Player[], id?: string) {
+  if (!id) return '—';
+  return players.find(p => p.id === id)?.name || '??';
 }
 
-/* save helper (no If-Match, server reconciles & versions) */
-async function putList(doc: ListGame) {
-  await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
-    method: 'PUT',
-    headers: { 'content-type':'application/json' },
-    body: JSON.stringify(doc),
-  });
-}
-
+/* --------- page --------- */
 export default function ListLobby() {
   const [g, setG] = useState<ListGame | null>(null);
   const [busy, setBusy] = useState(false);
   const [nameField, setNameField] = useState('');
+  const [pref, setPref] = useState<'any' | 'q8' | 'q9'>('any'); // user preference when joining
 
   // id from URL
   const id =
@@ -72,6 +67,7 @@ export default function ListLobby() {
       ? decodeURIComponent(window.location.pathname.split('/').pop() || '')
       : '';
 
+  /* me */
   const me = useMemo<Player>(() => {
     try {
       return (
@@ -86,6 +82,7 @@ export default function ListLobby() {
   }, []);
   useEffect(() => { localStorage.setItem('kava_me', JSON.stringify(me)); }, [me]);
 
+  /* alerts */
   useQueueAlerts({
     listId: id,
     upNextMessage: 'your up next get ready!!',
@@ -97,386 +94,517 @@ export default function ListLobby() {
     },
   });
 
-  // seat-change alert
+  /* seat-change detector (for alerts) */
   const lastSeating = useRef<string>('');
   function detectMySeatingChanged(next: ListGame | null) {
     if (!next) return false;
-    const tables = Array.isArray(next.tables) ? next.tables : [];
-    const i = tables.findIndex((t) => t.a === me.id || t.b === me.id);
+    const i = next.tables.findIndex(t => t.a === me.id || t.b === me.id);
     if (i < 0) {
       if (lastSeating.current !== '') { lastSeating.current = ''; return true; }
       return false;
     }
-    const a = tables[i]?.a ?? 'x', b = tables[i]?.b ?? 'x';
-    const key = `table-${i}-${a}-${b}`;
+    const t = next.tables[i];
+    const key = `table-${i}-${t.a ?? 'x'}-${t.b ?? 'x'}`;
     if (key !== lastSeating.current) { lastSeating.current = key; return true; }
     return false;
   }
 
-  // polling
+  /* --------------- data I/O --------------- */
+  async function getOnce() {
+    const res = await fetch(`/api/list/${encodeURIComponent(id)}`, { cache: 'no-store' });
+    if (!res.ok) throw new Error('load-failed');
+    const json = await res.json();
+    const doc = coerce(json);
+    setG(doc);
+    if (detectMySeatingChanged(doc)) bumpAlerts();
+    return { doc, etag: res.headers.get('etag') };
+  }
+
+  async function put(doc: ListGame, ifMatch?: string | null) {
+    const res = await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
+      method: 'PUT',
+      headers: {
+        'content-type': 'application/json',
+        ...(ifMatch ? { 'if-match': ifMatch.replace(/(^"|"$)/g, '') } : {}),
+      },
+      body: JSON.stringify(doc),
+    });
+    if (!res.ok && res.status !== 204) {
+      const msg = await res.text().catch(()=>'');
+      throw new Error(`save-failed ${res.status} ${msg}`);
+    }
+    return res.headers.get('etag');
+  }
+
+  // smart poll via If-None-Match (uses the helper in your project)
   useEffect(() => {
     if (!id) return;
-    const stopper = startSmartPollETag<ListGame>({
-      url: `/api/list/${encodeURIComponent(id)}`,
-      key: `l:${id}`,
-      versionHeader: 'x-l-version',
-      onUpdate: (payload) => {
-        const doc = coerceList(payload);
-        if (!doc || !doc.id || !doc.hostId) return;
-        setG(doc);
-        if (detectMySeatingChanged(doc)) bumpAlerts();
+    let stop = false;
+    let etag: string | null = null;
+    let timer: any;
+
+    const minMs = 4000, maxMs = 60000;
+    let interval = minMs;
+
+    async function tick(force = false) {
+      if (stop) return;
+      try {
+        const res = await fetch(`/api/list/${encodeURIComponent(id)}`, {
+          cache: 'no-store',
+          headers: etag ? { 'If-None-Match': etag } : {},
+        });
+        if (res.status === 200) {
+          etag = res.headers.get('etag');
+          const json = await res.json();
+          const doc = coerce(json);
+          if (doc?.id) {
+            setG(doc);
+            if (detectMySeatingChanged(doc)) bumpAlerts();
+          }
+          interval = Math.max(minMs, Math.round(interval * 0.6));
+        } else if (res.status === 304) {
+          interval = Math.min(maxMs, Math.round(interval * 1.35));
+        } else {
+          interval = Math.min(maxMs, Math.round(interval * 1.5));
+        }
+      } catch {
+        interval = Math.min(maxMs, Math.round(interval * 1.6));
+      } finally {
+        if (!stop) timer = setTimeout(() => tick(), force ? minMs : interval);
+      }
+    }
+
+    tick(true);
+    return () => { stop = true; if (timer) clearTimeout(timer); };
+  }, [id]);
+
+  /* --------------- seating logic --------------- */
+
+  // returns updated doc if a seat was filled, else null
+  function seatFromQueues(doc: ListGame): ListGame | null {
+    const next = structuredClone(doc) as ListGame;
+
+    // helper to pop from array by id
+    const popFrom = (arr: string[], id: string) => {
+      const i = arr.indexOf(id); if (i >= 0) arr.splice(i, 1);
+    };
+
+    // try to fill any empty seat
+    let changed = false;
+    for (let i = 0; i < next.tables.length; i++) {
+      const t = next.tables[i];
+      const need = !t.a || !t.b;
+      if (!need) continue;
+
+      const want = t.kind === '9' ? 'q9' : 'q8';
+      const source = [next.queues.any, next.queues[want], want === 'q9' ? next.queues.q8 : next.queues.q9];
+
+      for (const q of source) {
+        const pid = q[0];
+        if (!pid) continue;
+        // verify pid still exists
+        if (!next.players.some(p => p.id === pid)) { q.shift(); continue; }
+
+        if (!t.a) { t.a = pid; popFrom(next.queues.any, pid); popFrom(next.queues.q8, pid); popFrom(next.queues.q9, pid); changed = true; break; }
+        if (!t.b) { t.b = pid; popFrom(next.queues.any, pid); popFrom(next.queues.q8, pid); popFrom(next.queues.q9, pid); changed = true; break; }
+      }
+    }
+    return changed ? next : null;
+  }
+
+  async function saveWithAutoSeat(mut?: (x: ListGame)=>void) {
+    if (!g) return;
+    setBusy(true);
+    try {
+      const { doc: latest, etag } = await getOnce();
+      if (!latest) throw new Error('no-doc');
+      let next = structuredClone(latest) as ListGame;
+      if (mut) mut(next);
+      // always try to auto seat
+      const seated = seatFromQueues(next);
+      if (seated) next = seated;
+      const newTag = await put(next, etag);
+      setG(next);
+      bumpAlerts();
+      return newTag;
+    } catch (e) {
+      alert('Could not save.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /* --------------- actions --------------- */
+
+  async function onJoinQueue(which: 'any'|'q8'|'q9') {
+    if (!g || busy) return;
+    await saveWithAutoSeat(x => {
+      // ensure player exists
+      if (!x.players.some(p => p.id === me.id)) x.players.push({ id: me.id, name: me.name });
+      // if already seated or in any queue, ignore
+      const seated = x.tables.some(t => t.a === me.id || t.b === me.id);
+      if (seated) return;
+      if (!x.queues.any.includes(me.id) && !x.queues.q8.includes(me.id) && !x.queues.q9.includes(me.id)) {
+        x.queues[which].push(me.id);
       }
     });
-    return () => stopper.stop();
-  }, [id]);
+  }
+
+  async function onAddPlayerManual() {
+    if (!g || busy) return;
+    const nm = nameField.trim(); if (!nm) return;
+    await saveWithAutoSeat(x => {
+      const p: Player = { id: uid(), name: nm };
+      x.players.push(p);
+      // new players default to first-available
+      if (!x.queues.any.includes(p.id)) x.queues.any.push(p.id);
+    });
+    setNameField('');
+  }
+
+  async function onRemovePlayer(pid: string) {
+    if (!g || busy) return;
+    await saveWithAutoSeat(x => {
+      x.players = x.players.filter(p => p.id !== pid);
+      ['any','q8','q9'].forEach((k) => {
+        // @ts-ignore
+        x.queues[k] = x.queues[k].filter((id:string)=>id!==pid);
+      });
+      x.tables.forEach(t => {
+        if (t.a === pid) t.a = undefined;
+        if (t.b === pid) t.b = undefined;
+      });
+    });
+  }
+
+  async function onSendToQueue(pid: string, which: 'any'|'q8'|'q9') {
+    if (!g || busy) return;
+    await saveWithAutoSeat(x => {
+      ['any','q8','q9'].forEach((k) => {
+        // @ts-ignore
+        x.queues[k] = x.queues[k].filter((id:string)=>id!==pid);
+      });
+      // if already seated, unseat first slot they occupy
+      const table = x.tables.find(t => t.a === pid || t.b === pid);
+      if (table) { if (table.a === pid) table.a = undefined; else table.b = undefined; }
+      x.queues[which].push(pid);
+    });
+  }
+
+  async function onRename(pid: string) {
+    if (!g || busy) return;
+    const cur = g.players.find(p => p.id === pid)?.name || '';
+    const nm = prompt('Rename player', cur);
+    if (!nm) return;
+    await saveWithAutoSeat(x => {
+      const p = x.players.find(pp=>pp.id===pid);
+      if (p) p.name = nm.trim() || p.name;
+    });
+  }
+
+  async function onILost() {
+    if (!g || busy) return;
+    await saveWithAutoSeat(x => {
+      const t = x.tables.find(tt => tt.a === me.id || tt.b === me.id);
+      if (!t) return;
+      if (t.a === me.id) t.a = undefined;
+      if (t.b === me.id) t.b = undefined;
+      // after a loss, send me to first-available queue again
+      if (!x.queues.any.includes(me.id)) x.queues.any.push(me.id);
+    });
+    alert("It's ok — we put you back in First-available. 💪");
+  }
+
+  async function onTables(count: 1 | 2) {
+    if (!g || busy) return;
+    await saveWithAutoSeat(x => {
+      if (count === 1) x.tables = [x.tables[0] ?? { kind:'8' }];
+      else x.tables = [
+        x.tables[0] ?? { kind:'8' },
+        x.tables[1] ?? { kind:'9' },
+      ];
+    });
+  }
+
+  async function onSetKind(i: number, kind: '8'|'9') {
+    if (!g || busy) return;
+    await saveWithAutoSeat(x => {
+      if (!x.tables[i]) x.tables[i] = { kind };
+      x.tables[i].kind = kind;
+    });
+  }
+
+  // Drag & drop between queues and seats
+  type DInfo =
+    | { type:'queue'; q:'any'|'q8'|'q9'; pid:string }
+    | { type:'seat'; table:number; side:'a'|'b'; pid?:string };
+
+  function onDragStart(ev: React.DragEvent, info: DInfo) {
+    ev.dataTransfer.setData('application/json', JSON.stringify(info));
+    ev.dataTransfer.effectAllowed = 'move';
+  }
+  function onDragOver(ev: React.DragEvent) { ev.preventDefault(); }
+  async function onDrop(ev: React.DragEvent, dst: DInfo) {
+    if (!g || busy) return;
+    ev.preventDefault();
+    let src: DInfo | null = null;
+    try { src = JSON.parse(ev.dataTransfer.getData('application/json')); } catch {}
+    if (!src) return;
+
+    await saveWithAutoSeat(x => {
+      // normalize: remove src pid from where it is
+      const pid = src.type === 'queue' ? src.pid : src.pid!;
+      ['any','q8','q9'].forEach((k)=>{ // @ts-ignore
+        x.queues[k] = x.queues[k].filter((id:string)=>id!==pid);
+      });
+      x.tables.forEach(t => { if (t.a === pid) t.a = undefined; if (t.b === pid) t.b = undefined; });
+
+      // place to destination
+      if (dst.type === 'queue') {
+        x.queues[dst.q].push(pid);
+      } else {
+        const t = x.tables[dst.table];
+        if (dst.side === 'a') t.a = pid; else t.b = pid;
+      }
+    });
+  }
+
+  /* --------------- render --------------- */
 
   if (!g) {
     return (
       <main style={wrap}>
         <BackButton href="/lists" />
-        <p style={{ opacity: 0.7 }}>Loading…</p>
+        <p style={{ opacity:.7 }}>Loading…</p>
+        <div><button style={btnGhostSm} onClick={()=>getOnce()}>Retry</button></div>
       </main>
     );
   }
 
-  const safePlayers = g.players;
-  const q8 = g.queue8;
-  const q9 = g.queue9;
+  const isHost = g.hostId === me.id;
+  const seatedHere = g.tables.findIndex(t => t.a === me.id || t.b === me.id) >= 0;
 
-  const myTableIndex = g.tables.findIndex(t => t.a === me.id || t.b === me.id);
-  const seated = myTableIndex >= 0;
-  const queued8 = q8.includes(me.id);
-  const queued9 = q9.includes(me.id);
-  const iAmHost = me.id === g.hostId;
-
-  /* actions */
-  async function renameList(newName: string) {
-    if (!newName.trim()) return;
-    const next = { ...g, name: newName.trim() };
-    setG(next); setBusy(true);
-    try { await putList(next); } finally { setBusy(false); }
-  }
-  async function renamePlayer(pid: string) {
-    const cur = safePlayers.find(p => p.id === pid)?.name || '';
-    const nm = prompt('Rename player', cur);
-    if (!nm) return;
-    const next = { ...g, players: g.players.map(p => p.id === pid ? { ...p, name: nm.trim() || p.name } : p) };
-    setG(next); setBusy(true);
-    try { await putList(next); } finally { setBusy(false); }
-  }
-  async function addPlayerManual() {
-    const nm = nameField.trim(); if (!nm) return;
-    setNameField(''); const p: Player = { id: uid(), name: nm };
-    const next = { ...g, players: [...g.players, p] };
-    setG(next); setBusy(true);
-    try { await putList(next); } finally { setBusy(false); }
-  }
-  async function removePlayer(pid: string) {
-    const next: ListGame = {
-      ...g,
-      players: g.players.filter(p => p.id !== pid),
-      queue8: g.queue8.filter(x => x !== pid),
-      queue9: g.queue9.filter(x => x !== pid),
-      tables: g.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b })),
-    };
-    setG(next); setBusy(true);
-    try { await putList(next); } finally { setBusy(false); }
-  }
-
-  async function joinQueue(which: '8'|'9') {
-    const field = which === '9' ? 'queue9' : 'queue8';
-    if ((g as any)[field].includes(me.id)) return;
-    const next: ListGame = { ...g, [field]: [...(g as any)[field], me.id] } as any;
-    setG(next); setBusy(true);
-    try { await putList(next); } finally { setBusy(false); }
-  }
-  async function leaveQueues() {
-    const next: ListGame = { ...g, queue8: g.queue8.filter(x => x !== me.id), queue9: g.queue9.filter(x => x !== me.id) };
-    setG(next); setBusy(true);
-    try { await putList(next); } finally { setBusy(false); }
-  }
-
-  async function iLost() {
-    const idx = g.tables.findIndex(t => t.a === me.id || t.b === me.id);
-    if (idx < 0) return alert('You are not seated right now.');
-    const t0 = g.tables[idx];
-    const nextTables = g.tables.map((t,i) => i === idx
-      ? { ...t, a: t.a === me.id ? undefined : t.a, b: t.b === me.id ? undefined : t.b }
-      : t
-    );
-    // optionally auto rejoin their table queue
-    const field = t0.label === '9 foot' ? 'queue9' : 'queue8';
-    const next = { ...g, tables: nextTables, [field]: [...(g as any)[field], me.id] } as any;
-    setG(next); setBusy(true);
-    try { await putList(next); bumpAlerts(); } finally { setBusy(false); }
-  }
-
-  // drag & drop "bubble"
-  type DragInfo =
-    | { type: 'seat'; table: number; side: 'a'|'b'; pid?: string }
-    | { type: 'q8'; index: number; pid: string }
-    | { type: 'q9'; index: number; pid: string };
-
-  function draggablePill(pid: string | undefined, info: DragInfo, title?: string) {
-    const name = pid ? (safePlayers.find(p => p.id === pid)?.name || '??') : '—';
-    const isDraggable = !!pid && iAmHost;
-    return (
-      <span
-        draggable={isDraggable}
-        onDragStart={(e) => { e.dataTransfer.setData('application/json', JSON.stringify(info)); e.dataTransfer.effectAllowed = 'move'; }}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={(e) => handleDrop(e, info)}
-        style={{ ...pill, opacity: pid ? 1 : .6, cursor: isDraggable ? 'grab' : 'default' }}
-        title={title}
-      >
-        {name}
-      </span>
-    );
-  }
-
-  function parseInfo(ev: React.DragEvent): DragInfo | null {
-    try { return JSON.parse(ev.dataTransfer.getData('application/json')); } catch { return null; }
-  }
-
-  async function handleDrop(ev: React.DragEvent, target: DragInfo) {
-    ev.preventDefault();
-    const src = parseInfo(ev);
-    if (!src) return;
-
-    const next: ListGame = JSON.parse(JSON.stringify(g));
-
-    function clearSeat(ti: number, side: 'a'|'b') {
-      const pid = next.tables[ti][side];
-      if (!pid) return;
-      next.tables[ti][side] = undefined;
-    }
-    function placeSeat(ti: number, side: 'a'|'b', pid?: string) {
-      if (!pid) return;
-      // remove from both queues before seating
-      next.queue8 = next.queue8.filter(x => x !== pid);
-      next.queue9 = next.queue9.filter(x => x !== pid);
-      // remove from other seat if was seated elsewhere
-      next.tables = next.tables.map((t, i) => i === ti ? t : ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b }));
-      next.tables[ti][side] = pid;
-    }
-    function moveWithinQueue(which: '8'|'9', from: number, to: number) {
-      const arr = which === '9' ? next.queue9 : next.queue8;
-      const [p] = arr.splice(from, 1);
-      arr.splice(Math.max(0, Math.min(arr.length, to)), 0, p);
-    }
-
-    // handle all combinations
-    if (target.type === 'seat') {
-      // drop anything onto a seat (seat->seat, queue->seat)
-      if (src.type === 'seat') {
-        const spid = next.tables[src.table][src.side];
-        const tpid = next.tables[target.table][target.side];
-        next.tables[src.table][src.side] = tpid;
-        next.tables[target.table][target.side] = spid;
-      } else if (src.type === 'q8' || src.type === 'q9') {
-        const pid = src.pid;
-        // remove from its queue
-        if (src.type === 'q8') next.queue8 = next.queue8.filter(x => x !== pid);
-        if (src.type === 'q9') next.queue9 = next.queue9.filter(x => x !== pid);
-        // place into seat
-        placeSeat(target.table, target.side, pid);
-      }
-    } else if (target.type === 'q8') {
-      if (src.type === 'q8') {
-        moveWithinQueue('8', src.index, target.index);
-      } else if (src.type === 'q9') {
-        // move from q9 to q8
-        next.queue9 = next.queue9.filter(x => x !== src.pid);
-        next.queue8.splice(target.index, 0, src.pid);
-      } else if (src.type === 'seat') {
-        const pid = next.tables[src.table][src.side];
-        clearSeat(src.table, src.side);
-        if (pid) next.queue8.splice(target.index, 0, pid);
-      }
-    } else if (target.type === 'q9') {
-      if (src.type === 'q9') {
-        moveWithinQueue('9', src.index, target.index);
-      } else if (src.type === 'q8') {
-        next.queue8 = next.queue8.filter(x => x !== src.pid);
-        next.queue9.splice(target.index, 0, src.pid);
-      } else if (src.type === 'seat') {
-        const pid = next.tables[src.table][src.side];
-        clearSeat(src.table, src.side);
-        if (pid) next.queue9.splice(target.index, 0, pid);
-      }
-    }
-
-    setG(next); setBusy(true);
-    try { await putList(next); } finally { setBusy(false); }
-  }
-
-  function playerRow(p: Player) {
-    return (
-      <li
-        key={p.id}
-        style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}
-      >
-        <span>{p.name}</span>
-        <div style={{ display:'flex', gap:8 }}>
-          <button style={btnMini} onClick={() => renamePlayer(p.id)} disabled={busy}>Rename</button>
-          <button style={btnMini} onClick={() => quickSend(p.id, '8')} disabled={busy}>Send to 8-ft</button>
-          <button style={btnMini} onClick={() => quickSend(p.id, '9')} disabled={busy}>Send to 9-ft</button>
-          <button style={btnGhost} onClick={() => removePlayer(p.id)} disabled={busy}>Remove</button>
-        </div>
-      </li>
-    );
-  }
-
-  async function quickSend(pid: string, which: '8'|'9') {
-    const f = which === '9' ? 'queue9' : 'queue8';
-    const next: ListGame = {
-      ...g,
-      tables: g.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b })),
-      queue8: g.queue8.filter(x => x !== pid),
-      queue9: g.queue9.filter(x => x !== pid),
-      [f]: [...(g as any)[f], pid],
-    } as any;
-    setG(next); setBusy(true);
-    try { await putList(next); } finally { setBusy(false); }
-  }
+  const players = g.players;
+  const qAny = g.queues.any, q8 = g.queues.q8, q9 = g.queues.q9;
 
   return (
     <main style={wrap}>
+      {/* top bar */}
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
         <BackButton href="/lists" />
         <div style={{display:'flex',alignItems:'center',gap:8}}>
-          <span style={pillBadge}>Live</span>
+          <span style={pill}>Live</span>
           <AlertsToggle />
-          <button style={btnGhostSm} onClick={() => location.reload()}>Refresh</button>
+          <button style={btnGhostSm} onClick={()=>getOnce()}>Refresh</button>
         </div>
       </div>
 
+      {/* instructions */}
+      <section style={notice}>
+        <b>How it works:</b> Choose 1 or 2 tables and set each to <b>8′</b> or <b>9′</b>.
+        Players can join <i>First-available</i> (auto seats into any empty table) or a specific table queue.
+        When a seat opens or a player joins and a table is empty, they’re seated automatically.
+        While seated, a player can tap <i>I lost</i> to free the seat and rejoin First-available.
+      </section>
+
+      {/* header + my actions */}
       <header style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginTop:6}}>
         <div>
           <h1 style={{ margin:'8px 0 4px' }}>
-            <input
-              defaultValue={g.name}
-              onBlur={(e) => renameList(e.target.value)}
-              style={nameInput}
-              disabled={busy}
-            />
+            <input defaultValue={g.name} onBlur={(e)=> e.target.value.trim() && saveWithAutoSeat(x=>{ x.name = e.target.value.trim(); })} style={nameInput} disabled={busy}/>
           </h1>
           <div style={{ opacity:.8, fontSize:14, display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
             Private code: <b>{g.code || '—'}</b>
           </div>
         </div>
 
-        <div style={{display:'flex',gap:8}}>
-          {!seated && (
+        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+          {!seatedHere && (
             <>
-              <button style={btn} onClick={() => joinQueue('8')} disabled={busy || queued8}>Join 8-ft</button>
-              <button style={btn} onClick={() => joinQueue('9')} disabled={busy || queued9}>Join 9-ft</button>
+              <select value={pref} onChange={e=>setPref(e.target.value as any)} style={select} disabled={busy}>
+                <option value="any">First-available</option>
+                <option value="q8">Queue 8′</option>
+                <option value="q9">Queue 9′</option>
+              </select>
+              <button style={btn} onClick={()=>onJoinQueue(pref)} disabled={busy}>Join</button>
             </>
           )}
-          {(queued8 || queued9) && <button style={btnGhost} onClick={leaveQueues} disabled={busy}>Leave queues</button>}
-          {seated && <button style={btnGhost} onClick={iLost} disabled={busy}>I lost</button>}
+          {seatedHere && (
+            <button style={btnGhost} onClick={onILost} disabled={busy}>I lost</button>
+          )}
         </div>
       </header>
 
-      {/* Host controls */}
-      {iAmHost && (
+      {/* host controls */}
+      {isHost && (
         <section style={card}>
           <h3 style={{marginTop:0}}>Host controls</h3>
-          <div style={{display:'flex',gap:8,flexWrap:'wrap', marginBottom:12}}>
-            <input
-              placeholder="Add player name..."
-              value={nameField}
-              onChange={(e) => setNameField(e.target.value)}
-              style={input}
-              disabled={busy}
-            />
-            <button style={btn} onClick={addPlayerManual} disabled={busy || !nameField.trim()}>Add player</button>
-            <button style={btnGhost} onClick={() => quickSend(me.id, '8')} disabled={busy}>Add me 8-ft</button>
-            <button style={btnGhost} onClick={() => quickSend(me.id, '9')} disabled={busy}>Add me 9-ft</button>
+
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
+            <button style={g.tables.length===1 ? btnActive : btnGhost} onClick={()=>onTables(1)} disabled={busy}>1 Table</button>
+            <button style={g.tables.length===2 ? btnActive : btnGhost} onClick={()=>onTables(2)} disabled={busy}>2 Tables</button>
+          </div>
+
+          <div style={{display:'flex',gap:12,flexWrap:'wrap',marginBottom:12}}>
+            {g.tables.map((t, i) => (
+              <div key={i} style={{display:'flex',gap:8,alignItems:'center'}}>
+                <span style={{opacity:.8}}>Table {i+1}</span>
+                <button style={t.kind==='8'? btnActive : btnGhostSm} onClick={()=>onSetKind(i,'8')} disabled={busy}>8′</button>
+                <button style={t.kind==='9'? btnActive : btnGhostSm} onClick={()=>onSetKind(i,'9')} disabled={busy}>9′</button>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display:'flex', gap:8, flexWrap:'wrap', marginBottom:12 }}>
+            <input placeholder="Add player name..." value={nameField} onChange={(e)=>setNameField(e.target.value)} style={input} disabled={busy}/>
+            <button style={btn} onClick={onAddPlayerManual} disabled={busy || !nameField.trim()}>Add player</button>
+          </div>
+
+          <div>
+            <h4 style={{ margin:'6px 0' }}>Players ({players.length})</h4>
+            {players.length === 0 ? (
+              <div style={{ opacity:.7 }}>No players yet.</div>
+            ) : (
+              <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
+                {players.map((p) => (
+                  <li key={p.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}>
+                    <span>{p.name}</span>
+                    <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                      <button style={btnMini} onClick={()=>onRename(p.id)} disabled={busy}>Rename</button>
+                      <button style={btnMini} onClick={()=>onSendToQueue(p.id,'any')} disabled={busy}>Send ↗ First-avail</button>
+                      <button style={btnMini} onClick={()=>onSendToQueue(p.id,'q8')} disabled={busy}>Send ↗ 8′</button>
+                      <button style={btnMini} onClick={()=>onSendToQueue(p.id,'q9')} disabled={busy}>Send ↗ 9′</button>
+                      <button style={btnGhost} onClick={()=>onRemovePlayer(p.id)} disabled={busy}>Remove</button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </section>
       )}
 
-      {/* Tables at the top */}
+      {/* Queues */}
+      <section style={card}>
+        <h3 style={{marginTop:0}}>Queues</h3>
+        <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))', gap:12}}>
+          {[
+            { key:'any' as const, title:'First-available', data:qAny },
+            { key:'q8'  as const, title:'Queue 8′',         data:q8  },
+            { key:'q9'  as const, title:'Queue 9′',         data:q9  },
+          ].map((q) => (
+            <div key={q.key} style={{background:'#111',border:'1px solid rgba(255,255,255,.12)',borderRadius:12,padding:'10px 12px'}}
+                 onDragOver={onDragOver}
+                 onDrop={(e)=>onDrop(e,{type:'queue', q:q.key, pid:''})}>
+              <div style={{opacity:.8,fontSize:12,marginBottom:6}}>{q.title} ({q.data.length})</div>
+              {q.data.length===0 ? <div style={{opacity:.7}}>No one waiting.</div> : (
+                <ol style={{margin:0,paddingLeft:18,display:'grid',gap:6}}>
+                  {q.data.map(pid => (
+                    <li key={pid}
+                        draggable
+                        onDragStart={e=>onDragStart(e,{type:'queue', q:q.key, pid})}
+                        style={{cursor:'grab'}}>
+                      {findName(players,pid)}
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Tables (blue) */}
       <section style={card}>
         <h3 style={{marginTop:0}}>Tables</h3>
-        <div style={{display:'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px,1fr))', gap:12}}>
+        <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(260px,1fr))', gap:12}}>
           {g.tables.map((t, i) => {
-            const aName = safePlayers.find(p=>p.id===t.a)?.name || (t.a ? '??' : '—');
-            const bName = safePlayers.find(p=>p.id===t.b)?.name || (t.b ? '??' : '—');
-            const meHere = t.a===me.id || t.b===me.id;
-            return (
-              <div key={i} style={{background:'#111',borderRadius:12,padding:'10px 12px',border:'1px solid rgba(255,255,255,.12)'}}>
-                <div style={{ opacity:.8, fontSize:12, marginBottom:6 }}>{t.label} — Table {i+1}</div>
-                <div style={{display:'flex', gap:8, alignItems:'center', flexWrap:'wrap'}}>
-                  {draggablePill(t.a, { type:'seat', table:i, side:'a', pid:t.a })}
-                  <span style={{ opacity:.7 }}>vs</span>
-                  {draggablePill(t.b, { type:'seat', table:i, side:'b', pid:t.b })}
+            const aName = findName(players, t.a);
+            const bName = findName(players, t.b);
+            const meHere = t.a === me.id || t.b === me.id;
+
+            const Seat = ({ side }: { side:'a'|'b' }) => {
+              const pid = t[side];
+              const info = { type:'seat' as const, table:i, side, pid };
+              return (
+                <div
+                  draggable={!!pid}
+                  onDragStart={e=> pid && onDragStart(e, info)}
+                  onDragOver={onDragOver}
+                  onDrop={e=>onDrop(e, info)}
+                  style={{minHeight:22, padding:'6px 8px', border:'1px dashed rgba(255,255,255,.25)', borderRadius:8}}
+                  title="Drag from queues or the other seat"
+                >
+                  {side==='a' ? aName : bName}
                 </div>
-                {meHere && (
-                  <div style={{ marginTop: 8 }}>
-                    <button style={btnMini} onClick={iLost} disabled={busy}>I lost</button>
-                  </div>
-                )}
+              );
+            };
+
+            return (
+              <div key={i} style={{ background:'#0b3a66', borderRadius:12, padding:'12px 14px', border:'1px solid rgba(56,189,248,.35)'}}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                  <div style={{ opacity:.9, fontSize:12 }}>Table {i+1} • {t.kind === '9' ? '9′' : '8′'}</div>
+                  {meHere && <button style={btnMini} onClick={onILost} disabled={busy}>I lost</button>}
+                </div>
+                <div style={{ display:'grid', gap:8 }}>
+                  <Seat side="a" />
+                  <div style={{opacity:.7, textAlign:'center'}}>vs</div>
+                  <Seat side="b" />
+                </div>
               </div>
             );
           })}
         </div>
       </section>
-
-      {/* Queues */}
-      <section style={card}>
-        <h3 style={{marginTop:0}}>Queues</h3>
-        <div style={{display:'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px,1fr))', gap:12}}>
-          <div>
-            <div style={{ opacity:.85, marginBottom:6 }}>8-foot queue ({q8.length})</div>
-            <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
-              {q8.map((pid, idx) => (
-                <li key={pid} onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, { type:'q8', index: idx, pid })}>
-                  {draggablePill(pid, { type:'q8', index: idx, pid }, 'Drag to reorder/move')}
-                </li>
-              ))}
-              {/* drop to end area */}
-              <li onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, { type:'q8', index: q8.length, pid: '__end' as any })} style={{ minHeight: 6 }} />
-            </ul>
-          </div>
-          <div>
-            <div style={{ opacity:.85, marginBottom:6 }}>9-foot queue ({q9.length})</div>
-            <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
-              {q9.map((pid, idx) => (
-                <li key={pid} onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, { type:'q9', index: idx, pid })}>
-                  {draggablePill(pid, { type:'q9', index: idx, pid }, 'Drag to reorder/move')}
-                </li>
-              ))}
-              <li onDragOver={(e) => e.preventDefault()} onDrop={(e) => handleDrop(e, { type:'q9', index: q9.length, pid: '__end' as any })} style={{ minHeight: 6 }} />
-            </ul>
-          </div>
-        </div>
-      </section>
-
-      {/* Players list with buttons */}
-      <section style={card}>
-        <h3 style={{marginTop:0}}>Players ({safePlayers.length})</h3>
-        {safePlayers.length === 0 ? (
-          <div style={{ opacity:.7 }}>No players yet.</div>
-        ) : (
-          <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
-            {safePlayers.map(playerRow)}
-          </ul>
-        )}
-      </section>
     </main>
   );
 }
 
-/* styles */
-const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui' };
-const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginBottom:14 };
-const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
-const btnGhost: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer' };
-const btnGhostSm: React.CSSProperties = { padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontWeight:600 };
-const btnMini: React.CSSProperties = { padding:'6px 10px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontSize:12 };
-const pill: React.CSSProperties = { padding:'4px 8px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', minWidth:40, textAlign:'center' };
-const pillBadge: React.CSSProperties = { padding:'6px 10px', borderRadius:999, background:'rgba(16,185,129,.2)', border:'1px solid rgba(16,185,129,.35)', fontSize:12 };
-const input: React.CSSProperties = { width:260, maxWidth:'90vw', padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff' };
-const nameInput: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)' };
+/* ------------ styles ------------ */
+const wrap: React.CSSProperties = {
+  minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui'
+};
+const notice: React.CSSProperties = {
+  background:'rgba(14,165,233,.12)', border:'1px solid rgba(14,165,233,.25)',
+  borderRadius:12, padding:'10px 12px', margin:'8px 0 14px'
+};
+const card: React.CSSProperties = {
+  background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)',
+  borderRadius:14, padding:14, marginBottom:14
+};
+const pill: React.CSSProperties = {
+  padding:'6px 10px', borderRadius:999, background:'rgba(16,185,129,.2)',
+  border:'1px solid rgba(16,185,129,.35)', fontSize:12
+};
+const btn: React.CSSProperties = {
+  padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9',
+  color:'#fff', fontWeight:700, cursor:'pointer'
+};
+const btnGhost: React.CSSProperties = {
+  padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)',
+  background:'transparent', color:'#fff', cursor:'pointer'
+};
+const btnActive: React.CSSProperties = {
+  padding:'6px 10px', borderRadius:10, border:'none', background:'#0ea5e9',
+  color:'#fff', fontWeight:700, cursor:'pointer'
+};
+const btnGhostSm: React.CSSProperties = {
+  padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)',
+  background:'transparent', color:'#fff', cursor:'pointer', fontWeight:600
+};
+const btnMini: React.CSSProperties = {
+  padding:'6px 10px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)',
+  background:'transparent', color:'#fff', cursor:'pointer', fontSize:12
+};
+const input: React.CSSProperties = {
+  width:260, maxWidth:'90vw', padding:'10px 12px', borderRadius:10,
+  border:'1px solid #333', background:'#111', color:'#fff'
+};
+const select: React.CSSProperties = {
+  padding:'8px 10px', borderRadius:10, border:'1px solid #333',
+  background:'#111', color:'#fff', minWidth:150
+};
+const nameInput: React.CSSProperties = {
+  background:'#111', border:'1px solid #333', color:'#fff',
+  borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)'
+};
