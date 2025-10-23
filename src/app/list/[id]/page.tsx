@@ -94,6 +94,7 @@ export default function ListLobby() {
   const [busy, setBusy] = useState(false);
   const [nameField, setNameField] = useState('');
   const [showTableControls, setShowTableControls] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   const id = typeof window !== 'undefined'
     ? decodeURIComponent(window.location.pathname.split('/').pop() || '')
@@ -123,6 +124,7 @@ export default function ListLobby() {
   const suppressRef = useRef(false);
   const watchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pageRootRef = useRef<HTMLDivElement | null>(null); // for long-press suppression
+  const pollRef = useRef<number | null>(null); // SSE fallback poller
 
   const seatChanged = (next: ListGame | null) => {
     if (!next) return false;
@@ -139,11 +141,35 @@ export default function ListLobby() {
     const gl = getGlobals();
     if (!gl.streams[id]) gl.streams[id] = { es: null, refs: 0, backoff: 1000 };
     gl.streams[id].refs++;
+    setErr(null);
+
+    const startPoller = () => {
+      if (pollRef.current) return;
+      console.warn('[kava] SSE failed; starting polling fallback for list', id);
+      pollRef.current = window.setInterval(async () => {
+        try {
+          const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: 'no-store' });
+          if (!res.ok) return;
+          const doc = coerceList(await res.json()); if (!doc) return;
+          const v = doc.v ?? 0;
+          if (v <= lastVersion.current) return;
+          lastVersion.current = v;
+          setG(doc);
+          if (seatChanged(doc)) bumpAlerts();
+        } catch {}
+      }, 3000);
+    };
+
+    const stopPoller = () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
 
     const attach = () => {
       const s = gl.streams[id];
       if (s.es) return; // already open
-      const es = new EventSource(`/api/list/${encodeURIComponent(id)}/stream`);
+      const streamUrl = `/api/list/${encodeURIComponent(id)}/stream`;
+      console.debug('[kava] opening SSE', streamUrl);
+      const es = new EventSource(streamUrl);
       s.es = es;
 
       es.onmessage = (e) => {
@@ -157,16 +183,21 @@ export default function ListLobby() {
           if (incomingV <= lastVersion.current) return;
           lastVersion.current = incomingV;
 
+          stopPoller();
+          setErr(null);
           setG(doc);
           if (seatChanged(doc)) bumpAlerts();
         } catch {}
       };
 
       es.onerror = () => {
+        console.warn('[kava] SSE error; closing and backing off');
         try { es.close(); } catch {}
         s.es = null;
         const delay = Math.min(15000, s.backoff);
         s.backoff = Math.min(15000, s.backoff * 2);
+        // kick in poller so UI never hangs
+        startPoller();
         setTimeout(() => { if (gl.streams[id]?.refs) attach(); }, delay);
       };
 
@@ -178,18 +209,27 @@ export default function ListLobby() {
     // First snapshot (helps the UI appear instantly)
     (async () => {
       try {
-        const res = await fetch(`/api/list/${encodeURIComponent(id)}`, { cache: 'no-store' });
-        if (!res.ok) return;
-        const doc = coerceList(await res.json()); if (!doc) return;
+        const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: 'no-store' });
+        if (!res.ok) {
+          setErr(`Failed to load list (${res.status})`);
+          return;
+        }
+        const doc = coerceList(await res.json()); if (!doc) { setErr('Invalid list data'); return; }
         const incomingV = doc.v ?? 0;
         if (incomingV <= lastVersion.current) return;
         lastVersion.current = incomingV;
+        setErr(null);
         setG(doc);
         if (seatChanged(doc)) bumpAlerts();
-      } catch {}
+      } catch (e: any) {
+        console.error('[kava] initial list fetch failed', e);
+        setErr('Network error loading list');
+        // poller can still pick it up later
+        startPoller();
+      }
     })();
 
-    /* Presence heartbeat — single timeout loop (prevents timer storm) */
+    /* ✅ Presence heartbeat — single timeout loop (prevents timer storm) */
     const hbKey = `hb:${id}:${me.id}`;
     if (!gl.heartbeats[hbKey]) gl.heartbeats[hbKey] = { t: null, refs: 0 };
     gl.heartbeats[hbKey].refs++;
@@ -211,7 +251,7 @@ export default function ListLobby() {
 
     gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, 500);
 
-    // pause / reopen SSE on visibility
+    // Pause/reopen streams on visibility change
     if (!gl.visHook) {
       gl.visHook = true;
       document.addEventListener('visibilitychange', () => {
@@ -235,6 +275,7 @@ export default function ListLobby() {
                 lastVersion.current = incomingV;
 
                 setG(prev => (doc.id === prev?.id ? doc : doc));
+                setErr(null);
                 if (seatChanged(doc)) bumpAlerts();
               } catch {}
             };
@@ -262,6 +303,7 @@ export default function ListLobby() {
           delete gl.heartbeats[hbKey];
         }
       }
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     };
   }, [id, me.id]);
 
@@ -284,6 +326,7 @@ export default function ListLobby() {
       <main ref={pageRootRef} style={wrap}>
         <BackButton href="/" />
         <p style={{ opacity: 0.7 }}>Loading…</p>
+        {err && <p style={{opacity:.7, marginTop:6, fontSize:13}}>Hint: {err}</p>}
       </main>
     );
   }
