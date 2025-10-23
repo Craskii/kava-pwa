@@ -111,8 +111,8 @@ export default function ListLobby() {
     matchReadyMessage: (s: any) => {
       const raw = s?.tableNumber ?? s?.table?.number ?? null;
       const n = Number(raw);
-      const shown = Number(raw) === 0 || Number(raw) === 1 ? n + 1 : n;
-      return Number.isFinite(shown) ? `Your in table (#${shown})` : 'Your in table';
+      const shown = Number.isFinite(n) ? (n === 0 || n === 1 ? n + 1 : n) : null;
+      return shown ? `Your in table (#${shown})` : 'Your in table';
     },
   });
 
@@ -122,6 +122,7 @@ export default function ListLobby() {
   const commitQ = useRef<(() => Promise<void>)[]>([]);
   const suppressRef = useRef(false);
   const watchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pageRootRef = useRef<HTMLDivElement | null>(null); // for long-press suppression
 
   const seatChanged = (next: ListGame | null) => {
     if (!next) return false;
@@ -150,8 +151,12 @@ export default function ListLobby() {
         try {
           const doc = coerceList(JSON.parse(e.data));
           if (!doc || !doc.id || !doc.hostId) return;
-          if ((doc.v ?? 0) < lastVersion.current) return; // ignore stale
-          lastVersion.current = doc.v ?? 0;
+
+          // 🔒 Ignore same/older versions to prevent re-render spam
+          const incomingV = doc.v ?? 0;
+          if (incomingV <= lastVersion.current) return;
+          lastVersion.current = incomingV;
+
           setG(doc);
           if (seatChanged(doc)) bumpAlerts();
         } catch {}
@@ -176,20 +181,20 @@ export default function ListLobby() {
         const res = await fetch(`/api/list/${encodeURIComponent(id)}`, { cache: 'no-store' });
         if (!res.ok) return;
         const doc = coerceList(await res.json()); if (!doc) return;
-        if ((doc.v ?? 0) < lastVersion.current) return;
-        lastVersion.current = doc.v ?? 0;
+        const incomingV = doc.v ?? 0;
+        if (incomingV <= lastVersion.current) return;
+        lastVersion.current = incomingV;
         setG(doc);
         if (seatChanged(doc)) bumpAlerts();
       } catch {}
     })();
 
-    /* ✅ Presence heartbeat – ONE interval per list (ref-counted) */
+    /* ✅ Presence heartbeat – ONE interval per list (ref-counted), GET keepalive */
     const hbKey = `hb:${id}:${me.id}`;
     if (!gl.heartbeats[hbKey]) gl.heartbeats[hbKey] = { t: null, refs: 0 };
     gl.heartbeats[hbKey].refs++;
     if (!gl.heartbeats[hbKey].t) {
       gl.heartbeats[hbKey].t = window.setInterval(() => {
-        // Use GET and camelCase to match the API; also bust caches
         const url = `/api/me/status?userId=${encodeURIComponent(me.id)}&listId=${encodeURIComponent(id)}&ts=${Date.now()}`;
         try {
           fetch(url, { method: 'GET', keepalive: true, cache: 'no-store' }).catch(() => {});
@@ -221,8 +226,11 @@ export default function ListLobby() {
                 try {
                   const doc = coerceList(JSON.parse(e.data));
                   if (!doc || !doc.id || !doc.hostId) return;
-                  if ((doc.v ?? 0) < lastVersion.current) return;
-                  lastVersion.current = doc.v ?? 0;
+
+                  const incomingV = doc.v ?? 0;
+                  if (incomingV <= lastVersion.current) return;
+                  lastVersion.current = incomingV;
+
                   setG(prev => (doc.id === prev?.id ? doc : doc));
                   if (seatChanged(doc)) bumpAlerts();
                 } catch {}
@@ -236,29 +244,32 @@ export default function ListLobby() {
 
     return () => {
       // release refs
-      const s = gl.streams[id];
-      if (s) {
-        s.refs--;
-        if (s.refs <= 0) {
-          if (s.es) { try { s.es.close(); } catch {} }
-          delete gl.streams[id];
-        }
-      }
-      const hb = gl.heartbeats[hbKey];
-      if (hb) {
-        hb.refs--;
-        if (hb.refs <= 0) {
-          if (hb.t) clearInterval(hb.t);
-          delete gl.heartbeats[hbKey];
-        }
-      }
+      const s = gl.streams[id]; if (s) { s.refs--; if (s.refs <= 0) { if (s.es) { try { s.es.close(); } catch {} } delete gl.streams[id]; } }
+      const hb = gl.heartbeats[hbKey]; if (hb) { hb.refs--; if (hb.refs <= 0) { if (hb.t) clearInterval(hb.t); delete gl.heartbeats[hbKey]; } }
     };
   }, [id, me.id]);
+
+  /* ---- Disable Android long-press context menu (scoped to page root) ---- */
+  useEffect(() => {
+    const root = pageRootRef.current;
+    if (!root) return;
+    const prevent = (e: Event) => {
+      const target = e.target as HTMLElement | null;
+      // allow inputs/textareas to behave normally
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      e.preventDefault();
+    };
+    root.addEventListener('contextmenu', prevent);
+    // On some Android builds, long-press triggers 'contextmenu'; this is enough.
+    return () => {
+      root.removeEventListener('contextmenu', prevent);
+    };
+  }, []);
 
   /* ---- UI ---- */
   if (!g) {
     return (
-      <main style={wrap}>
+      <main ref={pageRootRef} style={wrap}>
         <BackButton href="/" />
         <p style={{ opacity: 0.7 }}>Loading…</p>
       </main>
@@ -341,7 +352,30 @@ export default function ListLobby() {
   const setPrefFor = (pid: string, pref: Pref) => scheduleCommit(d => { d.prefs ??= {}; d.prefs[pid] = pref; });
   const enqueuePid = (pid: string) => scheduleCommit(d => { if (!d.queue.includes(pid)) d.queue.push(pid); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== pid); });
-  const iLost = (pid?: string) => { const loser = pid ?? me.id; scheduleCommit(d => { const t = d.tables.find(tt => tt.a === loser || tt.b === loser); if (!t) return; if (t.a === loser) t.a = undefined; if (t.b === loser) t.b = undefined; d.queue = d.queue.filter(x => x !== loser); d.queue.push(loser); excludeSeatPidRef.current = loser; }); };
+
+  // 👇 NEW: Skip the first in queue (move index 0 to index 2)
+  const skipFirst = () => scheduleCommit(d => {
+    if (d.queue.length >= 2) {
+      const first = d.queue.shift()!;      // remove #1
+      const second = d.queue.shift()!;     // remove new #1 (old #2)
+      d.queue.unshift(first);              // put old #1 back to index 1 (temporarily)
+      d.queue.unshift(second);             // put old #2 back to index 0
+      // Result: [old #2, old #1, ...rest] => old #1 is now below the person below him
+    }
+  });
+
+  const iLost = (pid?: string) => {
+    const loser = pid ?? me.id;
+    scheduleCommit(d => {
+      const t = d.tables.find(tt => tt.a === loser || tt.b === loser);
+      if (!t) return;
+      if (t.a === loser) t.a = undefined;
+      if (t.b === loser) t.b = undefined;
+      d.queue = d.queue.filter(x => x !== loser);
+      d.queue.push(loser);
+      excludeSeatPidRef.current = loser;
+    });
+  };
 
   /* ---- DnD ---- */
   type DragInfo =
@@ -375,7 +409,7 @@ export default function ListLobby() {
 
   /* ---- UI ---- */
   return (
-    <main style={wrap}>
+    <main ref={pageRootRef} style={wrap}>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12}}>
         <BackButton href="/" />
         <div style={{display:'flex',alignItems:'center',gap:8}}>
@@ -458,7 +492,15 @@ export default function ListLobby() {
 
       {/* Queue */}
       <section style={card}>
-        <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+          <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
+          {iAmHost && queue.length >= 2 && (
+            <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">
+              Skip first
+            </button>
+          )}
+        </div>
+
         {queue.length===0 ? <div style={{opacity:.6,fontStyle:'italic'}}>Drop players here</div> : (
           <ol style={{margin:0,paddingLeft:18,display:'grid',gap:6}}
               onDragOver={onDragOver}
@@ -539,7 +581,10 @@ export default function ListLobby() {
 }
 
 /* ============ Styles ============ */
-const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui' };
+const wrap: React.CSSProperties = {
+  minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui',
+  WebkitTouchCallout: 'none', // disable touch callout on iOS/Android WebKit
+};
 const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginBottom:14 };
 const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
 const btnGhost: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer' };
@@ -550,4 +595,4 @@ const btnTinyActive: React.CSSProperties = { ...btnTiny, background:'#0ea5e9', b
 const pillBadge: React.CSSProperties = { padding:'6px 10px', borderRadius:999, background:'rgba(16,185,129,.2)', border:'1px solid rgba(16,185,129,.35)', fontSize:12 };
 const input: React.CSSProperties = { width:260, maxWidth:'90vw', padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff' } as any;
 const nameInput: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)' };
-const select: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:8, padding:'6px 8px' };
+const select: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:8, padding:'6px 8' as any };
