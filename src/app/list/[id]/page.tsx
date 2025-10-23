@@ -3,6 +3,7 @@
 export const runtime = 'edge';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useParams } from 'next/navigation';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
 import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
@@ -55,7 +56,7 @@ function coerceList(raw: any): ListGame | null {
       : [];
 
     // keep IDs even if a player object isn't present (prevents races)
-    let queue: string[] = Array.isArray(raw.queue)
+    const queue: string[] = Array.isArray(raw.queue)
       ? raw.queue.map((x: any) => String(x)).filter(Boolean)
       : [];
 
@@ -90,15 +91,14 @@ async function putList(doc: ListGame) {
 
 /* ============ Component ============ */
 export default function ListLobby() {
+  const params = useParams<{ id: string }>();
+  const id = decodeURIComponent(String(params?.id ?? ''));
+
   const [g, setG] = useState<ListGame | null>(null);
   const [busy, setBusy] = useState(false);
   const [nameField, setNameField] = useState('');
   const [showTableControls, setShowTableControls] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  const id = typeof window !== 'undefined'
-    ? decodeURIComponent(window.location.pathname.split('/').pop() || '')
-    : '';
 
   const me = useMemo<Player>(() => {
     try { return JSON.parse(localStorage.getItem('kava_me') || 'null') || { id: uid(), name: 'Player' }; }
@@ -137,15 +137,21 @@ export default function ListLobby() {
 
   /* ---- ONE EventSource per list (ref-counted) ---- */
   useEffect(() => {
-    if (!id) return;
+    // Guard: don't run anything if we don't have a real id yet or when the route is /list/create
+    if (!id || id === 'create') {
+      setG(null);
+      setErr(id === 'create' ? 'Create page → no list id yet' : null);
+      return;
+    }
+
     const gl = getGlobals();
     if (!gl.streams[id]) gl.streams[id] = { es: null, refs: 0, backoff: 1000 };
     gl.streams[id].refs++;
     setErr(null);
+    lastVersion.current = 0;
 
     const startPoller = () => {
       if (pollRef.current) return;
-      console.warn('[kava] SSE failed; starting polling fallback for list', id);
       pollRef.current = window.setInterval(async () => {
         try {
           const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: 'no-store' });
@@ -167,9 +173,7 @@ export default function ListLobby() {
     const attach = () => {
       const s = gl.streams[id];
       if (s.es) return; // already open
-      const streamUrl = `/api/list/${encodeURIComponent(id)}/stream`;
-      console.debug('[kava] opening SSE', streamUrl);
-      const es = new EventSource(streamUrl);
+      const es = new EventSource(`/api/list/${encodeURIComponent(id)}/stream`);
       s.es = es;
 
       es.onmessage = (e) => {
@@ -178,7 +182,6 @@ export default function ListLobby() {
           const doc = coerceList(JSON.parse(e.data));
           if (!doc || !doc.id || !doc.hostId) return;
 
-          // ignore same/older versions to prevent re-render spam
           const incomingV = doc.v ?? 0;
           if (incomingV <= lastVersion.current) return;
           lastVersion.current = incomingV;
@@ -191,29 +194,24 @@ export default function ListLobby() {
       };
 
       es.onerror = () => {
-        console.warn('[kava] SSE error; closing and backing off');
         try { es.close(); } catch {}
         s.es = null;
         const delay = Math.min(15000, s.backoff);
         s.backoff = Math.min(15000, s.backoff * 2);
-        // kick in poller so UI never hangs
         startPoller();
         setTimeout(() => { if (gl.streams[id]?.refs) attach(); }, delay);
       };
 
-      s.backoff = 1000; // reset on open
+      s.backoff = 1000;
     };
 
     attach();
 
-    // First snapshot (helps the UI appear instantly)
+    // First snapshot (so UI appears instantly)
     (async () => {
       try {
         const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: 'no-store' });
-        if (!res.ok) {
-          setErr(`Failed to load list (${res.status})`);
-          return;
-        }
+        if (!res.ok) { setErr(`Failed to load list (${res.status})`); return; }
         const doc = coerceList(await res.json()); if (!doc) { setErr('Invalid list data'); return; }
         const incomingV = doc.v ?? 0;
         if (incomingV <= lastVersion.current) return;
@@ -221,34 +219,25 @@ export default function ListLobby() {
         setErr(null);
         setG(doc);
         if (seatChanged(doc)) bumpAlerts();
-      } catch (e: any) {
-        console.error('[kava] initial list fetch failed', e);
+      } catch {
         setErr('Network error loading list');
-        // poller can still pick it up later
         startPoller();
       }
     })();
 
-    /* ✅ Presence heartbeat — single timeout loop (prevents timer storm) */
+    /* ✅ Heartbeat — single timeout loop */
     const hbKey = `hb:${id}:${me.id}`;
     if (!gl.heartbeats[hbKey]) gl.heartbeats[hbKey] = { t: null, refs: 0 };
     gl.heartbeats[hbKey].refs++;
-
-    // clear any orphaned timer (defensive if prior bad build was open)
     if (gl.heartbeats[hbKey].t) { clearTimeout(gl.heartbeats[hbKey].t as number); gl.heartbeats[hbKey].t = null; }
 
     const HEARTBEAT_MS = 25_000;
     const sendHeartbeat = () => {
       const url = `/api/me/status?userId=${encodeURIComponent(me.id)}&listId=${encodeURIComponent(id)}&ts=${Date.now()}`;
-      try {
-        fetch(url, { method: 'GET', keepalive: true, cache: 'no-store' }).catch(() => {});
-      } catch {
-        const img = new Image();
-        img.src = url;
-      }
+      try { fetch(url, { method: 'GET', keepalive: true, cache: 'no-store' }).catch(() => {}); }
+      catch { const img = new Image(); img.src = url; }
       gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, HEARTBEAT_MS);
     };
-
     gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, 500);
 
     // Pause/reopen streams on visibility change
@@ -269,11 +258,9 @@ export default function ListLobby() {
               try {
                 const doc = coerceList(JSON.parse(e.data));
                 if (!doc || !doc.id || !doc.hostId) return;
-
                 const incomingV = doc.v ?? 0;
                 if (incomingV <= lastVersion.current) return;
                 lastVersion.current = incomingV;
-
                 setG(prev => (doc.id === prev?.id ? doc : doc));
                 setErr(null);
                 if (seatChanged(doc)) bumpAlerts();
@@ -286,7 +273,6 @@ export default function ListLobby() {
     }
 
     return () => {
-      // release refs
       const s = gl.streams[id];
       if (s) {
         s.refs--;
@@ -321,11 +307,12 @@ export default function ListLobby() {
   }, []);
 
   /* ---- UI ---- */
-  if (!g) {
+  if (!id || id === 'create' || !g) {
     return (
       <main ref={pageRootRef} style={wrap}>
         <BackButton href="/" />
         <p style={{ opacity: 0.7 }}>Loading…</p>
+        {id === 'create' && <p style={{opacity:.7, marginTop:6, fontSize:13}}>Waiting for a new list id…</p>}
         {err && <p style={{opacity:.7, marginTop:6, fontSize:13}}>Hint: {err}</p>}
       </main>
     );
@@ -408,7 +395,7 @@ export default function ListLobby() {
   const enqueuePid = (pid: string) => scheduleCommit(d => { if (!d.queue.includes(pid)) d.queue.push(pid); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== pid); });
 
-  // Skip the first in queue (swap 1 and 2 → old #1 below the person below him)
+  // Skip the first in queue (swap 1 and 2 → old #1 below #2)
   const skipFirst = () => scheduleCommit(d => {
     if (d.queue.length >= 2) {
       const first = d.queue.shift()!;
@@ -473,163 +460,174 @@ export default function ListLobby() {
         </div>
       </div>
 
-      <header style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginTop:6}}>
-        <div>
-          <h1 style={{ margin:'8px 0 4px' }}>
-            <input defaultValue={g.name} onBlur={(e)=>renameList(e.currentTarget.value)} style={nameInput} disabled={busy}/>
-          </h1>
-          <div style={{ opacity:.8, fontSize:14, display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-            Private code: <b>{g.code || '—'}</b> • {players.length} {players.length === 1 ? 'player' : 'players'}
-          </div>
-        </div>
-        <div style={{display:'grid',gap:6,justifyItems:'end'}}>
-          {!seated && !queue.includes(me.id) && <button style={btn} onClick={joinQueue} disabled={busy}>Join queue</button>}
-          {queue.includes(me.id) && <button style={btnGhost} onClick={leaveQueue} disabled={busy}>Leave queue</button>}
-        </div>
-      </header>
-
-      {/* Tables */}
-      <section style={card}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-          <h3 style={{marginTop:0}}>Tables</h3>
-          {iAmHost && <button style={btnGhostSm} onClick={()=>setShowTableControls(v=>!v)}>{showTableControls?'Hide table settings':'Table settings'}</button>}
-        </div>
-
-        {showTableControls && iAmHost && (
-          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))',gap:12,marginBottom:12}}>
-            {g.tables.map((t,i)=>(
-              <div key={i} style={{background:'#111',border:'1px solid #333',borderRadius:10,padding:10}}>
-                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-                  <div style={{fontWeight:600,opacity:.9}}>Table {i+1}</div>
-                  <select value={t.label} onChange={(e)=>scheduleCommit(d=>{ d.tables[i].label = e.currentTarget.value === '9 foot' ? '9 foot' : '8 foot'; })} style={select} disabled={busy}>
-                    <option value="9 foot">9-foot</option><option value="8 foot">8-foot</option>
-                  </select>
-                </div>
+      {!g ? (
+        <>
+          <p style={{ opacity: 0.7 }}>Loading…</p>
+          {err && <p style={{opacity:.7, marginTop:6, fontSize:13}}>Hint: {err}</p>}
+        </>
+      ) : (
+        <>
+          <header style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginTop:6}}>
+            <div>
+              <h1 style={{ margin:'8px 0 4px' }}>
+                <input defaultValue={g.name} onBlur={(e)=>renameList(e.currentTarget.value)} style={nameInput} disabled={busy}/>
+              </h1>
+              <div style={{ opacity:.8, fontSize:14, display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                Private code: <b>{g.code || '—'}</b> • {g.players.length} {g.players.length === 1 ? 'player' : 'players'}
               </div>
-            ))}
-            <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-              <button style={btnGhostSm} onClick={()=>scheduleCommit(d=>{ if (d.tables.length<2) d.tables.push({label:d.tables[0]?.label==='9 foot'?'8 foot':'9 foot'}); })} disabled={busy||g.tables.length>=2}>Add second table</button>
-              <button style={btnGhostSm} onClick={()=>scheduleCommit(d=>{ if (d.tables.length>1) d.tables=d.tables.slice(0,1); })} disabled={busy||g.tables.length<=1}>Use one table</button>
             </div>
-          </div>
-        )}
+            <div style={{display:'grid',gap:6,justifyItems:'end'}}>
+              {!(g.tables.findIndex((t) => t.a === me.id || t.b === me.id) >= 0) && !g.queue.includes(me.id) && <button style={btn} onClick={joinQueue} disabled={busy}>Join queue</button>}
+              {g.queue.includes(me.id) && <button style={btnGhost} onClick={leaveQueue} disabled={busy}>Leave queue</button>}
+            </div>
+          </header>
 
-        <div style={{display:'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px,1fr))', gap:12}}>
-          {g.tables.map((t,i)=>{
-            const Seat = ({side}:{side:'a'|'b'})=>{
-              const pid = t[side];
-              return (
-                <div
-                  draggable={!!pid && iAmHost}
-                  onDragStart={(e)=>pid && onDragStart(e,{type:'seat',table:i,side,pid})}
-                  onDragOver={onDragOver}
-                  onDrop={(e)=>handleDrop(e,{type:'seat',table:i,side,pid})}
-                  style={{minHeight:24,padding:'8px 10px',border:'1px dashed rgba(255,255,255,.25)',borderRadius:8,background:'rgba(56,189,248,.10)',display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}
-                  title="Drag from queue or swap seats"
-                >
-                  <span>{nameOf(pid)}</span>
-                  {pid && (iAmHost || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
-                </div>
-              );
-            };
-            return (
-              <div key={i} style={{ background:'#0b3a66', borderRadius:12, padding:'12px 14px', border:'1px solid rgba(56,189,248,.35)'}}>
-                <div style={{ opacity:.9, fontSize:12, marginBottom:6 }}>{t.label==='9 foot'?'9-Foot Table':'8-Foot Table'} • Table {i+1}</div>
-                <div style={{ display:'grid', gap:8 }}>
-                  <Seat side="a"/><div style={{opacity:.7,textAlign:'center'}}>vs</div><Seat side="b"/>
+          {/* Tables */}
+          <section style={card}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+              <h3 style={{marginTop:0}}>Tables</h3>
+              {me.id === g.hostId && <button style={btnGhostSm} onClick={()=>setShowTableControls(v=>!v)}>{showTableControls?'Hide table settings':'Table settings'}</button>}
+            </div>
+
+            {showTableControls && me.id === g.hostId && (
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))',gap:12,marginBottom:12}}>
+                {g.tables.map((t,i)=>(
+                  <div key={i} style={{background:'#111',border:'1px solid #333',borderRadius:10,padding:10}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                      <div style={{fontWeight:600,opacity:.9}}>Table {i+1}</div>
+                      <select value={t.label} onChange={(e)=>scheduleCommit(d=>{ d.tables[i].label = e.currentTarget.value === '9 foot' ? '9 foot' : '8 foot'; })} style={select} disabled={busy}>
+                        <option value="9 foot">9-foot</option><option value="8 foot">8-foot</option>
+                      </select>
+                    </div>
+                  </div>
+                ))}
+                <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                  <button style={btnGhostSm} onClick={()=>scheduleCommit(d=>{ if (d.tables.length<2) d.tables.push({label:d.tables[0]?.label==='9 foot'?'8 foot':'9 foot'}); })} disabled={busy||g.tables.length>=2}>Add second table</button>
+                  <button style={btnGhostSm} onClick={()=>scheduleCommit(d=>{ if (d.tables.length>1) d.tables=d.tables.slice(0,1); })} disabled={busy||g.tables.length<=1}>Use one table</button>
                 </div>
               </div>
-            );
-          })}
-        </div>
-      </section>
+            )}
 
-      {/* Queue */}
-      <section style={card}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
-          <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
-          {iAmHost && queue.length >= 2 && (
-            <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">
-              Skip first
-            </button>
-          )}
-        </div>
-
-        {queue.length===0 ? <div style={{opacity:.6,fontStyle:'italic'}}>Drop players here</div> : (
-          <ol style={{margin:0,paddingLeft:18,display:'grid',gap:6}}
-              onDragOver={onDragOver}
-              onDrop={(e)=>handleDrop(e,{type:'queue',index:queue.length,pid:'__end' as any})}>
-            {queue.map((pid,idx)=>{
-              const pref = (prefs[pid] ?? 'any') as Pref;
-              const canEdit = iAmHost || pid===me.id;
-              return (
-                <li key={`${pid}-${idx}`}
-                    draggable
-                    onDragStart={(e)=>onDragStart(e,{type:'queue',index:idx,pid})}
-                    onDragOver={onDragOver}
-                    onDrop={(e)=>handleDrop(e,{type:'queue',index:idx,pid})}
-                    style={{cursor:'grab',display:'flex',alignItems:'center',gap:10,justifyContent:'space-between'}}>
-                  <span style={{flex:'1 1 auto'}}>{nameOf(pid)}</span>
-                  <div style={{display:'flex',gap:6}}>
-                    {canEdit ? (
-                      <>
-                        <button style={pref==='any'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'any');}} disabled={busy}>Any</button>
-                        <button style={pref==='9 foot'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'9 foot');}} disabled={busy}>9-ft</button>
-                        <button style={pref==='8 foot'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'8 foot');}} disabled={busy}>8-ft</button>
-                      </>
-                    ) : (
-                      <small style={{opacity:.7,width:48,textAlign:'right'}}>{pref==='any'?'Any':pref==='9 foot'?'9-ft':'8-ft'}</small>
-                    )}
+            <div style={{display:'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px,1fr))', gap:12}}>
+              {g.tables.map((t,i)=>{
+                const Seat = ({side}:{side:'a'|'b'})=>{
+                  const pid = t[side];
+                  const nameOf = (pid?: string) => (pid ? g.players.find(p => p.id === pid)?.name || '??' : '—');
+                  return (
+                    <div
+                      draggable={!!pid && me.id === g.hostId}
+                      onDragStart={(e)=>pid && onDragStart(e,{type:'seat',table:i,side,pid})}
+                      onDragOver={onDragOver}
+                      onDrop={(e)=>handleDrop(e,{type:'seat',table:i,side,pid})}
+                      style={{minHeight:24,padding:'8px 10px',border:'1px dashed rgba(255,255,255,.25)',borderRadius:8,background:'rgba(56,189,248,.10)',display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}
+                      title="Drag from queue or swap seats"
+                    >
+                      <span>{nameOf(pid)}</span>
+                      {pid && (me.id === g.hostId || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
+                    </div>
+                  );
+                };
+                return (
+                  <div key={i} style={{ background:'#0b3a66', borderRadius:12, padding:'12px 14px', border:'1px solid rgba(56,189,248,.35)'}}>
+                    <div style={{ opacity:.9, fontSize:12, marginBottom:6 }}>{t.label==='9 foot'?'9-Foot Table':'8-Foot Table'} • Table {i+1}</div>
+                    <div style={{ display:'grid', gap:8 }}>
+                      <Seat side="a"/><div style={{opacity:.7,textAlign:'center'}}>vs</div><Seat side="b"/>
+                    </div>
                   </div>
-                </li>
-              );
-            })}
-          </ol>
-        )}
-      </section>
+                );
+              })}
+            </div>
+          </section>
 
-      {/* Host controls */}
-      {iAmHost && (
-        <section style={card}>
-          <h3 style={{marginTop:0}}>Host controls</h3>
-          <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
-            <input placeholder="Add player name..." value={nameField} onChange={(e)=>setNameField(e.target.value)} style={input} disabled={busy}/>
-            <button style={btn} onClick={addPlayer} disabled={busy || !nameField.trim()}>Add player (joins queue)</button>
-          </div>
-        </section>
-      )}
+          {/* Queue */}
+          <section style={card}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+              <h3 style={{marginTop:0}}>Queue ({g.queue.length})</h3>
+              {me.id === g.hostId && g.queue.length >= 2 && (
+                <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">
+                  Skip first
+                </button>
+              )}
+            </div>
 
-      {/* Players */}
-      <section style={card}>
-        <h3 style={{marginTop:0}}>List (Players) — {players.length}</h3>
-        {players.length===0 ? <div style={{opacity:.7}}>No players yet.</div> : (
-          <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
-            {players.map(p=>{
-              const pref = (prefs[p.id] ?? 'any') as Pref;
-              const canEdit = iAmHost || p.id===me.id;
-              return (
-                <li key={p.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}>
-                  <span>{p.name}</span>
-                  <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-                    {!inQueue(p.id)
-                      ? <button style={btnMini} onClick={()=>enqueuePid(p.id)} disabled={busy}>Queue</button>
-                      : <button style={btnMini} onClick={()=>dequeuePid(p.id)} disabled={busy}>Dequeue</button>}
-                    {canEdit && (
+            {g.queue.length===0 ? <div style={{opacity:.6,fontStyle:'italic'}}>Drop players here</div> : (
+              <ol style={{margin:0,paddingLeft:18,display:'grid',gap:6}}
+                  onDragOver={onDragOver}
+                  onDrop={(e)=>handleDrop(e,{type:'queue',index:g.queue.length,pid:'__end' as any})}>
+                {g.queue.map((pid,idx)=>{
+                  const pref = (g.prefs?.[pid] ?? 'any') as Pref;
+                  const canEdit = me.id === g.hostId || pid===me.id;
+                  const nameOf = (pid?: string) => (pid ? g.players.find(p => p.id === pid)?.name || '??' : '—');
+                  return (
+                    <li key={`${pid}-${idx}`}
+                        draggable
+                        onDragStart={(e)=>onDragStart(e,{type:'queue',index:idx,pid})}
+                        onDragOver={onDragOver}
+                        onDrop={(e)=>handleDrop(e,{type:'queue',index:idx,pid})}
+                        style={{cursor:'grab',display:'flex',alignItems:'center',gap:10,justifyContent:'space-between'}}>
+                      <span style={{flex:'1 1 auto'}}>{nameOf(pid)}</span>
                       <div style={{display:'flex',gap:6}}>
-                        <button style={pref==='any'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'any')} disabled={busy}>Any</button>
-                        <button style={pref==='9 foot'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'9 foot')} disabled={busy}>9-ft</button>
-                        <button style={pref==='8 foot'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'8 foot')} disabled={busy}>8-ft</button>
+                        {canEdit ? (
+                          <>
+                            <button style={pref==='any'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();scheduleCommit(d=>{d.prefs??={}; d.prefs[pid]='any';});}} disabled={busy}>Any</button>
+                            <button style={pref==='9 foot'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();scheduleCommit(d=>{d.prefs??={}; d.prefs[pid]='9 foot';});}} disabled={busy}>9-ft</button>
+                            <button style={pref==='8 foot'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();scheduleCommit(d=>{d.prefs??={}; d.prefs[pid]='8 foot';});}} disabled={busy}>8-ft</button>
+                          </>
+                        ) : (
+                          <small style={{opacity:.7,width:48,textAlign:'right'}}>{pref==='any'?'Any':pref==='9 foot'?'9-ft':'8-ft'}</small>
+                        )}
                       </div>
-                    )}
-                    <button style={btnMini} onClick={()=>renamePlayer(p.id)} disabled={busy}>Rename</button>
-                    <button style={btnGhost} onClick={()=>removePlayer(p.id)} disabled={busy}>Remove</button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        )}
-      </section>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </section>
+
+          {/* Host controls */}
+          {me.id === g.hostId && (
+            <section style={card}>
+              <h3 style={{marginTop:0}}>Host controls</h3>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+                <input placeholder="Add player name..." value={nameField} onChange={(e)=>setNameField(e.target.value)} style={input} disabled={busy}/>
+                <button style={btn} onClick={addPlayer} disabled={busy || !nameField.trim()}>Add player (joins queue)</button>
+              </div>
+            </section>
+          )}
+
+          {/* Players */}
+          <section style={card}>
+            <h3 style={{marginTop:0}}>List (Players) — {g.players.length}</h3>
+            {g.players.length===0 ? <div style={{opacity:.7}}>No players yet.</div> : (
+              <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
+                {g.players.map(p=>{
+                  const pref = (g.prefs?.[p.id] ?? 'any') as Pref;
+                  const canEdit = me.id === g.hostId || p.id===me.id;
+                  return (
+                    <li key={p.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}>
+                      <span>{p.name}</span>
+                      <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                        {!g.queue.includes(p.id)
+                          ? <button style={btnMini} onClick={()=>enqueuePid(p.id)} disabled={busy}>Queue</button>
+                          : <button style={btnMini} onClick={()=>dequeuePid(p.id)} disabled={busy}>Dequeue</button>}
+                        {canEdit && (
+                          <div style={{display:'flex',gap:6}}>
+                            <button style={pref==='any'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'any')} disabled={busy}>Any</button>
+                            <button style={pref==='9 foot'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'9 foot')} disabled={busy}>9-ft</button>
+                            <button style={pref==='8 foot'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'8 foot')} disabled={busy}>8-ft</button>
+                          </div>
+                        )}
+                        <button style={btnMini} onClick={()=>renamePlayer(p.id)} disabled={busy}>Rename</button>
+                        <button style={btnGhost} onClick={()=>removePlayer(p.id)} disabled={busy}>Remove</button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        </>
+      )}
     </main>
   );
 }
