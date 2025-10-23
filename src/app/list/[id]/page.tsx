@@ -111,8 +111,8 @@ export default function ListLobby() {
     matchReadyMessage: (s: any) => {
       const raw = s?.tableNumber ?? s?.table?.number ?? null;
       const n = Number(raw);
-      const shown = Number.isFinite(n) ? (n === 0 || n === 1 ? n + 1 : n) : null;
-      return shown ? `Your in table (#${shown})` : 'Your in table';
+      const shown = Number(raw) === 0 || Number(raw) === 1 ? n + 1 : n;
+      return Number.isFinite(shown) ? `Your in table (#${shown})` : 'Your in table';
     },
   });
 
@@ -183,16 +183,22 @@ export default function ListLobby() {
       } catch {}
     })();
 
-    /* Presence heartbeat – ONE interval per list */
+    /* ✅ Presence heartbeat – ONE interval per list (ref-counted) */
     const hbKey = `hb:${id}:${me.id}`;
     if (!gl.heartbeats[hbKey]) gl.heartbeats[hbKey] = { t: null, refs: 0 };
     gl.heartbeats[hbKey].refs++;
     if (!gl.heartbeats[hbKey].t) {
       gl.heartbeats[hbKey].t = window.setInterval(() => {
-        navigator.sendBeacon?.(
-          `/api/me/status?userid=${encodeURIComponent(me.id)}&listid=${encodeURIComponent(id)}`
-        );
-      }, 25000);
+        // Use GET and camelCase to match the API; also bust caches
+        const url = `/api/me/status?userId=${encodeURIComponent(me.id)}&listId=${encodeURIComponent(id)}&ts=${Date.now()}`;
+        try {
+          fetch(url, { method: 'GET', keepalive: true, cache: 'no-store' }).catch(() => {});
+        } catch {
+          // Safari fallback if keepalive not available
+          const img = new Image();
+          img.src = url;
+        }
+      }, 25_000);
     }
 
     // one global visibility handler that pauses streams on hidden
@@ -230,8 +236,22 @@ export default function ListLobby() {
 
     return () => {
       // release refs
-      const s = gl.streams[id]; if (s) { s.refs--; if (s.refs <= 0) { if (s.es) { try { s.es.close(); } catch {} } delete gl.streams[id]; } }
-      const hb = gl.heartbeats[hbKey]; if (hb) { hb.refs--; if (hb.refs <= 0) { if (hb.t) clearInterval(hb.t); delete gl.heartbeats[hbKey]; } }
+      const s = gl.streams[id];
+      if (s) {
+        s.refs--;
+        if (s.refs <= 0) {
+          if (s.es) { try { s.es.close(); } catch {} }
+          delete gl.streams[id];
+        }
+      }
+      const hb = gl.heartbeats[hbKey];
+      if (hb) {
+        hb.refs--;
+        if (hb.refs <= 0) {
+          if (hb.t) clearInterval(hb.t);
+          delete gl.heartbeats[hbKey];
+        }
+      }
     };
   }, [id, me.id]);
 
@@ -324,7 +344,9 @@ export default function ListLobby() {
   const iLost = (pid?: string) => { const loser = pid ?? me.id; scheduleCommit(d => { const t = d.tables.find(tt => tt.a === loser || tt.b === loser); if (!t) return; if (t.a === loser) t.a = undefined; if (t.b === loser) t.b = undefined; d.queue = d.queue.filter(x => x !== loser); d.queue.push(loser); excludeSeatPidRef.current = loser; }); };
 
   /* ---- DnD ---- */
-  type DragInfo = { type: 'seat'; table: number; side: 'a'|'b'; pid?: string } | { type: 'queue'; index: number; pid: string };
+  type DragInfo =
+    | { type: 'seat'; table: number; side: 'a'|'b'; pid?: string }
+    | { type: 'queue'; index: number; pid: string };
   const onDragStart = (e: React.DragEvent, info: DragInfo) => { e.dataTransfer.setData('application/json', JSON.stringify(info)); e.dataTransfer.effectAllowed = 'move'; };
   const onDragOver = (e: React.DragEvent) => e.preventDefault();
   const parseInfo = (ev: React.DragEvent): DragInfo | null => { try { return JSON.parse(ev.dataTransfer.getData('application/json')); } catch { return null; } };
