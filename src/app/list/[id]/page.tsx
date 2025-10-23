@@ -152,7 +152,7 @@ export default function ListLobby() {
           const doc = coerceList(JSON.parse(e.data));
           if (!doc || !doc.id || !doc.hostId) return;
 
-          // 🔒 ignore same/older versions to prevent re-render spam
+          // ignore same/older versions to prevent re-render spam
           const incomingV = doc.v ?? 0;
           if (incomingV <= lastVersion.current) return;
           lastVersion.current = incomingV;
@@ -189,7 +189,7 @@ export default function ListLobby() {
       } catch {}
     })();
 
-    /* ✅ Presence heartbeat — single timeout loop (prevents timer storm) */
+    /* Presence heartbeat — single timeout loop (prevents timer storm) */
     const hbKey = `hb:${id}:${me.id}`;
     if (!gl.heartbeats[hbKey]) gl.heartbeats[hbKey] = { t: null, refs: 0 };
     gl.heartbeats[hbKey].refs++;
@@ -211,7 +211,7 @@ export default function ListLobby() {
 
     gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, 500);
 
-    // Pause/reopen streams on visibility change
+    // pause / reopen SSE on visibility
     if (!gl.visHook) {
       gl.visHook = true;
       document.addEventListener('visibilitychange', () => {
@@ -365,13 +365,13 @@ export default function ListLobby() {
   const enqueuePid = (pid: string) => scheduleCommit(d => { if (!d.queue.includes(pid)) d.queue.push(pid); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== pid); });
 
-  // Skip the first in queue (move old #1 below the person below him → [2,1,3,...])
+  // Skip the first in queue (swap 1 and 2 → old #1 below the person below him)
   const skipFirst = () => scheduleCommit(d => {
     if (d.queue.length >= 2) {
-      const first = d.queue.shift()!;      // remove old #1
-      const second = d.queue.shift()!;     // remove old #2 (now at head)
-      d.queue.unshift(first);              // put old #1 back (now at index 1)
-      d.queue.unshift(second);             // put old #2 back to head
+      const first = d.queue.shift()!;
+      const second = d.queue.shift()!;
+      d.queue.unshift(first);
+      d.queue.unshift(second);
     }
   });
 
@@ -606,4 +606,4 @@ const btnTinyActive: React.CSSProperties = { ...btnTiny, background:'#0ea5e9', b
 const pillBadge: React.CSSProperties = { padding:'6px 10px', borderRadius:999, background:'rgba(16,185,129,.2)', border:'1px solid rgba(16,185,129,.35)', fontSize:12 };
 const input: React.CSSProperties = { width:260, maxWidth:'90vw', padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff' } as any;
 const nameInput: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)' };
-const select: React.CSSProperties = { background:'#111', border:'1px solid '#333'", color:'#fff', borderRadius:8, padding:'6px 8px' };
+const select: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:8, padding:'6px 8px' };
