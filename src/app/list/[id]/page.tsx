@@ -152,7 +152,7 @@ export default function ListLobby() {
           const doc = coerceList(JSON.parse(e.data));
           if (!doc || !doc.id || !doc.hostId) return;
 
-          // 🔒 Ignore same/older versions to prevent re-render spam
+          // 🔒 ignore same/older versions to prevent re-render spam
           const incomingV = doc.v ?? 0;
           if (incomingV <= lastVersion.current) return;
           lastVersion.current = incomingV;
@@ -175,7 +175,7 @@ export default function ListLobby() {
 
     attach();
 
-    // First snapshot once (helps the UI appear instantly)
+    // First snapshot (helps the UI appear instantly)
     (async () => {
       try {
         const res = await fetch(`/api/list/${encodeURIComponent(id)}`, { cache: 'no-store' });
@@ -189,24 +189,29 @@ export default function ListLobby() {
       } catch {}
     })();
 
-    /* ✅ Presence heartbeat – ONE interval per list (ref-counted), GET keepalive */
+    /* ✅ Presence heartbeat — single timeout loop (prevents timer storm) */
     const hbKey = `hb:${id}:${me.id}`;
     if (!gl.heartbeats[hbKey]) gl.heartbeats[hbKey] = { t: null, refs: 0 };
     gl.heartbeats[hbKey].refs++;
-    if (!gl.heartbeats[hbKey].t) {
-      gl.heartbeats[hbKey].t = window.setInterval(() => {
-        const url = `/api/me/status?userId=${encodeURIComponent(me.id)}&listId=${encodeURIComponent(id)}&ts=${Date.now()}`;
-        try {
-          fetch(url, { method: 'GET', keepalive: true, cache: 'no-store' }).catch(() => {});
-        } catch {
-          // Safari fallback if keepalive not available
-          const img = new Image();
-          img.src = url;
-        }
-      }, 25_000);
-    }
 
-    // one global visibility handler that pauses streams on hidden
+    // clear any orphaned timer (defensive if prior bad build was open)
+    if (gl.heartbeats[hbKey].t) { clearTimeout(gl.heartbeats[hbKey].t as number); gl.heartbeats[hbKey].t = null; }
+
+    const HEARTBEAT_MS = 25_000;
+    const sendHeartbeat = () => {
+      const url = `/api/me/status?userId=${encodeURIComponent(me.id)}&listId=${encodeURIComponent(id)}&ts=${Date.now()}`;
+      try {
+        fetch(url, { method: 'GET', keepalive: true, cache: 'no-store' }).catch(() => {});
+      } catch {
+        const img = new Image();
+        img.src = url;
+      }
+      gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, HEARTBEAT_MS);
+    };
+
+    gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, 500);
+
+    // Pause/reopen streams on visibility change
     if (!gl.visHook) {
       gl.visHook = true;
       document.addEventListener('visibilitychange', () => {
@@ -216,27 +221,24 @@ export default function ListLobby() {
           if (!rec.refs) continue;
           if (hidden) {
             if (rec.es) { try { rec.es.close(); } catch {} rec.es = null; }
-          } else {
-            if (!rec.es) {
-              // reopen
-              const es = new EventSource(`/api/list/${encodeURIComponent(lid)}/stream`);
-              rec.es = es;
-              es.onmessage = (e) => {
-                if (suppressRef.current) return;
-                try {
-                  const doc = coerceList(JSON.parse(e.data));
-                  if (!doc || !doc.id || !doc.hostId) return;
+          } else if (!rec.es) {
+            const es = new EventSource(`/api/list/${encodeURIComponent(lid)}/stream`);
+            rec.es = es;
+            es.onmessage = (e) => {
+              if (suppressRef.current) return;
+              try {
+                const doc = coerceList(JSON.parse(e.data));
+                if (!doc || !doc.id || !doc.hostId) return;
 
-                  const incomingV = doc.v ?? 0;
-                  if (incomingV <= lastVersion.current) return;
-                  lastVersion.current = incomingV;
+                const incomingV = doc.v ?? 0;
+                if (incomingV <= lastVersion.current) return;
+                lastVersion.current = incomingV;
 
-                  setG(prev => (doc.id === prev?.id ? doc : doc));
-                  if (seatChanged(doc)) bumpAlerts();
-                } catch {}
-              };
-              es.onerror = () => { try { es.close(); } catch {}; rec.es = null; };
-            }
+                setG(prev => (doc.id === prev?.id ? doc : doc));
+                if (seatChanged(doc)) bumpAlerts();
+              } catch {}
+            };
+            es.onerror = () => { try { es.close(); } catch {}; rec.es = null; };
           }
         }
       });
@@ -244,26 +246,36 @@ export default function ListLobby() {
 
     return () => {
       // release refs
-      const s = gl.streams[id]; if (s) { s.refs--; if (s.refs <= 0) { if (s.es) { try { s.es.close(); } catch {} } delete gl.streams[id]; } }
-      const hb = gl.heartbeats[hbKey]; if (hb) { hb.refs--; if (hb.refs <= 0) { if (hb.t) clearInterval(hb.t); delete gl.heartbeats[hbKey]; } }
+      const s = gl.streams[id];
+      if (s) {
+        s.refs--;
+        if (s.refs <= 0) {
+          if (s.es) { try { s.es.close(); } catch {} }
+          delete gl.streams[id];
+        }
+      }
+      const hb = gl.heartbeats[hbKey];
+      if (hb) {
+        hb.refs--;
+        if (hb.refs <= 0) {
+          if (hb.t) clearTimeout(hb.t as number);
+          delete gl.heartbeats[hbKey];
+        }
+      }
     };
   }, [id, me.id]);
 
-  /* ---- Disable Android long-press context menu (scoped to page root) ---- */
+  /* ---- Disable Android long-press context menu (scoped) ---- */
   useEffect(() => {
     const root = pageRootRef.current;
     if (!root) return;
     const prevent = (e: Event) => {
       const target = e.target as HTMLElement | null;
-      // allow inputs/textareas to behave normally
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
       e.preventDefault();
     };
     root.addEventListener('contextmenu', prevent);
-    // On some Android builds, long-press triggers 'contextmenu'; this is enough.
-    return () => {
-      root.removeEventListener('contextmenu', prevent);
-    };
+    return () => { root.removeEventListener('contextmenu', prevent); };
   }, []);
 
   /* ---- UI ---- */
@@ -353,14 +365,13 @@ export default function ListLobby() {
   const enqueuePid = (pid: string) => scheduleCommit(d => { if (!d.queue.includes(pid)) d.queue.push(pid); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== pid); });
 
-  // 👇 NEW: Skip the first in queue (move index 0 to index 2)
+  // Skip the first in queue (move old #1 below the person below him → [2,1,3,...])
   const skipFirst = () => scheduleCommit(d => {
     if (d.queue.length >= 2) {
-      const first = d.queue.shift()!;      // remove #1
-      const second = d.queue.shift()!;     // remove new #1 (old #2)
-      d.queue.unshift(first);              // put old #1 back to index 1 (temporarily)
-      d.queue.unshift(second);             // put old #2 back to index 0
-      // Result: [old #2, old #1, ...rest] => old #1 is now below the person below him
+      const first = d.queue.shift()!;      // remove old #1
+      const second = d.queue.shift()!;     // remove old #2 (now at head)
+      d.queue.unshift(first);              // put old #1 back (now at index 1)
+      d.queue.unshift(second);             // put old #2 back to head
     }
   });
 
@@ -583,7 +594,7 @@ export default function ListLobby() {
 /* ============ Styles ============ */
 const wrap: React.CSSProperties = {
   minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui',
-  WebkitTouchCallout: 'none', // disable touch callout on iOS/Android WebKit
+  WebkitTouchCallout: 'none',
 };
 const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginBottom:14 };
 const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
@@ -595,4 +606,4 @@ const btnTinyActive: React.CSSProperties = { ...btnTiny, background:'#0ea5e9', b
 const pillBadge: React.CSSProperties = { padding:'6px 10px', borderRadius:999, background:'rgba(16,185,129,.2)', border:'1px solid rgba(16,185,129,.35)', fontSize:12 };
 const input: React.CSSProperties = { width:260, maxWidth:'90vw', padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff' } as any;
 const nameInput: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)' };
-const select: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:8, padding:'6px 8' as any };
+const select: React.CSSProperties = { background:'#111', border:'1px solid '#333'", color:'#fff', borderRadius:8, padding:'6px 8px' };

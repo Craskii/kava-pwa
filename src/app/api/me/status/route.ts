@@ -2,44 +2,57 @@
 export const runtime = 'edge';
 export const dynamic = 'force-dynamic';
 
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from 'next/server';
+
+/** read either camelCase or lowercase param names */
+function qp(url: URL, key: string) {
+  return url.searchParams.get(key) ?? url.searchParams.get(key.toLowerCase());
+}
+function noStore(res: NextResponse) {
+  res.headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  res.headers.set('CDN-Cache-Control', 'no-store');
+  res.headers.set('Vary', 'Accept');
+  return res;
+}
 
 export async function GET(req: NextRequest) {
   try {
     const url = req.nextUrl;
-    const userId = url.searchParams.get("userId") || "";
-    const tournamentId = url.searchParams.get("tournamentId");
-    const listId = url.searchParams.get("listId");
-    if (!userId) return NextResponse.json({ phase: "idle" }, { status: 200 });
+    const userId = qp(url, 'userId') || '';
+    const tournamentId = qp(url, 'tournamentId');
+    const listId = qp(url, 'listId');
+
+    if (!userId) return noStore(NextResponse.json({ phase: 'idle' }, { status: 200 }));
 
     if (tournamentId) {
       const t = await fetchTournament(req, tournamentId);
-      return NextResponse.json(computeStatusFromTournament(t, userId), { status: 200 });
+      return noStore(NextResponse.json(computeStatusFromTournament(t, userId), { status: 200 }));
     }
     if (listId) {
       const l = await fetchList(req, listId);
-      return NextResponse.json(computeStatusFromList(l, userId), { status: 200 });
+      return noStore(NextResponse.json(computeStatusFromList(l, userId), { status: 200 }));
     }
 
-    // Global fallbacks so a poll from any page works:
+    // Fallbacks
     const mineL = await fetchMineLists(req, userId);
-    const latestL = pickLatest([...mineL.playing, ...mineL.hosting]);
+    const latestL = pickLatest([...(mineL?.playing ?? []), ...(mineL?.hosting ?? [])]);
     if (latestL) {
       const l = await fetchList(req, latestL.id);
       const st = computeStatusFromList(l, userId);
-      if (st.phase !== 'idle') return NextResponse.json(st, { status: 200 });
+      if (st.phase !== 'idle') return noStore(NextResponse.json(st, { status: 200 }));
     }
+
     const mineT = await fetchMineTournaments(req, userId);
-    const latestT = pickLatest([...mineT.playing, ...mineT.hosting]);
+    const latestT = pickLatest([...(mineT?.playing ?? []), ...(mineT?.hosting ?? [])]);
     if (latestT) {
       const t = await fetchTournament(req, latestT.id);
       const st = computeStatusFromTournament(t, userId);
-      if (st.phase !== 'idle') return NextResponse.json(st, { status: 200 });
+      if (st.phase !== 'idle') return noStore(NextResponse.json(st, { status: 200 }));
     }
 
-    return NextResponse.json({ phase: "idle" }, { status: 200 });
+    return noStore(NextResponse.json({ phase: 'idle' }, { status: 200 }));
   } catch {
-    return NextResponse.json({ phase: "idle" }, { status: 200 });
+    return noStore(NextResponse.json({ phase: 'idle' }, { status: 200 }));
   }
 }
 
@@ -47,22 +60,22 @@ export async function GET(req: NextRequest) {
 const baseUrl = (req: NextRequest) => req.nextUrl.origin;
 
 async function fetchTournament(req: NextRequest, id: string) {
-  const res = await fetch(`${baseUrl(req)}/api/tournament/${encodeURIComponent(id)}`, { cache: "no-store" });
+  const res = await fetch(`${baseUrl(req)}/api/tournament/${encodeURIComponent(id)}`, { cache: 'no-store' });
   if (!res.ok) return null;
   return res.json();
 }
 async function fetchList(req: NextRequest, id: string) {
-  const res = await fetch(`${baseUrl(req)}/api/list/${encodeURIComponent(id)}`, { cache: "no-store" });
+  const res = await fetch(`${baseUrl(req)}/api/list/${encodeURIComponent(id)}`, { cache: 'no-store' });
   if (!res.ok) return null;
   return res.json();
 }
 async function fetchMineTournaments(req: NextRequest, userId: string) {
-  const res = await fetch(`${baseUrl(req)}/api/tournaments?userId=${encodeURIComponent(userId)}`, { cache: "no-store" });
+  const res = await fetch(`${baseUrl(req)}/api/tournaments?userId=${encodeURIComponent(userId)}`, { cache: 'no-store' });
   if (!res.ok) return { hosting: [], playing: [] };
   return res.json();
 }
 async function fetchMineLists(req: NextRequest, userId: string) {
-  const res = await fetch(`${baseUrl(req)}/api/lists?userId=${encodeURIComponent(userId)}`, { cache: "no-store" });
+  const res = await fetch(`${baseUrl(req)}/api/lists?userId=${encodeURIComponent(userId)}`, { cache: 'no-store' });
   if (!res.ok) return { hosting: [], playing: [] };
   return res.json();
 }
@@ -74,9 +87,8 @@ const norm = (v: any) => (typeof v === 'string' ? v : v?.id || v?.playerId || v?
 
 /* ------------ TOURNAMENT ------------ */
 function computeStatusFromTournament(t: any, userId: string) {
-  if (!t) return { source: 'tournament' as const, tournamentId: null, phase: "idle" as const, sig: "idle" };
+  if (!t) return { source: 'tournament' as const, tournamentId: null, phase: 'idle' as const, sig: 'idle' };
 
-  // Table = seated -> match_ready
   const tables = Array.isArray(t.tables) ? t.tables : [];
   for (const tb of tables) {
     const tableNum = tb?.number ?? tb?.id ?? tb?.tableNumber ?? null;
@@ -90,19 +102,18 @@ function computeStatusFromTournament(t: any, userId: string) {
       return {
         source: 'tournament' as const,
         tournamentId: t?.id ?? null,
-        phase: "match_ready" as const,
+        phase: 'match_ready' as const,
         tableNumber: Number(tableNum) || null,
         sig
       };
     }
   }
 
-  // Current bracket match
   const rounds: any[][] = Array.isArray(t.rounds) ? t.rounds : [];
-  if (!rounds.length) return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: "idle" as const, sig: "idle" };
+  if (!rounds.length) return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: 'idle' as const, sig: 'idle' };
 
   const rIdx = rounds.findIndex(r => Array.isArray(r) && r.some(m => !m?.winner));
-  if (rIdx === -1) return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: "idle" as const, sig: "done" };
+  if (rIdx === -1) return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: 'idle' as const, sig: 'done' };
 
   const round = rounds[rIdx];
   const mIdx = round.findIndex(m => !m?.winner);
@@ -118,23 +129,22 @@ function computeStatusFromTournament(t: any, userId: string) {
     return {
       source: 'tournament' as const,
       tournamentId: t?.id ?? null,
-      phase: "up_next" as const,
+      phase: 'up_next' as const,
       bracketRoundName: `Round ${rIdx + 1}`,
       sig
     };
   }
 
   const later = round.some((m, i) => i > mIdx && (norm(m?.a) === userId || norm(m?.b) === userId));
-  if (later) return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: "queued" as const, sig };
+  if (later) return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: 'queued' as const, sig };
 
-  return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: "idle" as const, sig };
+  return { source: 'tournament' as const, tournamentId: t?.id ?? null, phase: 'idle' as const, sig };
 }
 
 /* ------------- LISTS ------------- */
 function computeStatusFromList(l: any, userId: string) {
-  if (!l) return { source: 'list' as const, listId: null, phase: "idle" as const, sig: "idle" };
+  if (!l) return { source: 'list' as const, listId: null, phase: 'idle' as const, sig: 'idle' };
 
-  // Seated => match_ready
   const tables = Array.isArray(l.tables) ? l.tables : [];
   for (let i=0;i<tables.length;i++) {
     const tb = tables[i];
@@ -145,14 +155,13 @@ function computeStatusFromList(l: any, userId: string) {
       return {
         source: 'list' as const,
         listId: l?.id ?? null,
-        phase: "match_ready" as const,
+        phase: 'match_ready' as const,
         tableNumber: i+1,
         sig
       };
     }
   }
 
-  // Queue => up_next if #1
   const queue = Array.isArray(l.queue) ? l.queue :
                 Array.isArray(l.waitlist) ? l.waitlist :
                 Array.isArray(l.line) ? l.line : [];
@@ -165,7 +174,7 @@ function computeStatusFromList(l: any, userId: string) {
         return {
           source: 'list' as const,
           listId: l?.id ?? null,
-          phase: "up_next" as const,
+          phase: 'up_next' as const,
           position: 1,
           sig: `LQ1-${arr.join('-')}`
         };
@@ -173,12 +182,12 @@ function computeStatusFromList(l: any, userId: string) {
       return {
         source: 'list' as const,
         listId: l?.id ?? null,
-        phase: "queued" as const,
+        phase: 'queued' as const,
         position: pos,
         sig: `LQ${pos}-${arr.join('-')}`
       };
     }
   }
 
-  return { source: 'list' as const, listId: l?.id ?? null, phase: "idle" as const, sig: "idle" };
+  return { source: 'list' as const, listId: l?.id ?? null, phase: 'idle' as const, sig: 'idle' };
 }
