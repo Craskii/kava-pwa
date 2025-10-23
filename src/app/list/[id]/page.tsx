@@ -22,7 +22,7 @@ type ListGame = {
   v?: number; schema?: 'v2';
 };
 
-/* ============ Global singletons (per origin) ============ */
+/* ============ Globals (per origin) ============ */
 type KavaGlobals = {
   streams: Record<string, { es: EventSource | null; refs: number; backoff: number }>;
   heartbeats: Record<string, { t: number | null; refs: number }>;
@@ -44,10 +44,7 @@ function coerceList(raw: any): ListGame | null {
       ? raw.tables.map((t: any, i: number) => ({
           a: t?.a ? String(t.a) : undefined,
           b: t?.b ? String(t.b) : undefined,
-          label:
-            t?.label === '9 foot' || t?.label === '8 foot'
-              ? t.label
-              : i === 1 ? '9 foot' : '8 foot',
+          label: t?.label === '9 foot' || t?.label === '8 foot' ? t.label : i === 1 ? '9 foot' : '8 foot',
         }))
       : [{ label: '8 foot' }, { label: '9 foot' }];
 
@@ -55,7 +52,6 @@ function coerceList(raw: any): ListGame | null {
       ? raw.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') }))
       : [];
 
-    // keep IDs even if a player object isn't present (prevents races)
     const queue: string[] = Array.isArray(raw.queue)
       ? raw.queue.map((x: any) => String(x)).filter(Boolean)
       : [];
@@ -123,8 +119,9 @@ export default function ListLobby() {
   const commitQ = useRef<(() => Promise<void>)[]>([]);
   const suppressRef = useRef(false);
   const watchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pageRootRef = useRef<HTMLDivElement | null>(null); // for long-press suppression
-  const pollRef = useRef<number | null>(null); // SSE fallback poller
+  const pageRootRef = useRef<HTMLDivElement | null>(null);
+  const pollRef = useRef<number | null>(null);
+  const triedFirstFetch = useRef(false);
 
   const seatChanged = (next: ListGame | null) => {
     if (!next) return false;
@@ -135,12 +132,11 @@ export default function ListLobby() {
     return false;
   };
 
-  /* ---- ONE EventSource per list (ref-counted) ---- */
+  /* ---- Stream + resilient snapshot/poll ---- */
   useEffect(() => {
-    // Guard: don't run anything if we don't have a real id yet or when the route is /list/create
     if (!id || id === 'create') {
       setG(null);
-      setErr(id === 'create' ? 'Create page → no list id yet' : null);
+      setErr(id === 'create' ? 'Waiting for a new list id…' : null);
       return;
     }
 
@@ -149,17 +145,21 @@ export default function ListLobby() {
     gl.streams[id].refs++;
     setErr(null);
     lastVersion.current = 0;
+    triedFirstFetch.current = false;
 
     const startPoller = () => {
       if (pollRef.current) return;
+      console.warn('[list]', id, '→ starting poll fallback');
       pollRef.current = window.setInterval(async () => {
         try {
-          const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: 'no-store' });
-          if (!res.ok) return;
+          const url = `/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`;
+          const res = await fetch(url, { cache: 'no-store' });
+          if (!res.ok) return; // keep polling silently until 200
           const doc = coerceList(await res.json()); if (!doc) return;
           const v = doc.v ?? 0;
           if (v <= lastVersion.current) return;
           lastVersion.current = v;
+          setErr(null);
           setG(doc);
           if (seatChanged(doc)) bumpAlerts();
         } catch {}
@@ -172,8 +172,10 @@ export default function ListLobby() {
 
     const attach = () => {
       const s = gl.streams[id];
-      if (s.es) return; // already open
-      const es = new EventSource(`/api/list/${encodeURIComponent(id)}/stream`);
+      if (s.es) return;
+      const streamUrl = `/api/list/${encodeURIComponent(id)}/stream`;
+      console.debug('[list]', id, '→ open SSE', streamUrl);
+      const es = new EventSource(streamUrl);
       s.es = es;
 
       es.onmessage = (e) => {
@@ -181,11 +183,9 @@ export default function ListLobby() {
         try {
           const doc = coerceList(JSON.parse(e.data));
           if (!doc || !doc.id || !doc.hostId) return;
-
           const incomingV = doc.v ?? 0;
           if (incomingV <= lastVersion.current) return;
           lastVersion.current = incomingV;
-
           stopPoller();
           setErr(null);
           setG(doc);
@@ -194,6 +194,7 @@ export default function ListLobby() {
       };
 
       es.onerror = () => {
+        console.warn('[list]', id, '→ SSE error; backoff and poll');
         try { es.close(); } catch {}
         s.es = null;
         const delay = Math.min(15000, s.backoff);
@@ -205,27 +206,39 @@ export default function ListLobby() {
       s.backoff = 1000;
     };
 
-    attach();
-
-    // First snapshot (so UI appears instantly)
+    // First snapshot (diagnostic)
     (async () => {
+      const url = `/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`;
+      triedFirstFetch.current = true;
       try {
-        const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: 'no-store' });
-        if (!res.ok) { setErr(`Failed to load list (${res.status})`); return; }
-        const doc = coerceList(await res.json()); if (!doc) { setErr('Invalid list data'); return; }
+        console.debug('[list]', id, '→ first GET', url);
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) {
+          if (res.status === 404) {
+            setErr('List not found yet (404). If you just created it, give it a moment.');
+            startPoller();
+          } else {
+            setErr(`Failed to load list (${res.status}). Retrying…`);
+            startPoller();
+          }
+          attach(); // still try to open SSE
+          return;
+        }
+        const doc = coerceList(await res.json()); if (!doc) { setErr('Invalid list data'); startPoller(); attach(); return; }
         const incomingV = doc.v ?? 0;
-        if (incomingV <= lastVersion.current) return;
         lastVersion.current = incomingV;
         setErr(null);
         setG(doc);
-        if (seatChanged(doc)) bumpAlerts();
-      } catch {
-        setErr('Network error loading list');
+        attach(); // open SSE after initial data
+      } catch (e) {
+        console.warn('[list]', id, '→ first GET failed; network error', e);
+        setErr('Network error loading list. Retrying…');
         startPoller();
+        attach();
       }
     })();
 
-    /* ✅ Heartbeat — single timeout loop */
+    /* Heartbeat (single timeout loop) */
     const hbKey = `hb:${id}:${me.id}`;
     if (!gl.heartbeats[hbKey]) gl.heartbeats[hbKey] = { t: null, refs: 0 };
     gl.heartbeats[hbKey].refs++;
@@ -240,7 +253,7 @@ export default function ListLobby() {
     };
     gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, 500);
 
-    // Pause/reopen streams on visibility change
+    // Visibility handling
     if (!gl.visHook) {
       gl.visHook = true;
       document.addEventListener('visibilitychange', () => {
@@ -293,27 +306,26 @@ export default function ListLobby() {
     };
   }, [id, me.id]);
 
-  /* ---- Disable Android long-press context menu (scoped) ---- */
+  /* ---- Disable Android long-press ---- */
   useEffect(() => {
     const root = pageRootRef.current;
     if (!root) return;
     const prevent = (e: Event) => {
-      const target = e.target as HTMLElement | null;
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
       e.preventDefault();
     };
     root.addEventListener('contextmenu', prevent);
     return () => { root.removeEventListener('contextmenu', prevent); };
   }, []);
 
-  /* ---- UI ---- */
+  /* ---- Early UI ---- */
   if (!id || id === 'create' || !g) {
     return (
       <main ref={pageRootRef} style={wrap}>
         <BackButton href="/" />
         <p style={{ opacity: 0.7 }}>Loading…</p>
-        {id === 'create' && <p style={{opacity:.7, marginTop:6, fontSize:13}}>Waiting for a new list id…</p>}
-        {err && <p style={{opacity:.7, marginTop:6, fontSize:13}}>Hint: {err}</p>}
+        {err && <p style={{opacity:.7, marginTop:6, fontSize:13}}>{err}</p>}
       </main>
     );
   }
@@ -463,7 +475,7 @@ export default function ListLobby() {
       {!g ? (
         <>
           <p style={{ opacity: 0.7 }}>Loading…</p>
-          {err && <p style={{opacity:.7, marginTop:6, fontSize:13}}>Hint: {err}</p>}
+          {err && <p style={{opacity:.7, marginTop:6, fontSize:13}}>{err}</p>}
         </>
       ) : (
         <>
@@ -477,7 +489,7 @@ export default function ListLobby() {
               </div>
             </div>
             <div style={{display:'grid',gap:6,justifyItems:'end'}}>
-              {!(g.tables.findIndex((t) => t.a === me.id || t.b === me.id) >= 0) && !g.queue.includes(me.id) && <button style={btn} onClick={joinQueue} disabled={busy}>Join queue</button>}
+              {!seated && !g.queue.includes(me.id) && <button style={btn} onClick={joinQueue} disabled={busy}>Join queue</button>}
               {g.queue.includes(me.id) && <button style={btnGhost} onClick={leaveQueue} disabled={busy}>Leave queue</button>}
             </div>
           </header>
@@ -512,7 +524,6 @@ export default function ListLobby() {
               {g.tables.map((t,i)=>{
                 const Seat = ({side}:{side:'a'|'b'})=>{
                   const pid = t[side];
-                  const nameOf = (pid?: string) => (pid ? g.players.find(p => p.id === pid)?.name || '??' : '—');
                   return (
                     <div
                       draggable={!!pid && me.id === g.hostId}
@@ -542,22 +553,21 @@ export default function ListLobby() {
           {/* Queue */}
           <section style={card}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
-              <h3 style={{marginTop:0}}>Queue ({g.queue.length})</h3>
-              {me.id === g.hostId && g.queue.length >= 2 && (
+              <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
+              {me.id === g.hostId && queue.length >= 2 && (
                 <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">
                   Skip first
                 </button>
               )}
             </div>
 
-            {g.queue.length===0 ? <div style={{opacity:.6,fontStyle:'italic'}}>Drop players here</div> : (
+            {queue.length===0 ? <div style={{opacity:.6,fontStyle:'italic'}}>Drop players here</div> : (
               <ol style={{margin:0,paddingLeft:18,display:'grid',gap:6}}
                   onDragOver={onDragOver}
-                  onDrop={(e)=>handleDrop(e,{type:'queue',index:g.queue.length,pid:'__end' as any})}>
-                {g.queue.map((pid,idx)=>{
-                  const pref = (g.prefs?.[pid] ?? 'any') as Pref;
+                  onDrop={(e)=>handleDrop(e,{type:'queue',index:queue.length,pid:'__end' as any})}>
+                {queue.map((pid,idx)=>{
+                  const pref = (prefs[pid] ?? 'any') as Pref;
                   const canEdit = me.id === g.hostId || pid===me.id;
-                  const nameOf = (pid?: string) => (pid ? g.players.find(p => p.id === pid)?.name || '??' : '—');
                   return (
                     <li key={`${pid}-${idx}`}
                         draggable
@@ -569,9 +579,9 @@ export default function ListLobby() {
                       <div style={{display:'flex',gap:6}}>
                         {canEdit ? (
                           <>
-                            <button style={pref==='any'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();scheduleCommit(d=>{d.prefs??={}; d.prefs[pid]='any';});}} disabled={busy}>Any</button>
-                            <button style={pref==='9 foot'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();scheduleCommit(d=>{d.prefs??={}; d.prefs[pid]='9 foot';});}} disabled={busy}>9-ft</button>
-                            <button style={pref==='8 foot'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();scheduleCommit(d=>{d.prefs??={}; d.prefs[pid]='8 foot';});}} disabled={busy}>8-ft</button>
+                            <button style={pref==='any'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'any');}} disabled={busy}>Any</button>
+                            <button style={pref==='9 foot'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'9 foot');}} disabled={busy}>9-ft</button>
+                            <button style={pref==='8 foot'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'8 foot');}} disabled={busy}>8-ft</button>
                           </>
                         ) : (
                           <small style={{opacity:.7,width:48,textAlign:'right'}}>{pref==='any'?'Any':pref==='9 foot'?'9-ft':'8-ft'}</small>
@@ -585,7 +595,7 @@ export default function ListLobby() {
           </section>
 
           {/* Host controls */}
-          {me.id === g.hostId && (
+          {iAmHost && (
             <section style={card}>
               <h3 style={{marginTop:0}}>Host controls</h3>
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
@@ -597,17 +607,17 @@ export default function ListLobby() {
 
           {/* Players */}
           <section style={card}>
-            <h3 style={{marginTop:0}}>List (Players) — {g.players.length}</h3>
-            {g.players.length===0 ? <div style={{opacity:.7}}>No players yet.</div> : (
+            <h3 style={{marginTop:0}}>List (Players) — {players.length}</h3>
+            {players.length===0 ? <div style={{opacity:.7}}>No players yet.</div> : (
               <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
-                {g.players.map(p=>{
-                  const pref = (g.prefs?.[p.id] ?? 'any') as Pref;
-                  const canEdit = me.id === g.hostId || p.id===me.id;
+                {players.map(p=>{
+                  const pref = (prefs[p.id] ?? 'any') as Pref;
+                  const canEdit = iAmHost || p.id===me.id;
                   return (
                     <li key={p.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}>
                       <span>{p.name}</span>
                       <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-                        {!g.queue.includes(p.id)
+                        {!inQueue(p.id)
                           ? <button style={btnMini} onClick={()=>enqueuePid(p.id)} disabled={busy}>Queue</button>
                           : <button style={btnMini} onClick={()=>dequeuePid(p.id)} disabled={busy}>Dequeue</button>}
                         {canEdit && (
@@ -633,10 +643,7 @@ export default function ListLobby() {
 }
 
 /* ============ Styles ============ */
-const wrap: React.CSSProperties = {
-  minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui',
-  WebkitTouchCallout: 'none',
-};
+const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui', WebkitTouchCallout:'none' };
 const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginBottom:14 };
 const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
 const btnGhost: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer' };
