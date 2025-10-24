@@ -29,7 +29,7 @@ type KavaGlobals = {
   visHook: boolean;
 };
 function getGlobals(): KavaGlobals {
-  const any = (globalThis as any);
+  const any = globalThis as any;
   if (!any.__kava_globs) {
     any.__kava_globs = { streams: {}, heartbeats: {}, visHook: false } as KavaGlobals;
   }
@@ -52,14 +52,18 @@ function coerceList(raw: any): ListGame | null {
       ? raw.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') }))
       : [];
 
+    // Accept legacy queue8/queue9 OR single queue
     const queue: string[] = Array.isArray(raw.queue)
       ? raw.queue.map((x: any) => String(x)).filter(Boolean)
-      : [];
+      : [
+          ...(Array.isArray(raw.queue9) ? raw.queue9 : []),
+          ...(Array.isArray(raw.queue8) ? raw.queue8 : []),
+        ].map((x: any) => String(x)).filter(Boolean);
 
     const prefs: Record<string, Pref> = {};
     if (raw.prefs && typeof raw.prefs === 'object') {
       for (const [pid, v] of Object.entries(raw.prefs)) {
-        prefs[pid] = v === '9 foot' || v === '8 foot' ? (v as Pref) : 'any';
+        prefs[pid] = v === '9 foot' || v === '8 foot' || v === 'any' ? (v as Pref) : 'any';
       }
     }
 
@@ -77,34 +81,15 @@ function coerceList(raw: any): ListGame | null {
   } catch { return null; }
 }
 
-/* ---------- SAVE: keepalive + beacon (prevents loss on Back) ---------- */
-async function putList(doc: ListGame) {
-  const url = `/api/list/${encodeURIComponent(doc.id)}`;
-  const body = JSON.stringify({ ...doc, schema: 'v2' });
-
-  // Prefer POST with keepalive so it survives navigation
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body,
-    keepalive: true,
-    cache: 'no-store',
-  }).catch((e) => {
-    try {
-      const blob = new Blob([body], { type: 'application/json' });
-      (navigator as any).sendBeacon?.(url, blob);
-    } catch {}
-    throw e;
+async function putList(doc: ListGame, ifMatch?: number) {
+  await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
+    method: 'PUT',
+    headers: {
+      'content-type': 'application/json',
+      ...(Number.isFinite(ifMatch) ? { 'if-match': String(ifMatch) } : {}),
+    },
+    body: JSON.stringify({ ...doc, schema: 'v2' }),
   });
-
-  if (!res.ok) {
-    // Some SW setups mark it failed but the server writes OK; still try a beacon
-    try {
-      const blob = new Blob([body], { type: 'application/json' });
-      (navigator as any).sendBeacon?.(url, blob);
-    } catch {}
-    throw new Error(`Save failed (${res.status})`);
-  }
 }
 
 /* ============ Component ============ */
@@ -141,8 +126,8 @@ export default function ListLobby() {
   const commitQ = useRef<(() => Promise<void>)[]>([]);
   const suppressRef = useRef(false);
   const watchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pageRootRef = useRef<HTMLDivElement | null>(null);
   const pollRef = useRef<number | null>(null);
+  const pageRootRef = useRef<HTMLDivElement | null>(null); // <-- single declaration
 
   const seatChanged = (next: ListGame | null) => {
     if (!next) return false;
@@ -184,7 +169,10 @@ export default function ListLobby() {
         } catch {}
       }, 3000);
     };
-    const stopPoller = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+
+    const stopPoller = () => {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    };
 
     const attach = () => {
       const s = gl.streams[id];
@@ -219,21 +207,25 @@ export default function ListLobby() {
       s.backoff = 1000;
     };
 
-    // First snapshot -> if 404, keep polling and show hint
+    // First snapshot
     (async () => {
       const url = `/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`;
       try {
         const res = await fetch(url, { cache: 'no-store' });
         if (!res.ok) {
-          setErr(res.status === 404
-            ? 'List not found yet (404). If you just created it, give it a moment.'
-            : `Failed to load list (${res.status}). Retrying…`);
-          startPoller();
+          if (res.status === 404) {
+            setErr('List not found yet (404). If you just created it, give it a moment.');
+            startPoller();
+          } else {
+            setErr(`Failed to load list (${res.status}). Retrying…`);
+            startPoller();
+          }
           attach();
           return;
         }
         const doc = coerceList(await res.json()); if (!doc) { setErr('Invalid list data'); startPoller(); attach(); return; }
-        lastVersion.current = doc.v ?? 0;
+        const incomingV = doc.v ?? 0;
+        lastVersion.current = incomingV;
         setErr(null);
         setG(doc);
         attach();
@@ -244,12 +236,11 @@ export default function ListLobby() {
       }
     })();
 
-    /* Presence heartbeat (single timeout loop) */
+    /* Heartbeat (single timeout loop) */
     const hbKey = `hb:${id}:${me.id}`;
     if (!gl.heartbeats[hbKey]) gl.heartbeats[hbKey] = { t: null, refs: 0 };
     gl.heartbeats[hbKey].refs++;
     if (gl.heartbeats[hbKey].t) { clearTimeout(gl.heartbeats[hbKey].t as number); gl.heartbeats[hbKey].t = null; }
-
     const HEARTBEAT_MS = 25_000;
     const sendHeartbeat = () => {
       const url = `/api/me/status?userId=${encodeURIComponent(me.id)}&listId=${encodeURIComponent(id)}&ts=${Date.now()}`;
@@ -259,7 +250,7 @@ export default function ListLobby() {
     };
     gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, 500);
 
-    // Visibility handler (pause/reopen streams)
+    // Visibility handling
     if (!gl.visHook) {
       gl.visHook = true;
       document.addEventListener('visibilitychange', () => {
@@ -312,27 +303,7 @@ export default function ListLobby() {
     };
   }, [id, me.id]);
 
-  /* ---- Last-chance save on hide/close ---- */
-  useEffect(() => {
-    if (!g) return;
-    const handler = () => {
-      try {
-        const body = JSON.stringify({ ...g, schema: 'v2', v: lastVersion.current });
-        const blob = new Blob([body], { type: 'application/json' });
-        (navigator as any).sendBeacon?.(`/api/list/${encodeURIComponent(g.id)}`, blob);
-      } catch {}
-    };
-    const vis = () => { if (document.visibilityState === 'hidden') handler(); };
-    window.addEventListener('pagehide', handler);
-    document.addEventListener('visibilitychange', vis);
-    return () => {
-      window.removeEventListener('pagehide', handler);
-      document.removeEventListener('visibilitychange', vis);
-    };
-  }, [g?.id, g]);
-
-  /* ---- Disable Android long-press ---- */
-  const pageRootRef = useRef<HTMLDivElement | null>(null);
+  /* ---- Disable Android long-press (use the single pageRootRef) ---- */
   useEffect(() => {
     const root = pageRootRef.current;
     if (!root) return;
@@ -397,6 +368,7 @@ export default function ListLobby() {
       if (!g) return;
       const next: ListGame = JSON.parse(JSON.stringify(g));
       next.v = (Number(next.v) || 0) + 1;
+      const ifMatch = lastVersion.current;
       lastVersion.current = next.v!;
       mut(next);
       autoSeat(next);
@@ -408,7 +380,7 @@ export default function ListLobby() {
 
       try {
         setG(next);
-        await putList(next);
+        await putList(next, ifMatch);
         if (seatChanged(next)) bumpAlerts();
       } catch (e) {
         console.error('save-failed', e);
@@ -428,12 +400,12 @@ export default function ListLobby() {
   const leaveQueue = () => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== me.id); });
   const addPlayer = () => { const v = nameField.trim(); if (!v) return; setNameField(''); const p: Player = { id: uid(), name: v }; scheduleCommit(d => { d.players.push(p); d.prefs ??= {}; d.prefs[p.id] = 'any'; if (!d.queue.includes(p.id)) d.queue.push(p.id); }); };
   const removePlayer = (pid: string) => scheduleCommit(d => { d.players = d.players.filter(p => p.id !== pid); d.queue = d.queue.filter(x => x !== pid); if (d.prefs) delete d.prefs[pid]; d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b })); });
-  const renamePlayer = (pid: string) => { const cur = players.find(p => p.id === pid)?.name || ''; const nm = prompt('Rename player', cur); if (!nm) return; const v = nm.trim(); if (!v) return; scheduleCommit(d => { const p = d.players.find(pp => p.id === pid); if (p) p.name = v; }); };
+  const renamePlayer = (pid: string) => { const cur = players.find(p => p.id === pid)?.name || ''; const nm = prompt('Rename player', cur); if (!nm) return; const v = nm.trim(); if (!v) return; scheduleCommit(d => { const p = d.players.find(pp => pp.id === pid); if (p) p.name = v; }); };
   const setPrefFor = (pid: string, pref: Pref) => scheduleCommit(d => { d.prefs ??= {}; d.prefs[pid] = pref; });
   const enqueuePid = (pid: string) => scheduleCommit(d => { if (!d.queue.includes(pid)) d.queue.push(pid); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== pid); });
 
-  // Skip the first in queue (swap 1 and 2 → old #1 below #2)
+  // Skip the first in queue (swap 1 and 2 → old #1 goes below #2)
   const skipFirst = () => scheduleCommit(d => {
     if (d.queue.length >= 2) {
       const first = d.queue.shift()!;
@@ -524,10 +496,10 @@ export default function ListLobby() {
           <section style={card}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
               <h3 style={{marginTop:0}}>Tables</h3>
-              {me.id === g.hostId && <button style={btnGhostSm} onClick={()=>setShowTableControls(v=>!v)}>{showTableControls?'Hide table settings':'Table settings'}</button>}
+              {iAmHost && <button style={btnGhostSm} onClick={()=>setShowTableControls(v=>!v)}>{showTableControls?'Hide table settings':'Table settings'}</button>}
             </div>
 
-            {showTableControls && me.id === g.hostId && (
+            {showTableControls && iAmHost && (
               <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))',gap:12,marginBottom:12}}>
                 {g.tables.map((t,i)=>(
                   <div key={i} style={{background:'#111',border:'1px solid #333',borderRadius:10,padding:10}}>
@@ -552,7 +524,7 @@ export default function ListLobby() {
                   const pid = t[side];
                   return (
                     <div
-                      draggable={!!pid && me.id === g.hostId}
+                      draggable={!!pid && iAmHost}
                       onDragStart={(e)=>pid && onDragStart(e,{type:'seat',table:i,side,pid})}
                       onDragOver={onDragOver}
                       onDrop={(e)=>handleDrop(e,{type:'seat',table:i,side,pid})}
@@ -560,7 +532,7 @@ export default function ListLobby() {
                       title="Drag from queue or swap seats"
                     >
                       <span>{nameOf(pid)}</span>
-                      {pid && (me.id === g.hostId || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
+                      {pid && (iAmHost || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
                     </div>
                   );
                 };
@@ -580,7 +552,7 @@ export default function ListLobby() {
           <section style={card}>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
               <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
-              {me.id === g.hostId && queue.length >= 2 && (
+              {iAmHost && queue.length >= 2 && (
                 <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">
                   Skip first
                 </button>
@@ -593,7 +565,7 @@ export default function ListLobby() {
                   onDrop={(e)=>handleDrop(e,{type:'queue',index:queue.length,pid:'__end' as any})}>
                 {queue.map((pid,idx)=>{
                   const pref = (prefs[pid] ?? 'any') as Pref;
-                  const canEdit = me.id === g.hostId || pid===me.id;
+                  const canEdit = iAmHost || pid===me.id;
                   return (
                     <li key={`${pid}-${idx}`}
                         draggable
@@ -601,8 +573,7 @@ export default function ListLobby() {
                         onDragOver={onDragOver}
                         onDrop={(e)=>handleDrop(e,{type:'queue',index:idx,pid})}
                         style={queueItem}>
-                      {/* bubble around the name for clear drag affordance */}
-                      <span style={nameBubble} title="Drag to reorder">{nameOf(pid)}</span>
+                      <span style={bubbleName} title="Drag to reorder">{nameOf(pid)}</span>
                       <div style={{display:'flex',gap:6}}>
                         {canEdit ? (
                           <>
@@ -683,24 +654,20 @@ const input: React.CSSProperties = { width:260, maxWidth:'90vw', padding:'10px 1
 const nameInput: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)' };
 const select: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:8, padding:'6px 8px' };
 
-/* New: queue item + bubble */
+/* Drag affordance bubble for queue names */
+const bubbleName: React.CSSProperties = {
+  flex: '1 1 auto',
+  padding: '6px 10px',
+  borderRadius: 999,
+  border: '1px dashed rgba(255,255,255,.35)',
+  background: 'rgba(255,255,255,.06)',
+  cursor: 'grab',
+  userSelect: 'none',
+};
 const queueItem: React.CSSProperties = {
   cursor:'grab',
   display:'flex',
   alignItems:'center',
   gap:10,
-  justifyContent:'space-between',
-  padding:'6px 4px',
-  borderRadius:10,
-  background:'rgba(255,255,255,0.03)',
-  border:'1px dashed rgba(255,255,255,0.12)'
-};
-const nameBubble: React.CSSProperties = {
-  flex:'1 1 auto',
-  padding:'6px 10px',
-  borderRadius:999,
-  border:'1px solid rgba(56,189,248,.45)',
-  background:'rgba(56,189,248,.10)',
-  boxShadow:'inset 0 0 0 1px rgba(56,189,248,.15)',
-  userSelect:'none'
+  justifyContent:'space-between'
 };
