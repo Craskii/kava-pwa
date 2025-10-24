@@ -14,8 +14,9 @@ type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
 type Table = { a?: string; b?: string; label: "8 foot" | "9 foot" };
 type Player = { id: string; name: string };
+type Pref = "8 foot" | "9 foot" | "any";
 
-/** New list model: two queues */
+/** Persisted list model (supports dual-queue but keeps prefs too) */
 type ListGame = {
   id: string;
   name: string;
@@ -23,10 +24,11 @@ type ListGame = {
   hostId: string;
   status: "active";
   createdAt: number;
-  tables: Table[];
+  tables: Table;
   players: Player[];
   queue8: string[]; // 8-foot queue
   queue9: string[]; // 9-foot queue
+  prefs?: Record<string, Pref>;
 };
 
 /* keys + helpers */
@@ -60,29 +62,48 @@ async function removeFrom(env: Env, key: string, id: string) {
   if (next.length !== arr.length) await writeArr(env, key, next);
 }
 
-/** Back-compat coercion from older single-queue model */
-function coerce(doc: any): ListGame {
+/** Back-compat coercion for incoming JSON:
+ *  - Accepts legacy single-queue {queue, prefs}
+ *  - Accepts new model {queue8, queue9, prefs}
+ *  - Normalizes tables & players
+ */
+function coerceIn(doc: any): ListGame {
   const players: Player[] = Array.isArray(doc?.players)
     ? doc.players.map((p: any) => ({ id: String(p?.id ?? ""), name: String(p?.name ?? "Player") }))
     : [];
 
-  // tables: if old shape had no labels, assign [8,9] for first two, otherwise default to 8
   const tables: Table[] = Array.isArray(doc?.tables)
     ? doc.tables.map((t: any, i: number) => ({
-        a: t?.a, b: t?.b,
+        a: t?.a ? String(t.a) : undefined,
+        b: t?.b ? String(t.b) : undefined,
         label: (t?.label === "9 foot" || t?.label === "8 foot")
           ? t.label
           : (i === 1 ? "9 foot" : "8 foot")
       }))
     : [{ label: "8 foot" }, { label: "9 foot" }];
 
-  // queues: migrate legacy "queue" → queue8; create queue9 empty
-  const queue8: string[] = Array.isArray(doc?.queue8)
-    ? doc.queue8.map((x: any) => String(x))
-    : (Array.isArray(doc?.queue) ? doc.queue.map((x: any) => String(x)) : []);
-  const queue9: string[] = Array.isArray(doc?.queue9)
-    ? doc.queue9.map((x: any) => String(x))
-    : [];
+  const prefs: Record<string, Pref> = {};
+  if (doc?.prefs && typeof doc.prefs === "object") {
+    for (const [pid, v] of Object.entries(doc.prefs)) {
+      prefs[String(pid)] = (v === "8 foot" || v === "9 foot" || v === "any") ? (v as Pref) : "any";
+    }
+  }
+
+  let queue8: string[] = [];
+  let queue9: string[] = [];
+
+  if (Array.isArray(doc?.queue8) || Array.isArray(doc?.queue9)) {
+    queue8 = (doc?.queue8 ?? []).map((x: any) => String(x)).filter(Boolean);
+    queue9 = (doc?.queue9 ?? []).map((x: any) => String(x)).filter(Boolean);
+  } else if (Array.isArray(doc?.queue)) {
+    // legacy: split single queue according to prefs; default to 8-foot
+    for (const x of doc.queue as any[]) {
+      const pid = String(x);
+      const pref = prefs[pid] ?? "any";
+      if (pref === "9 foot") queue9.push(pid);
+      else queue8.push(pid);
+    }
+  }
 
   return {
     id: String(doc?.id ?? ""),
@@ -95,6 +116,19 @@ function coerce(doc: any): ListGame {
     players,
     queue8,
     queue9,
+    prefs
+  } as unknown as ListGame;
+}
+
+/** Coercion for OUTGOING (GET) to keep legacy clients happy:
+ *  - Return combined `queue` along with stored `queue8/queue9`
+ */
+function coerceOut(stored: any) {
+  const x = coerceIn(stored);
+  const queue = [...x.queue9, ...x.queue8]; // simple concat (9-ft first so they don't starve)
+  return {
+    ...x,
+    queue, // legacy view
   };
 }
 
@@ -160,9 +194,8 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  // Coerce and re-store if we had to migrate shape
-  const doc = coerce(JSON.parse(raw));
-  const serialized = JSON.stringify(doc);
+  const out = coerceOut(JSON.parse(raw));
+  const serialized = JSON.stringify(out);
 
   return new NextResponse(serialized, {
     headers: {
@@ -174,11 +207,12 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   });
 }
 
-/* ---------- PUT (If-Match) ---------- */
+/* ---------- PUT (If-Match; accepts legacy body) ---------- */
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
 
+  // Optional optimistic concurrency; send If-Match from the client if you want.
   const ifMatch = req.headers.get("if-match");
   const curV = await getV(env, id);
   if (ifMatch !== null && String(curV) !== String(ifMatch)) {
@@ -187,11 +221,11 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
 
   // read previous for indices
   const prevRaw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
-  const prev = prevRaw ? coerce(JSON.parse(prevRaw)) : null;
+  const prev = prevRaw ? coerceIn(JSON.parse(prevRaw)) : null;
   const prevPlayers = new Set((prev?.players ?? []).map(p => p.id));
 
   let body: ListGame;
-  try { body = coerce(await req.json()); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
+  try { body = coerceIn(await req.json()); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
   if (body.id !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 });
 
   // Always reconcile before save
@@ -212,6 +246,12 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   return new NextResponse(null, { status: 204, headers: { "x-l-version": String(nextV), ETag: `"l-${nextV}"` } });
 }
 
+/* ---------- POST (alias for PUT; for keepalive/sendBeacon) ---------- */
+export async function POST(req: Request, ctx: { params: { id: string } }) {
+  // sendBeacon can't set headers like If-Match; our PUT already handles that (only checks if If-Match was provided).
+  return PUT(req, ctx);
+}
+
 /* ---------- DELETE ---------- */
 export async function DELETE(_: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
@@ -220,7 +260,7 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
   const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   if (raw) {
     try {
-      const doc = coerce(JSON.parse(raw));
+      const doc = coerceIn(JSON.parse(raw));
       if (doc.code) await env.KAVA_TOURNAMENTS.delete(`code:${doc.code}`);
       for (const p of (doc.players || [])) await removeFrom(env, LPLAYER(p.id), id);
       if (doc.hostId) await removeFrom(env, LHOST(doc.hostId), id);
