@@ -29,7 +29,7 @@ type KavaGlobals = {
   visHook: boolean;
 };
 function getGlobals(): KavaGlobals {
-  const any = globalThis as any;
+  const any = (globalThis as any);
   if (!any.__kava_globs) {
     any.__kava_globs = { streams: {}, heartbeats: {}, visHook: false } as KavaGlobals;
   }
@@ -77,12 +77,34 @@ function coerceList(raw: any): ListGame | null {
   } catch { return null; }
 }
 
+/* ---------- SAVE: keepalive + beacon (prevents loss on Back) ---------- */
 async function putList(doc: ListGame) {
-  await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
-    method: 'PUT',
+  const url = `/api/list/${encodeURIComponent(doc.id)}`;
+  const body = JSON.stringify({ ...doc, schema: 'v2' });
+
+  // Prefer POST with keepalive so it survives navigation
+  const res = await fetch(url, {
+    method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ ...doc, schema: 'v2' }),
+    body,
+    keepalive: true,
+    cache: 'no-store',
+  }).catch((e) => {
+    try {
+      const blob = new Blob([body], { type: 'application/json' });
+      (navigator as any).sendBeacon?.(url, blob);
+    } catch {}
+    throw e;
   });
+
+  if (!res.ok) {
+    // Some SW setups mark it failed but the server writes OK; still try a beacon
+    try {
+      const blob = new Blob([body], { type: 'application/json' });
+      (navigator as any).sendBeacon?.(url, blob);
+    } catch {}
+    throw new Error(`Save failed (${res.status})`);
+  }
 }
 
 /* ============ Component ============ */
@@ -121,7 +143,6 @@ export default function ListLobby() {
   const watchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pageRootRef = useRef<HTMLDivElement | null>(null);
   const pollRef = useRef<number | null>(null);
-  const triedFirstFetch = useRef(false);
 
   const seatChanged = (next: ListGame | null) => {
     if (!next) return false;
@@ -145,16 +166,14 @@ export default function ListLobby() {
     gl.streams[id].refs++;
     setErr(null);
     lastVersion.current = 0;
-    triedFirstFetch.current = false;
 
     const startPoller = () => {
       if (pollRef.current) return;
-      console.warn('[list]', id, '→ starting poll fallback');
       pollRef.current = window.setInterval(async () => {
         try {
           const url = `/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`;
           const res = await fetch(url, { cache: 'no-store' });
-          if (!res.ok) return; // keep polling silently until 200
+          if (!res.ok) return;
           const doc = coerceList(await res.json()); if (!doc) return;
           const v = doc.v ?? 0;
           if (v <= lastVersion.current) return;
@@ -165,17 +184,12 @@ export default function ListLobby() {
         } catch {}
       }, 3000);
     };
-
-    const stopPoller = () => {
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    };
+    const stopPoller = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
 
     const attach = () => {
       const s = gl.streams[id];
       if (s.es) return;
-      const streamUrl = `/api/list/${encodeURIComponent(id)}/stream`;
-      console.debug('[list]', id, '→ open SSE', streamUrl);
-      const es = new EventSource(streamUrl);
+      const es = new EventSource(`/api/list/${encodeURIComponent(id)}/stream`);
       s.es = es;
 
       es.onmessage = (e) => {
@@ -194,7 +208,6 @@ export default function ListLobby() {
       };
 
       es.onerror = () => {
-        console.warn('[list]', id, '→ SSE error; backoff and poll');
         try { es.close(); } catch {}
         s.es = null;
         const delay = Math.min(15000, s.backoff);
@@ -206,39 +219,32 @@ export default function ListLobby() {
       s.backoff = 1000;
     };
 
-    // First snapshot (diagnostic)
+    // First snapshot -> if 404, keep polling and show hint
     (async () => {
       const url = `/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`;
-      triedFirstFetch.current = true;
       try {
-        console.debug('[list]', id, '→ first GET', url);
         const res = await fetch(url, { cache: 'no-store' });
         if (!res.ok) {
-          if (res.status === 404) {
-            setErr('List not found yet (404). If you just created it, give it a moment.');
-            startPoller();
-          } else {
-            setErr(`Failed to load list (${res.status}). Retrying…`);
-            startPoller();
-          }
-          attach(); // still try to open SSE
+          setErr(res.status === 404
+            ? 'List not found yet (404). If you just created it, give it a moment.'
+            : `Failed to load list (${res.status}). Retrying…`);
+          startPoller();
+          attach();
           return;
         }
         const doc = coerceList(await res.json()); if (!doc) { setErr('Invalid list data'); startPoller(); attach(); return; }
-        const incomingV = doc.v ?? 0;
-        lastVersion.current = incomingV;
+        lastVersion.current = doc.v ?? 0;
         setErr(null);
         setG(doc);
-        attach(); // open SSE after initial data
-      } catch (e) {
-        console.warn('[list]', id, '→ first GET failed; network error', e);
+        attach();
+      } catch {
         setErr('Network error loading list. Retrying…');
         startPoller();
         attach();
       }
     })();
 
-    /* Heartbeat (single timeout loop) */
+    /* Presence heartbeat (single timeout loop) */
     const hbKey = `hb:${id}:${me.id}`;
     if (!gl.heartbeats[hbKey]) gl.heartbeats[hbKey] = { t: null, refs: 0 };
     gl.heartbeats[hbKey].refs++;
@@ -253,7 +259,7 @@ export default function ListLobby() {
     };
     gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, 500);
 
-    // Visibility handling
+    // Visibility handler (pause/reopen streams)
     if (!gl.visHook) {
       gl.visHook = true;
       document.addEventListener('visibilitychange', () => {
@@ -306,7 +312,27 @@ export default function ListLobby() {
     };
   }, [id, me.id]);
 
+  /* ---- Last-chance save on hide/close ---- */
+  useEffect(() => {
+    if (!g) return;
+    const handler = () => {
+      try {
+        const body = JSON.stringify({ ...g, schema: 'v2', v: lastVersion.current });
+        const blob = new Blob([body], { type: 'application/json' });
+        (navigator as any).sendBeacon?.(`/api/list/${encodeURIComponent(g.id)}`, blob);
+      } catch {}
+    };
+    const vis = () => { if (document.visibilityState === 'hidden') handler(); };
+    window.addEventListener('pagehide', handler);
+    document.addEventListener('visibilitychange', vis);
+    return () => {
+      window.removeEventListener('pagehide', handler);
+      document.removeEventListener('visibilitychange', vis);
+    };
+  }, [g?.id, g]);
+
   /* ---- Disable Android long-press ---- */
+  const pageRootRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const root = pageRootRef.current;
     if (!root) return;
@@ -402,7 +428,7 @@ export default function ListLobby() {
   const leaveQueue = () => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== me.id); });
   const addPlayer = () => { const v = nameField.trim(); if (!v) return; setNameField(''); const p: Player = { id: uid(), name: v }; scheduleCommit(d => { d.players.push(p); d.prefs ??= {}; d.prefs[p.id] = 'any'; if (!d.queue.includes(p.id)) d.queue.push(p.id); }); };
   const removePlayer = (pid: string) => scheduleCommit(d => { d.players = d.players.filter(p => p.id !== pid); d.queue = d.queue.filter(x => x !== pid); if (d.prefs) delete d.prefs[pid]; d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b })); });
-  const renamePlayer = (pid: string) => { const cur = players.find(p => p.id === pid)?.name || ''; const nm = prompt('Rename player', cur); if (!nm) return; const v = nm.trim(); if (!v) return; scheduleCommit(d => { const p = d.players.find(pp => pp.id === pid); if (p) p.name = v; }); };
+  const renamePlayer = (pid: string) => { const cur = players.find(p => p.id === pid)?.name || ''; const nm = prompt('Rename player', cur); if (!nm) return; const v = nm.trim(); if (!v) return; scheduleCommit(d => { const p = d.players.find(pp => p.id === pid); if (p) p.name = v; }); };
   const setPrefFor = (pid: string, pref: Pref) => scheduleCommit(d => { d.prefs ??= {}; d.prefs[pid] = pref; });
   const enqueuePid = (pid: string) => scheduleCommit(d => { if (!d.queue.includes(pid)) d.queue.push(pid); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== pid); });
@@ -574,8 +600,9 @@ export default function ListLobby() {
                         onDragStart={(e)=>onDragStart(e,{type:'queue',index:idx,pid})}
                         onDragOver={onDragOver}
                         onDrop={(e)=>handleDrop(e,{type:'queue',index:idx,pid})}
-                        style={{cursor:'grab',display:'flex',alignItems:'center',gap:10,justifyContent:'space-between'}}>
-                      <span style={{flex:'1 1 auto'}}>{nameOf(pid)}</span>
+                        style={queueItem}>
+                      {/* bubble around the name for clear drag affordance */}
+                      <span style={nameBubble} title="Drag to reorder">{nameOf(pid)}</span>
                       <div style={{display:'flex',gap:6}}>
                         {canEdit ? (
                           <>
@@ -655,3 +682,25 @@ const pillBadge: React.CSSProperties = { padding:'6px 10px', borderRadius:999, b
 const input: React.CSSProperties = { width:260, maxWidth:'90vw', padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff' } as any;
 const nameInput: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)' };
 const select: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:8, padding:'6px 8px' };
+
+/* New: queue item + bubble */
+const queueItem: React.CSSProperties = {
+  cursor:'grab',
+  display:'flex',
+  alignItems:'center',
+  gap:10,
+  justifyContent:'space-between',
+  padding:'6px 4px',
+  borderRadius:10,
+  background:'rgba(255,255,255,0.03)',
+  border:'1px dashed rgba(255,255,255,0.12)'
+};
+const nameBubble: React.CSSProperties = {
+  flex:'1 1 auto',
+  padding:'6px 10px',
+  borderRadius:999,
+  border:'1px solid rgba(56,189,248,.45)',
+  background:'rgba(56,189,248,.10)',
+  boxShadow:'inset 0 0 0 1px rgba(56,189,248,.15)',
+  userSelect:'none'
+};
