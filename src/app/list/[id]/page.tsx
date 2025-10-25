@@ -30,9 +30,7 @@ type KavaGlobals = {
 };
 function getGlobals(): KavaGlobals {
   const any = globalThis as any;
-  if (!any.__kava_globs) {
-    any.__kava_globs = { streams: {}, heartbeats: {}, visHook: false } as KavaGlobals;
-  }
+  if (!any.__kava_globs) any.__kava_globs = { streams: {}, heartbeats: {}, visHook: false } as KavaGlobals;
   return any.__kava_globs as KavaGlobals;
 }
 
@@ -60,11 +58,16 @@ function coerceList(raw: any): ListGame | null {
           ...(Array.isArray(raw.queue8) ? raw.queue8 : []),
         ].map((x: any) => String(x)).filter(Boolean);
 
+    // prefs: keep given, then ensure every player has a pref (default 'any')
     const prefs: Record<string, Pref> = {};
     if (raw.prefs && typeof raw.prefs === 'object') {
       for (const [pid, v] of Object.entries(raw.prefs)) {
-        prefs[pid] = v === '9 foot' || v === '8 foot' || v === 'any' ? (v as Pref) : 'any';
+        const vv = String(v);
+        prefs[pid] = vv === '9 foot' || vv === '8 foot' || vv === 'any' ? (vv as Pref) : 'any';
       }
+    }
+    for (const p of players) {
+      if (!prefs[p.id]) prefs[p.id] = 'any';
     }
 
     return {
@@ -89,6 +92,7 @@ async function putList(doc: ListGame, ifMatch?: number) {
       ...(Number.isFinite(ifMatch) ? { 'if-match': String(ifMatch) } : {}),
     },
     body: JSON.stringify({ ...doc, schema: 'v2' }),
+    // no-store is server side; PUT is saving so cache control is irrelevant here
   });
 }
 
@@ -102,6 +106,12 @@ export default function ListLobby() {
   const [nameField, setNameField] = useState('');
   const [showTableControls, setShowTableControls] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [supportsDnD, setSupportsDnD] = useState<boolean>(false); // touch fallback for Android/iPad
+
+  // detect drag support once on client
+  useEffect(() => {
+    setSupportsDnD(!('ontouchstart' in window));
+  }, []);
 
   const me = useMemo<Player>(() => {
     try { return JSON.parse(localStorage.getItem('kava_me') || 'null') || { id: uid(), name: 'Player' }; }
@@ -127,7 +137,7 @@ export default function ListLobby() {
   const suppressRef = useRef(false);
   const watchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollRef = useRef<number | null>(null);
-  const pageRootRef = useRef<HTMLDivElement | null>(null); // <-- single declaration
+  const pageRootRef = useRef<HTMLDivElement | null>(null); // single ref
 
   const seatChanged = (next: ListGame | null) => {
     if (!next) return false;
@@ -250,7 +260,7 @@ export default function ListLobby() {
     };
     gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, 500);
 
-    // Visibility handling
+    // Visibility handling (+ close/open SSE)
     if (!gl.visHook) {
       gl.visHook = true;
       document.addEventListener('visibilitychange', () => {
@@ -303,7 +313,7 @@ export default function ListLobby() {
     };
   }, [id, me.id]);
 
-  /* ---- Disable Android long-press (use the single pageRootRef) ---- */
+  /* ---- Disable Android long-press ---- */
   useEffect(() => {
     const root = pageRootRef.current;
     if (!root) return;
@@ -340,7 +350,9 @@ export default function ListLobby() {
   function autoSeat(next: ListGame) {
     const excluded = excludeSeatPidRef.current;
     const pmap = next.prefs || {};
-    const take = (want: TableLabel) => {
+
+    // helper: pull next from queue honoring table label + excluded id
+    const takeFromQueue = (want: TableLabel) => {
       for (let i = 0; i < next.queue.length; i++) {
         const pid = next.queue[i];
         if (!pid) { next.queue.splice(i, 1); i--; continue; }
@@ -350,10 +362,40 @@ export default function ListLobby() {
       }
       return undefined;
     };
+
+    // If queue is empty, fill seats from players not already seated
+    const fillFromPlayersIfNoQueue = next.queue.length === 0;
+    const seatedSet = new Set<string>();
+    for (const t of next.tables) { if (t.a) seatedSet.add(t.a); if (t.b) seatedSet.add(t.b); }
+
+    const candidates = fillFromPlayersIfNoQueue
+      ? next.players.map(p => p.id).filter(pid => !seatedSet.has(pid))
+      : [];
+
+    const takeFromPlayers = (want: TableLabel) => {
+      for (let i = 0; i < candidates.length; i++) {
+        const pid = candidates[i];
+        if (!pid) continue;
+        if (excluded && pid === excluded) continue;
+        const pref = (pmap[pid] ?? 'any') as Pref;
+        if (pref === 'any' || pref === want) { candidates.splice(i, 1); return pid; }
+      }
+      return undefined;
+    };
+
     next.tables.forEach((t) => {
-      if (!t.a) { const p = take(t.label); if (p) t.a = p; }
-      if (!t.b) { const p = take(t.label); if (p) t.b = p; }
+      if (!t.a) {
+        const fromQ = takeFromQueue(t.label);
+        const pid = fromQ ?? (fillFromPlayersIfNoQueue ? takeFromPlayers(t.label) : undefined);
+        if (pid) t.a = pid;
+      }
+      if (!t.b) {
+        const fromQ = takeFromQueue(t.label);
+        const pid = fromQ ?? (fillFromPlayersIfNoQueue ? takeFromPlayers(t.label) : undefined);
+        if (pid) t.b = pid;
+      }
     });
+
     excludeSeatPidRef.current = null;
   }
 
@@ -367,6 +409,10 @@ export default function ListLobby() {
     commitQ.current.push(async () => {
       if (!g) return;
       const next: ListGame = JSON.parse(JSON.stringify(g));
+      // ensure prefs exist for all players (avoid Android refresh losing 'any')
+      next.prefs ??= {};
+      for (const p of next.players) if (!next.prefs[p.id]) next.prefs[p.id] = 'any';
+
       next.v = (Number(next.v) || 0) + 1;
       const ifMatch = lastVersion.current;
       lastVersion.current = next.v!;
@@ -405,7 +451,17 @@ export default function ListLobby() {
   const enqueuePid = (pid: string) => scheduleCommit(d => { if (!d.queue.includes(pid)) d.queue.push(pid); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== pid); });
 
-  // Skip the first in queue (swap 1 and 2 → old #1 goes below #2)
+  // Move up/down (touch fallback for Android/iPad)
+  const moveUp = (index: number) => scheduleCommit(d => {
+    if (index <= 0 || index >= d.queue.length) return;
+    const a = d.queue[index - 1]; d.queue[index - 1] = d.queue[index]; d.queue[index] = a;
+  });
+  const moveDown = (index: number) => scheduleCommit(d => {
+    if (index < 0 || index >= d.queue.length - 1) return;
+    const a = d.queue[index + 1]; d.queue[index + 1] = d.queue[index]; d.queue[index] = a;
+  });
+
+  // Skip the first in queue (swap 1 & 2 → old #1 goes below #2)
   const skipFirst = () => scheduleCommit(d => {
     if (d.queue.length >= 2) {
       const first = d.queue.shift()!;
@@ -524,12 +580,12 @@ export default function ListLobby() {
                   const pid = t[side];
                   return (
                     <div
-                      draggable={!!pid && iAmHost}
+                      draggable={!!pid && iAmHost && supportsDnD}
                       onDragStart={(e)=>pid && onDragStart(e,{type:'seat',table:i,side,pid})}
-                      onDragOver={onDragOver}
-                      onDrop={(e)=>handleDrop(e,{type:'seat',table:i,side,pid})}
+                      onDragOver={supportsDnD ? onDragOver : undefined}
+                      onDrop={supportsDnD ? (e)=>handleDrop(e,{type:'seat',table:i,side,pid}) : undefined}
                       style={{minHeight:24,padding:'8px 10px',border:'1px dashed rgba(255,255,255,.25)',borderRadius:8,background:'rgba(56,189,248,.10)',display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}
-                      title="Drag from queue or swap seats"
+                      title={supportsDnD ? 'Drag from queue or swap seats' : 'Use Queue controls'}
                     >
                       <span>{nameOf(pid)}</span>
                       {pid && (iAmHost || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
@@ -553,27 +609,36 @@ export default function ListLobby() {
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
               <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
               {iAmHost && queue.length >= 2 && (
-                <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">
-                  Skip first
-                </button>
+                <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">Skip first</button>
               )}
             </div>
 
             {queue.length===0 ? <div style={{opacity:.6,fontStyle:'italic'}}>Drop players here</div> : (
               <ol style={{margin:0,paddingLeft:18,display:'grid',gap:6}}
-                  onDragOver={onDragOver}
-                  onDrop={(e)=>handleDrop(e,{type:'queue',index:queue.length,pid:'__end' as any})}>
+                  onDragOver={supportsDnD ? onDragOver : undefined}
+                  onDrop={supportsDnD ? (e)=>handleDrop(e,{type:'queue',index:queue.length,pid:'__end' as any}) : undefined}>
                 {queue.map((pid,idx)=>{
                   const pref = (prefs[pid] ?? 'any') as Pref;
                   const canEdit = iAmHost || pid===me.id;
                   return (
                     <li key={`${pid}-${idx}`}
-                        draggable
-                        onDragStart={(e)=>onDragStart(e,{type:'queue',index:idx,pid})}
-                        onDragOver={onDragOver}
-                        onDrop={(e)=>handleDrop(e,{type:'queue',index:idx,pid})}
+                        draggable={supportsDnD}
+                        onDragStart={supportsDnD ? (e)=>onDragStart(e,{type:'queue',index:idx,pid}) : undefined}
+                        onDragOver={supportsDnD ? onDragOver : undefined}
+                        onDrop={supportsDnD ? (e)=>handleDrop(e,{type:'queue',index:idx,pid}) : undefined}
                         style={queueItem}>
-                      <span style={bubbleName} title="Drag to reorder">{nameOf(pid)}</span>
+                      <span style={bubbleName} title={supportsDnD ? 'Drag to reorder' : 'Use arrows to reorder'}>
+                        {idx+1}. {nameOf(pid)}
+                      </span>
+
+                      {/* Touch fallback controls */}
+                      {!supportsDnD && iAmHost && (
+                        <div style={{display:'flex',gap:4,marginRight:6}}>
+                          <button style={btnTiny} onClick={()=>moveUp(idx)} disabled={busy || idx===0} aria-label="Move up">▲</button>
+                          <button style={btnTiny} onClick={()=>moveDown(idx)} disabled={busy || idx===queue.length-1} aria-label="Move down">▼</button>
+                        </div>
+                      )}
+
                       <div style={{display:'flex',gap:6}}>
                         {canEdit ? (
                           <>
