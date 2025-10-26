@@ -20,3 +20,13 @@ new_classes = ["ListRoom", "TournamentRoom"]
 [[kv_namespaces]]
 binding = "KAVA_TOURNAMENTS"
 id = "KAVA_TOURNAMENTS" # set to your KV id on production env
+
+# --- Cloudflare Pages & compatibility ---
+# Required for Pages to recognize this file
+pages_build_output_dir = ".vercel/output"
+
+# Enables Node.js built-ins (fixes buffer/async_hooks warning)
+compatibility_flags = ["nodejs_compat"]
+
+# Optional but recommended: modern Workers runtime date
+compatibility_date = "2024-07-25"
