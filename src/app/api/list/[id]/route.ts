@@ -16,7 +16,7 @@ type Table = { a?: string; b?: string; label: "8 foot" | "9 foot" };
 type Player = { id: string; name: string };
 type Pref = "8 foot" | "9 foot" | "any";
 
-/** Persisted list model (supports dual-queue but keeps prefs too) */
+/** Persisted list model (dual-queue + prefs) */
 type ListGame = {
   id: string;
   name: string;
@@ -24,18 +24,19 @@ type ListGame = {
   hostId: string;
   status: "active";
   createdAt: number;
-  tables: Table;
+  tables: Table[];        // <-- FIXED: it must be an array
   players: Player[];
-  queue8: string[]; // 8-foot queue
-  queue9: string[]; // 9-foot queue
+  queue8: string[];       // 8-foot queue
+  queue9: string[];       // 9-foot queue
   prefs?: Record<string, Pref>;
+  v?: number;             // client-supplied version (optional)
 };
 
 /* keys + helpers */
-const LKEY = (id: string) => `l:${id}`;
-const LVER = (id: string) => `lv:${id}`;
-const LPLAYER = (playerId: string) => `lidx:p:${playerId}`;
-const LHOST   = (hostId: string)   => `lidx:h:${hostId}`;
+const LKEY   = (id: string) => `l:${id}`;
+const LVER   = (id: string) => `lv:${id}`;
+const LPLAYER= (playerId: string) => `lidx:p:${playerId}`;
+const LHOST  = (hostId: string)   => `lidx:h:${hostId}`;
 
 async function getV(env: Env, id: string): Promise<number> {
   const raw = await env.KAVA_TOURNAMENTS.get(LVER(id));
@@ -96,7 +97,7 @@ function coerceIn(doc: any): ListGame {
     queue8 = (doc?.queue8 ?? []).map((x: any) => String(x)).filter(Boolean);
     queue9 = (doc?.queue9 ?? []).map((x: any) => String(x)).filter(Boolean);
   } else if (Array.isArray(doc?.queue)) {
-    // legacy: split single queue according to prefs; default to 8-foot
+    // legacy: split single queue according to prefs; default to 8-foot if pref not 9
     for (const x of doc.queue as any[]) {
       const pid = String(x);
       const pref = prefs[pid] ?? "any";
@@ -116,8 +117,9 @@ function coerceIn(doc: any): ListGame {
     players,
     queue8,
     queue9,
-    prefs
-  } as unknown as ListGame;
+    prefs,
+    v: Number.isFinite(doc?.v) ? Number(doc.v) : undefined,
+  };
 }
 
 /** Coercion for OUTGOING (GET) to keep legacy clients happy:
@@ -125,11 +127,8 @@ function coerceIn(doc: any): ListGame {
  */
 function coerceOut(stored: any) {
   const x = coerceIn(stored);
-  const queue = [...x.queue9, ...x.queue8]; // simple concat (9-ft first so they don't starve)
-  return {
-    ...x,
-    queue, // legacy view
-  };
+  const queue = [...x.queue9, ...x.queue8]; // simple concat (9-ft first)
+  return { ...x, queue };
 }
 
 /** Utility: remove a player id from both queues */
@@ -207,48 +206,57 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   });
 }
 
-/* ---------- PUT (If-Match; accepts legacy body) ---------- */
+/* ---------- PUT (If-Match; tolerant fallback) ---------- */
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
 
-  // Optional optimistic concurrency; send If-Match from the client if you want.
-  const ifMatch = req.headers.get("if-match");
   const curV = await getV(env, id);
-  if (ifMatch !== null && String(curV) !== String(ifMatch)) {
+
+  let bodyRaw: any;
+  try { bodyRaw = await req.json(); }
+  catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
+
+  const incoming = coerceIn(bodyRaw);
+  if (incoming.id !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 });
+
+  // Version gate:
+  const ifMatch = req.headers.get("if-match");
+  const incomingV = Number(bodyRaw?.v ?? incoming.v ?? 0);
+
+  const strictMismatch = (ifMatch !== null && String(curV) !== String(ifMatch));
+  const tolerantOk    = (ifMatch === null && Number.isFinite(incomingV) && incomingV >= curV);
+
+  if (strictMismatch && !tolerantOk) {
     return NextResponse.json({ error: "Version conflict" }, { status: 412 });
   }
 
-  // read previous for indices
+  // read previous for indices (before overwrite)
   const prevRaw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   const prev = prevRaw ? coerceIn(JSON.parse(prevRaw)) : null;
   const prevPlayers = new Set((prev?.players ?? []).map(p => p.id));
 
-  let body: ListGame;
-  try { body = coerceIn(await req.json()); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
-  if (body.id !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 });
-
   // Always reconcile before save
-  reconcileSeating(body);
+  reconcileSeating(incoming);
 
-  await env.KAVA_TOURNAMENTS.put(LKEY(id), JSON.stringify(body));
+  await env.KAVA_TOURNAMENTS.put(LKEY(id), JSON.stringify(incoming));
   const nextV = curV + 1;
   await setV(env, id, nextV);
 
   // indices: players + host
-  const nextPlayers = new Set((body.players ?? []).map(p => p.id));
+  const nextPlayers = new Set((incoming.players ?? []).map(p => p.id));
   for (const p of nextPlayers) if (!prevPlayers.has(p)) await addTo(env, LPLAYER(p), id);
   for (const p of prevPlayers) if (!nextPlayers.has(p)) await removeFrom(env, LPLAYER(p), id);
 
-  if (prev?.hostId && prev.hostId !== body.hostId) await removeFrom(env, LHOST(prev.hostId), id);
-  if (body.hostId) await addTo(env, LHOST(body.hostId), id);
+  if (prev?.hostId && prev.hostId !== incoming.hostId) await removeFrom(env, LHOST(prev.hostId), id);
+  if (incoming.hostId) await addTo(env, LHOST(incoming.hostId), id);
 
   return new NextResponse(null, { status: 204, headers: { "x-l-version": String(nextV), ETag: `"l-${nextV}"` } });
 }
 
 /* ---------- POST (alias for PUT; for keepalive/sendBeacon) ---------- */
 export async function POST(req: Request, ctx: { params: { id: string } }) {
-  // sendBeacon can't set headers like If-Match; our PUT already handles that (only checks if If-Match was provided).
+  // sendBeacon can't set headers like If-Match; PUT above tolerates when body.v >= currentV
   return PUT(req, ctx);
 }
 
