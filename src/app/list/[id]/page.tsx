@@ -50,7 +50,7 @@ function coerceList(raw: any): ListGame | null {
       ? raw.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') }))
       : [];
 
-    // Accept legacy queue8/queue9 OR single queue
+    // Accept single queue (server also returns queue8/queue9, but we use combined queue)
     const queue: string[] = Array.isArray(raw.queue)
       ? raw.queue.map((x: any) => String(x)).filter(Boolean)
       : [
@@ -58,7 +58,7 @@ function coerceList(raw: any): ListGame | null {
           ...(Array.isArray(raw.queue8) ? raw.queue8 : []),
         ].map((x: any) => String(x)).filter(Boolean);
 
-    // prefs: keep given, then ensure every player has a pref (default 'any')
+    // prefs (default 'any')
     const prefs: Record<string, Pref> = {};
     if (raw.prefs && typeof raw.prefs === 'object') {
       for (const [pid, v] of Object.entries(raw.prefs)) {
@@ -66,9 +66,7 @@ function coerceList(raw: any): ListGame | null {
         prefs[pid] = vv === '9 foot' || vv === '8 foot' || vv === 'any' ? (vv as Pref) : 'any';
       }
     }
-    for (const p of players) {
-      if (!prefs[p.id]) prefs[p.id] = 'any';
-    }
+    for (const p of players) if (!prefs[p.id]) prefs[p.id] = 'any';
 
     return {
       id: String(raw.id ?? ''),
@@ -84,16 +82,19 @@ function coerceList(raw: any): ListGame | null {
   } catch { return null; }
 }
 
-async function putList(doc: ListGame, ifMatch?: number) {
-  await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
-    method: 'PUT',
-    headers: {
-      'content-type': 'application/json',
-      ...(Number.isFinite(ifMatch) ? { 'if-match': String(ifMatch) } : {}),
-    },
-    body: JSON.stringify({ ...doc, schema: 'v2' }),
-    // no-store is server side; PUT is saving so cache control is irrelevant here
-  });
+/* NOTE: we use POST (no If-Match) to avoid 412 */
+async function saveList(doc: ListGame) {
+  try {
+    await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...doc, schema: 'v2' }),
+      keepalive: true,
+      cache: 'no-store',
+    });
+  } catch (e) {
+    console.warn('saveList failed', e);
+  }
 }
 
 /* ============ Component ============ */
@@ -108,7 +109,7 @@ export default function ListLobby() {
   const [err, setErr] = useState<string | null>(null);
   const [supportsDnD, setSupportsDnD] = useState<boolean>(false); // touch fallback for Android/iPad
 
-  // detect drag support once on client
+  // On touch devices (Android/iPad), disable HTML5 DnD → show ▲▼ arrows
   useEffect(() => {
     setSupportsDnD(!('ontouchstart' in window));
   }, []);
@@ -137,7 +138,7 @@ export default function ListLobby() {
   const suppressRef = useRef(false);
   const watchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollRef = useRef<number | null>(null);
-  const pageRootRef = useRef<HTMLDivElement | null>(null); // single ref
+  const pageRootRef = useRef<HTMLDivElement | null>(null);
 
   const seatChanged = (next: ListGame | null) => {
     if (!next) return false;
@@ -166,8 +167,7 @@ export default function ListLobby() {
       if (pollRef.current) return;
       pollRef.current = window.setInterval(async () => {
         try {
-          const url = `/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`;
-          const res = await fetch(url, { cache: 'no-store' });
+          const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: 'no-store' });
           if (!res.ok) return;
           const doc = coerceList(await res.json()); if (!doc) return;
           const v = doc.v ?? 0;
@@ -219,9 +219,8 @@ export default function ListLobby() {
 
     // First snapshot
     (async () => {
-      const url = `/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`;
       try {
-        const res = await fetch(url, { cache: 'no-store' });
+        const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: 'no-store' });
         if (!res.ok) {
           if (res.status === 404) {
             setErr('List not found yet (404). If you just created it, give it a moment.');
@@ -234,8 +233,7 @@ export default function ListLobby() {
           return;
         }
         const doc = coerceList(await res.json()); if (!doc) { setErr('Invalid list data'); startPoller(); attach(); return; }
-        const incomingV = doc.v ?? 0;
-        lastVersion.current = incomingV;
+        lastVersion.current = doc.v ?? 0;
         setErr(null);
         setG(doc);
         attach();
@@ -246,7 +244,7 @@ export default function ListLobby() {
       }
     })();
 
-    /* Heartbeat (single timeout loop) */
+    /* Heartbeat */
     const hbKey = `hb:${id}:${me.id}`;
     if (!gl.heartbeats[hbKey]) gl.heartbeats[hbKey] = { t: null, refs: 0 };
     gl.heartbeats[hbKey].refs++;
@@ -260,7 +258,7 @@ export default function ListLobby() {
     };
     gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, 500);
 
-    // Visibility handling (+ close/open SSE)
+    // Visibility handling
     if (!gl.visHook) {
       gl.visHook = true;
       document.addEventListener('visibilitychange', () => {
@@ -346,12 +344,11 @@ export default function ListLobby() {
   const nameOf = (pid?: string) => (pid ? players.find(p => p.id === pid)?.name || '??' : '—');
   const inQueue = (pid: string) => queue.includes(pid);
 
-  /* ---- auto seat ---- */
+  /* ---- auto seat (client hint; server also reconciles) ---- */
   function autoSeat(next: ListGame) {
     const excluded = excludeSeatPidRef.current;
     const pmap = next.prefs || {};
 
-    // helper: pull next from queue honoring table label + excluded id
     const takeFromQueue = (want: TableLabel) => {
       for (let i = 0; i < next.queue.length; i++) {
         const pid = next.queue[i];
@@ -363,7 +360,6 @@ export default function ListLobby() {
       return undefined;
     };
 
-    // If queue is empty, fill seats from players not already seated
     const fillFromPlayersIfNoQueue = next.queue.length === 0;
     const seatedSet = new Set<string>();
     for (const t of next.tables) { if (t.a) seatedSet.add(t.a); if (t.b) seatedSet.add(t.b); }
@@ -409,12 +405,10 @@ export default function ListLobby() {
     commitQ.current.push(async () => {
       if (!g) return;
       const next: ListGame = JSON.parse(JSON.stringify(g));
-      // ensure prefs exist for all players (avoid Android refresh losing 'any')
       next.prefs ??= {};
       for (const p of next.players) if (!next.prefs[p.id]) next.prefs[p.id] = 'any';
 
       next.v = (Number(next.v) || 0) + 1;
-      const ifMatch = lastVersion.current;
       lastVersion.current = next.v!;
       mut(next);
       autoSeat(next);
@@ -426,7 +420,7 @@ export default function ListLobby() {
 
       try {
         setG(next);
-        await putList(next, ifMatch);
+        await saveList(next); // POST (no If-Match) avoids 412
         if (seatChanged(next)) bumpAlerts();
       } catch (e) {
         console.error('save-failed', e);
@@ -451,7 +445,7 @@ export default function ListLobby() {
   const enqueuePid = (pid: string) => scheduleCommit(d => { if (!d.queue.includes(pid)) d.queue.push(pid); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== pid); });
 
-  // Move up/down (touch fallback for Android/iPad)
+  // Touch fallback reorder
   const moveUp = (index: number) => scheduleCommit(d => {
     if (index <= 0 || index >= d.queue.length) return;
     const a = d.queue[index - 1]; d.queue[index - 1] = d.queue[index]; d.queue[index] = a;
@@ -461,7 +455,7 @@ export default function ListLobby() {
     const a = d.queue[index + 1]; d.queue[index + 1] = d.queue[index]; d.queue[index] = a;
   });
 
-  // Skip the first in queue (swap 1 & 2 → old #1 goes below #2)
+  // Skip the first in queue (swap 1 & 2)
   const skipFirst = () => scheduleCommit(d => {
     if (d.queue.length >= 2) {
       const first = d.queue.shift()!;
