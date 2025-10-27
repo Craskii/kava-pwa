@@ -10,10 +10,6 @@ import { useQueueAlerts, bumpAlerts } from '@/lib/alerts';
 import {
   saveTournamentRemote,
   deleteTournamentRemote,
-  submitReport,
-  approvePending,
-  declinePending,
-  insertLatePlayer,
   Tournament,
   uid,
   Match,
@@ -96,7 +92,7 @@ export default function Lobby() {
     },
   });
 
-  /* ---------- initial fetch so we don't hang on Loading if API errors ---------- */
+  /* ---------- initial fetch (now captures x-t-version -> t.v) ---------- */
   useEffect(() => {
     let cancelled = false;
     async function loadInitial() {
@@ -109,7 +105,9 @@ export default function Lobby() {
           return;
         }
         const json = await res.json();
-        if (!cancelled) setT(json);
+        const vHeader = Number(res.headers.get('x-t-version') || '0');
+        const withV = { ...json, v: Number.isFinite(vHeader) ? vHeader : (json.v ?? 0) };
+        if (!cancelled) setT(withV);
       } catch (e:any) {
         if (!cancelled) setErrMsg(e?.message || 'Network error');
       }
@@ -138,7 +136,9 @@ export default function Lobby() {
         }
         const payload = await res.json();
         const newTag = res.headers.get('etag') || res.headers.get('x-t-version') || null;
-        return { status: 200, etag: newTag, payload };
+        const vHeader = Number(res.headers.get('x-t-version') || '0');
+        const withV = { ...payload, v: Number.isFinite(vHeader) ? vHeader : (payload.v ?? 0) };
+        return { status: 200, etag: newTag, payload: withV };
       },
       onChange: (payload) => setT(payload),
     });
@@ -170,7 +170,7 @@ export default function Lobby() {
   const iAmCoHost = !!me && coHosts.includes(me.id);
   const canHost = iAmHost || iAmCoHost;
 
-  async function update(mut: (x: Tournament) => void) {
+  async function update(mut: (x: Tournament) => void | Promise<void>) {
     if (busy) return;
     setBusy(true);
     const base: Tournament = {
@@ -179,10 +179,11 @@ export default function Lobby() {
       pending: [...t.pending],
       rounds: t.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
       coHosts: [...coHosts],
+      v: t.v, // carry version through
     };
     const first = structuredClone(base);
-    mut(first);
     try {
+      await mut(first);
       const saved = await saveTournamentRemote(first);
       setT(saved); pollRef.current?.bump(); bumpAlerts();
     } catch {
@@ -195,8 +196,9 @@ export default function Lobby() {
           pending: [...latest.pending],
           rounds: latest.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
           coHosts: [...(latest.coHosts ?? [])],
+          v: latest.v,
         };
-        mut(second);
+        await mut(second);
         const saved = await saveTournamentRemote(second);
         setT(saved); pollRef.current?.bump(); bumpAlerts();
       } catch {
@@ -262,98 +264,81 @@ export default function Lobby() {
     });
   }
 
-  function approve(pId: string) { update(x => approvePending(x, pId)); }
-  function decline(pId: string) { update(x => declinePending(x, pId)); }
+  // ---- Pure local helpers (no remote save inside) ----
+  function approveLocal(x: Tournament, playerId: string) {
+    const idx = x.pending.findIndex((p) => p.id === playerId);
+    if (idx < 0) return;
+    const p = x.pending[idx];
+    x.pending.splice(idx, 1);
+    if (x.status === 'active') {
+      const r0 = x.rounds[0] || [];
+      let placed = false;
+      for (const m of r0) {
+        if (!m.a) { m.a = p.id; m.reports ??= {}; placed = true; break; }
+        if (!m.b) { m.b = p.id; m.reports ??= {}; placed = true; break; }
+      }
+      if (!placed) {
+        r0.push({ a: p.id, b: undefined, reports: {} });
+        x.rounds[0] = r0;
+      }
+      buildNextRoundFromSync(x, 0);
+    } else {
+      if (!x.players.some(pp => pp.id === p.id)) x.players.push(p);
+    }
+  }
+  function declineLocal(x: Tournament, playerId: string) {
+    x.pending = x.pending.filter(p => p.id !== playerId);
+  }
+  function addLateLocal(x: Tournament, p: {id:string; name:string}) {
+    if (x.status === 'active') {
+      const r0 = x.rounds[0] || [];
+      if (!x.players.find(pp => pp.id === p.id)) x.players.push(p);
+      let placed = false;
+      for (const m of r0) {
+        if (!m.a) { m.a = p.id; m.reports ??= {}; placed = true; break; }
+        if (!m.b) { m.b = p.id; m.reports ??= {}; placed = true; break; }
+      }
+      if (!placed) { r0.push({ a: p.id, b: undefined, reports: {} }); x.rounds[0] = r0; }
+      buildNextRoundFromSync(x, 0);
+    } else {
+      if (!x.players.find(pp => pp.id === p.id)) x.players.push(p);
+    }
+  }
+  function submitReportLocal(
+    x: Tournament,
+    roundIndex: number,
+    matchIndex: number,
+    playerId: string,
+    result: 'win' | 'loss'
+  ) {
+    const m = x.rounds?.[roundIndex]?.[matchIndex];
+    if (!m) return;
+    m.reports ??= {};
+    m.reports[playerId] = result;
+    if (m.a && !m.b) m.winner = m.a;
+    if (!m.a && m.b) m.winner = m.b;
+    if (m.a && m.b) {
+      const ra = m.reports[m.a], rb = m.reports[m.b];
+      if (ra && rb) {
+        if (ra === 'win' && rb === 'loss') m.winner = m.a;
+        else if (ra === 'loss' && rb === 'win') m.winner = m.b;
+      }
+    }
+    buildNextRoundFromSync(x, roundIndex);
+  }
+
+  function approve(pId: string)  { update(x => approveLocal(x, pId)); }
+  function decline(pId: string)  { update(x => declineLocal(x, pId)); }
+  function report(roundIdx: number, matchIdx: number, result: 'win' | 'loss') {
+    if (!me) return;
+    update(x => submitReportLocal(x, roundIdx, matchIdx, me.id, result));
+  }
 
   function addPlayerPrompt() {
     const nm = prompt('Player name?');
     if (!nm) return;
-    const p = { id: uid(), name: nm.trim() || 'Player' };
-    update(x => { if (x.status === 'active') insertLatePlayer(x, p); else x.players.push(p); });
-  }
-  function renamePlayer(pid: string) {
-    const cur = t.players.find(p => p.id === pid)?.name || '';
-    const nm = prompt('Rename player', cur);
-    if (!nm) return;
-    update(x => { const p = x.players.find(pp => pp.id === pid); if (p) p.name = nm.trim() || p.name; });
-  }
-  function removePlayer(pid: string) {
-    if (!confirm('Remove this player?')) return;
-    update(x => {
-      x.players = x.players.filter(p => p.id !== pid);
-      x.pending = x.pending.filter(p => p.id !== pid);
-      x.coHosts = (x.coHosts ?? []).filter(id => id !== pid);
-      x.rounds = x.rounds.map(rr => rr.map(m => ({
-        ...m,
-        a: m.a === pid ? undefined : m.a,
-        b: m.b === pid ? undefined : m.b,
-        winner: m.winner === pid ? undefined : m.winner,
-        reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== pid)),
-      })));
-    });
-  }
-  function toggleCoHost(pid: string) {
-    update(x => {
-      x.coHosts ??= [];
-      if (x.coHosts.includes(pid)) x.coHosts = x.coHosts.filter(id => id !== pid);
-      else x.coHosts.push(pid);
-    });
-  }
-
-  // Drag & drop Round 1 seats
-  type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; pid?: string };
-  function onDragStart(ev: React.DragEvent, info: DragInfo) {
-    ev.dataTransfer.setData('application/json', JSON.stringify(info));
-    ev.dataTransfer.effectAllowed = 'move';
-  }
-  function onDragOver(ev: React.DragEvent) { ev.preventDefault(); }
-  function onDrop(ev: React.DragEvent, target: DragInfo) {
-    ev.preventDefault();
-    const raw = ev.dataTransfer.getData('application/json');
-    if (!raw) return;
-    let src: DragInfo;
-    try { src = JSON.parse(raw); } catch { return; }
-    if (src.type !== 'seat' || target.type !== 'seat') return;
-    if (t.status !== 'active' || src.round !== 0 || target.round !== 0) return;
-
-    update(x => {
-      const mSrc = x.rounds?.[0]?.[src.match];
-      const mTgt = x.rounds?.[0]?.[target.match];
-      if (!mSrc || !mTgt) return;
-
-      const clear = (m: Match) => { m.winner = undefined; m.reports = {}; };
-      clear(mSrc); clear(mTgt);
-
-      const valSrc = (mSrc as any)[src.side] as string | undefined;
-      const valTgt = (mTgt as any)[target.side] as string | undefined;
-      (mSrc as any)[src.side] = valTgt;
-      (mTgt as any)[target.side] = valSrc;
-
-      x.rounds = [x.rounds[0]];
-      buildNextRoundFromSync(x, 0);
-    });
-  }
-  function pill(pid?: string, round?: number, match?: number, side?: 'a' | 'b') {
-    const name = pid ? (t.players.find(p => p.id === pid)?.name || '??') : '—';
-    const draggable = canHost && t.status === 'active' && round === 0;
-    const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, pid };
-    return (
-      <span
-        draggable={draggable}
-        onDragStart={e => onDragStart(e, info)}
-        onDragOver={onDragOver}
-        onDrop={e => onDrop(e, info)}
-        style={{ ...pillStyle, opacity: pid ? 1 : .6, cursor: draggable ? 'grab' : 'default' }}
-        title={draggable ? 'Drag to swap seats in Round 1' : undefined}
-      >
-        {name}
-      </span>
-    );
-  }
-
-  function report(roundIdx: number, matchIdx: number, result: 'win' | 'loss') {
-    if (!me) return;
-    update(x => { submitReport(x, roundIdx, matchIdx, me.id, result); });
+    const p = { id: uid(), name: (nm.trim() || 'Player') };
+    update(x => addLateLocal(x, p));
   }
 
   const lastRound = t.rounds.at(-1);
@@ -416,12 +401,37 @@ export default function Lobby() {
                       {canHost && (
                         <div style={{ display:'flex', gap:8 }}>
                           {iAmHost && p.id !== t.hostId && (
-                            <button style={btnMini} onClick={() => toggleCoHost(p.id)} disabled={busy}>
+                            <button style={btnMini} onClick={() => {
+                              update(x => {
+                                x.coHosts ??= [];
+                                if (x.coHosts.includes(p.id)) x.coHosts = x.coHosts.filter(id => id !== p.id);
+                                else x.coHosts.push(p.id);
+                              });
+                            }} disabled={busy}>
                               {isCH ? 'Remove co-host' : 'Make co-host'}
                             </button>
                           )}
-                          <button style={btnMini} onClick={() => renamePlayer(p.id)} disabled={busy}>Rename</button>
-                          {p.id !== t.hostId && <button style={btnDanger} onClick={() => removePlayer(p.id)} disabled={busy}>Remove</button>}
+                          <button style={btnMini} onClick={() => {
+                            const cur = t.players.find(pp => pp.id === p.id)?.name || '';
+                            const nm = prompt('Rename player', cur);
+                            if (!nm) return;
+                            update(x => { const pp = x.players.find(z => z.id === p.id); if (pp) pp.name = nm.trim() || pp.name; });
+                          }} disabled={busy}>Rename</button>
+                          {p.id !== t.hostId && <button style={btnDanger} onClick={() => {
+                            if (!confirm('Remove this player?')) return;
+                            update(x => {
+                              x.players = x.players.filter(pp => pp.id !== p.id);
+                              x.pending = x.pending.filter(pp => pp.id !== p.id);
+                              x.coHosts = (x.coHosts ?? []).filter(id => id !== p.id);
+                              x.rounds = x.rounds.map(rr => rr.map(m => ({
+                                ...m,
+                                a: m.a === p.id ? undefined : m.a,
+                                b: m.b === p.id ? undefined : m.b,
+                                winner: m.winner === p.id ? undefined : m.winner,
+                                reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== p.id)),
+                              })));
+                            });
+                          }} disabled={busy}>Remove</button>}
                         </div>
                       )}
                     </li>
@@ -500,6 +510,57 @@ export default function Lobby() {
                     const iPlay = me && (m.a === me?.id || m.b === me?.id);
                     const canReport = !canHost && iPlay && !w && t.status === 'active';
 
+                    // Drag & drop Round 1 seats
+                    type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; pid?: string };
+                    function onDragStart(ev: React.DragEvent, info: DragInfo) {
+                      ev.dataTransfer.setData('application/json', JSON.stringify(info));
+                      ev.dataTransfer.effectAllowed = 'move';
+                    }
+                    function onDragOver(ev: React.DragEvent) { ev.preventDefault(); }
+                    function onDrop(ev: React.DragEvent, target: DragInfo) {
+                      ev.preventDefault();
+                      const raw = ev.dataTransfer.getData('application/json');
+                      if (!raw) return;
+                      let src: DragInfo;
+                      try { src = JSON.parse(raw); } catch { return; }
+                      if (src.type !== 'seat' || target.type !== 'seat') return;
+                      if (t.status !== 'active' || src.round !== 0 || target.round !== 0) return;
+
+                      update(x => {
+                        const mSrc = x.rounds?.[0]?.[src.match];
+                        const mTgt = x.rounds?.[0]?.[target.match];
+                        if (!mSrc || !mTgt) return;
+
+                        const clear = (mm: Match) => { mm.winner = undefined; mm.reports = {}; };
+                        clear(mSrc); clear(mTgt);
+
+                        const valSrc = (mSrc as any)[src.side] as string | undefined;
+                        const valTgt = (mTgt as any)[target.side] as string | undefined;
+                        (mSrc as any)[src.side] = valTgt;
+                        (mTgt as any)[target.side] = valSrc;
+
+                        x.rounds = [x.rounds[0]];
+                        buildNextRoundFromSync(x, 0);
+                      });
+                    }
+                    function pill(pid?: string, round?: number, match?: number, side?: 'a' | 'b') {
+                      const name = pid ? (t.players.find(p => p.id === pid)?.name || '??') : '—';
+                      const draggable = canHost && t.status === 'active' && round === 0;
+                      const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, pid };
+                      return (
+                        <span
+                          draggable={draggable}
+                          onDragStart={e => onDragStart(e, info)}
+                          onDragOver={onDragOver}
+                          onDrop={e => onDrop(e, info)}
+                          style={{ ...pillStyle, opacity: pid ? 1 : .6, cursor: draggable ? 'grab' : 'default' }}
+                          title={draggable ? 'Drag to swap seats in Round 1' : undefined}
+                        >
+                          {name}
+                        </span>
+                      );
+                    }
+
                     return (
                       <div key={i} style={{ background: '#111', borderRadius: 10, padding: '10px 12px', display: 'grid', gap: 8 }}>
                         <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
@@ -531,7 +592,7 @@ export default function Lobby() {
                           </div>
                         )}
 
-                        {canReport && (
+                        {!canHost && canReport && (
                           <div style={{ display: 'flex', gap: 6 }}>
                             <button style={btnMini} onClick={() => report(rIdx, i, 'win')} disabled={busy}>I won</button>
                             <button style={btnMini} onClick={() => report(rIdx, i, 'loss')} disabled={busy}>I lost</button>

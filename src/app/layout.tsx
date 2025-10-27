@@ -20,10 +20,10 @@ export const metadata: Metadata = {
   icons: {
     icon: [
       { url: "/favicon.ico" },
-      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
-      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+      { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
     ],
-    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+    apple: [{ url: "/icons/icon-192.png", sizes: "180x180", type: "image/png" }],
   },
 };
 
@@ -38,9 +38,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         {/* PWA meta */}
         <meta name="mobile-web-app-capable" content="yes" />
-        {/* (Optional) Keep the old one if you want, but it’s deprecated. You can remove it. */}
-        {/* <meta name="apple-mobile-web-app-capable" content="yes" /> */}
-
         {/* Recommended extras */}
         <meta name="theme-color" content="#0b0b0b" />
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
