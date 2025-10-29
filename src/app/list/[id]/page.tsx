@@ -23,9 +23,11 @@ type ListGame = {
 };
 
 /* ============ Globals (per origin) ============ */
+type KavaStreams = { es: EventSource | null; refs: number; backoff: number };
+type KavaHeart = { t: number | null; refs: number };
 type KavaGlobals = {
-  streams: Record<string, { es: EventSource | null; refs: number; backoff: number }>;
-  heartbeats: Record<string, { t: number | null; refs: number }>;
+  streams: Record<string, KavaStreams>;
+  heartbeats: Record<string, KavaHeart>;
   visHook: boolean;
 };
 function getGlobals(): KavaGlobals {
@@ -50,7 +52,6 @@ function coerceList(raw: any): ListGame | null {
       ? raw.players.map((p: any) => ({ id: String(p?.id ?? ''), name: String(p?.name ?? 'Player') }))
       : [];
 
-    // Accept single queue (server also returns queue8/queue9, but we use combined queue)
     const queue: string[] = Array.isArray(raw.queue)
       ? raw.queue.map((x: any) => String(x)).filter(Boolean)
       : [
@@ -58,7 +59,6 @@ function coerceList(raw: any): ListGame | null {
           ...(Array.isArray(raw.queue8) ? raw.queue8 : []),
         ].map((x: any) => String(x)).filter(Boolean);
 
-    // prefs (default 'any')
     const prefs: Record<string, Pref> = {};
     if (raw.prefs && typeof raw.prefs === 'object') {
       for (const [pid, v] of Object.entries(raw.prefs)) {
@@ -82,7 +82,7 @@ function coerceList(raw: any): ListGame | null {
   } catch { return null; }
 }
 
-/* NOTE: we use POST (no If-Match) to avoid 412 */
+/* POST (avoid If-Match 412, good for burst writes) */
 async function saveList(doc: ListGame) {
   try {
     await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
@@ -110,9 +110,7 @@ export default function ListLobby() {
   const [supportsDnD, setSupportsDnD] = useState<boolean>(false); // touch fallback for Android/iPad
 
   // On touch devices (Android/iPad), disable HTML5 DnD → show ▲▼ arrows
-  useEffect(() => {
-    setSupportsDnD(!('ontouchstart' in window));
-  }, []);
+  useEffect(() => { setSupportsDnD(!('ontouchstart' in window)); }, []);
 
   const me = useMemo<Player>(() => {
     try { return JSON.parse(localStorage.getItem('kava_me') || 'null') || { id: uid(), name: 'Player' }; }
@@ -344,7 +342,22 @@ export default function ListLobby() {
   const nameOf = (pid?: string) => (pid ? players.find(p => p.id === pid)?.name || '??' : '—');
   const inQueue = (pid: string) => queue.includes(pid);
 
-  /* ---- auto seat (client hint; server also reconciles) ---- */
+  /* ---------- Fast local updates (debounced save) ---------- */
+  const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedLocalCommit = (mut: (d: ListGame) => void) => {
+    if (!g) return;
+    const next: ListGame = JSON.parse(JSON.stringify(g));
+    next.prefs ??= {};
+    for (const p of next.players) if (!next.prefs[p.id]) next.prefs[p.id] = 'any';
+    mut(next);
+    // Instant UI
+    setG(next);
+    // Debounced save burst (keeps buttons ultra responsive)
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    debounceTimer.current = setTimeout(() => { saveList(next); }, 250);
+  };
+
+  /* ---- auto seat (client hint; server also reconciles in route) ---- */
   function autoSeat(next: ListGame) {
     const excluded = excludeSeatPidRef.current;
     const pmap = next.prefs || {};
@@ -395,7 +408,7 @@ export default function ListLobby() {
     excludeSeatPidRef.current = null;
   }
 
-  /* ---- commit queue (serial) ---- */
+  /* ---- Reliable commit path (for structural changes) ---- */
   async function runNext() {
     const job = commitQ.current.shift(); if (!job) return;
     await job();
@@ -436,27 +449,50 @@ export default function ListLobby() {
   /* ---- actions ---- */
   const renameList = (nm: string) => { const v = nm.trim(); if (!v) return; scheduleCommit(d => { d.name = v; }); };
   const ensureMe = (d: ListGame) => { if (!d.players.some(p => p.id === me.id)) d.players.push(me); d.prefs ??= {}; if (!d.prefs[me.id]) d.prefs[me.id] = 'any'; };
-  const joinQueue = () => scheduleCommit(d => { ensureMe(d); if (!d.queue.includes(me.id)) d.queue.push(me.id); });
-  const leaveQueue = () => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== me.id); });
-  const addPlayer = () => { const v = nameField.trim(); if (!v) return; setNameField(''); const p: Player = { id: uid(), name: v }; scheduleCommit(d => { d.players.push(p); d.prefs ??= {}; d.prefs[p.id] = 'any'; if (!d.queue.includes(p.id)) d.queue.push(p.id); }); };
-  const removePlayer = (pid: string) => scheduleCommit(d => { d.players = d.players.filter(p => p.id !== pid); d.queue = d.queue.filter(x => x !== pid); if (d.prefs) delete d.prefs[pid]; d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b })); });
-  const renamePlayer = (pid: string) => { const cur = players.find(p => p.id === pid)?.name || ''; const nm = prompt('Rename player', cur); if (!nm) return; const v = nm.trim(); if (!v) return; scheduleCommit(d => { const p = d.players.find(pp => pp.id === pid); if (p) p.name = v; }); };
-  const setPrefFor = (pid: string, pref: Pref) => scheduleCommit(d => { d.prefs ??= {}; d.prefs[pid] = pref; });
-  const enqueuePid = (pid: string) => scheduleCommit(d => { if (!d.queue.includes(pid)) d.queue.push(pid); });
-  const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = d.queue.filter(x => x !== pid); });
 
-  // Touch fallback reorder
-  const moveUp = (index: number) => scheduleCommit(d => {
+  // Queue join/leave – fast local w/ debounce
+  const joinQueue = () => debouncedLocalCommit(d => { ensureMe(d); if (!d.queue.includes(me.id)) d.queue.push(me.id); });
+  const leaveQueue = () => debouncedLocalCommit(d => { d.queue = d.queue.filter(x => x !== me.id); });
+
+  // Add/remove player – structural (use scheduleCommit)
+  const addPlayer = () => {
+    const v = nameField.trim(); if (!v) return;
+    setNameField('');
+    const p: Player = { id: uid(), name: v };
+    scheduleCommit(d => { d.players.push(p); d.prefs ??= {}; d.prefs[p.id] = 'any'; if (!d.queue.includes(p.id)) d.queue.push(p.id); });
+  };
+  const removePlayer = (pid: string) => scheduleCommit(d => {
+    d.players = d.players.filter(p => p.id !== pid);
+    d.queue = d.queue.filter(x => x !== pid);
+    if (d.prefs) delete d.prefs[pid];
+    d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b }));
+  });
+  const renamePlayer = (pid: string) => {
+    const cur = players.find(p => p.id === pid)?.name || '';
+    const nm = prompt('Rename player', cur); if (!nm) return;
+    const v = nm.trim(); if (!v) return;
+    scheduleCommit(d => { const p = d.players.find(pp => pp.id === pid); if (p) p.name = v; });
+  };
+
+  // Pref change – fast local w/ debounce
+  const setPrefFor = (pid: string, pref: Pref) => debouncedLocalCommit(d => { d.prefs ??= {}; d.prefs[pid] = pref; });
+
+  // Enqueue/dequeue specific – fast local w/ debounce
+  const enqueuePid = (pid: string) => debouncedLocalCommit(d => { if (!d.queue.includes(pid)) d.queue.push(pid); });
+  const dequeuePid = (pid: string) => debouncedLocalCommit(d => { d.queue = d.queue.filter(x => x !== pid); });
+
+  // Touch fallback reorder – fast local w/ debounce
+  const moveUp = (index: number) => debouncedLocalCommit(d => {
     if (index <= 0 || index >= d.queue.length) return;
     const a = d.queue[index - 1]; d.queue[index - 1] = d.queue[index]; d.queue[index] = a;
   });
-  const moveDown = (index: number) => scheduleCommit(d => {
+  const moveDown = (index: number) => debouncedLocalCommit(d => {
     if (index < 0 || index >= d.queue.length - 1) return;
     const a = d.queue[index + 1]; d.queue[index + 1] = d.queue[index]; d.queue[index] = a;
   });
 
-  // Skip the first in queue (swap 1 & 2)
-  const skipFirst = () => scheduleCommit(d => {
+  // Skip first – fast local w/ debounce
+  const skipFirst = () => debouncedLocalCommit(d => {
     if (d.queue.length >= 2) {
       const first = d.queue.shift()!;
       const second = d.queue.shift()!;
@@ -465,6 +501,7 @@ export default function ListLobby() {
     }
   });
 
+  // Lost – structural (touches tables) use scheduleCommit
   const iLost = (pid?: string) => {
     const loser = pid ?? me.id;
     scheduleCommit(d => {
@@ -478,7 +515,7 @@ export default function ListLobby() {
     });
   };
 
-  /* ---- DnD ---- */
+  /* ---- DnD (desktop) ---- */
   type DragInfo =
     | { type: 'seat'; table: number; side: 'a'|'b'; pid?: string }
     | { type: 'queue'; index: number; pid: string };
@@ -488,6 +525,14 @@ export default function ListLobby() {
   const handleDrop = (ev: React.DragEvent, target: DragInfo) => {
     ev.preventDefault();
     const src = parseInfo(ev); if (!src) return;
+    // Queue-only moves can be fast/debounced, seat changes are structural
+    if (target.type === 'queue' && src.type === 'queue') {
+      debouncedLocalCommit(d => {
+        const a = d.queue.splice(src.index, 1)[0];
+        d.queue.splice(Math.max(0, Math.min(d.queue.length, target.index)), 0, a);
+      });
+      return;
+    }
     scheduleCommit(d => {
       const moveWithin = (arr: string[], from: number, to: number) => { const a = [...arr]; const [p] = a.splice(from, 1); a.splice(Math.max(0, Math.min(a.length, to)), 0, p); return a; };
       const removeEverywhere = (pid: string) => { d.queue = d.queue.filter(x => x !== pid); d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b })); };
@@ -615,7 +660,7 @@ export default function ListLobby() {
                   const pref = (prefs[pid] ?? 'any') as Pref;
                   const canEdit = iAmHost || pid===me.id;
                   return (
-                    <li key={`${pid}-${idx}`}
+                    <li key={pid}
                         draggable={supportsDnD}
                         onDragStart={supportsDnD ? (e)=>onDragStart(e,{type:'queue',index:idx,pid}) : undefined}
                         onDragOver={supportsDnD ? onDragOver : undefined}
