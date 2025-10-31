@@ -21,33 +21,45 @@ export default function MyTournamentsPage() {
   const [playing, setPlaying] = useState<Tournament[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [live, setLive] = useState(true);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      setErr(null); setLoading(true);
-      try {
-        const res = await fetch(`/api/tournaments?userId=${encodeURIComponent(me.id)}`, { cache: 'no-store' });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        if (!cancelled) {
-          setHosting(Array.isArray(json?.hosting) ? json.hosting : []);
-          setPlaying(Array.isArray(json?.playing) ? json.playing : []);
-        }
-      } catch (e: any) {
-        if (!cancelled) setErr(e?.message || 'Failed to load tournaments');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+  const load = async () => {
+    setErr(null); setLoading(true);
+    try {
+      const res = await fetch(`/api/tournaments?userId=${encodeURIComponent(me.id)}`, {
+        cache: 'no-store',
+        headers: { 'x-user-id': me.id }
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setHosting(Array.isArray(json?.hosting) ? json.hosting : []);
+      setPlaying(Array.isArray(json?.playing) ? json.playing : []);
+    } catch (e: any) {
+      setErr(e?.message || 'Failed to load tournaments');
+    } finally {
+      setLoading(false);
     }
-    if (me?.id) load();
-    return () => { cancelled = true; };
-  }, [me?.id]);
+  };
+
+  useEffect(() => { if (me?.id) load(); }, [me?.id]);
+  useEffect(() => {
+    if (!live) return;
+    const id = setInterval(load, 4000);
+    return () => clearInterval(id);
+  }, [live, me?.id]);
 
   return (
     <main style={wrap}>
       <div style={container}>
-        <BackButton href="/" />
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <BackButton href="/" />
+          <div style={{display:'flex',gap:8}}>
+            <button onClick={()=>setLive(true)}  style={liveBtn(live)}>Live</button>
+            <button onClick={()=>setLive(false)} style={liveBtn(!live)}>Pause</button>
+            <button onClick={load} style={btnGhost}>Refresh</button>
+          </div>
+        </div>
+
         <h1 style={h1}>My tournaments</h1>
         {err && <div style={errBox}>{err}</div>}
 
@@ -102,3 +114,5 @@ const sub: React.CSSProperties = { opacity:.75, fontSize:13 };
 const btn: React.CSSProperties = { padding:'8px 12px', borderRadius:8, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, textDecoration:'none' };
 const btnGhost: React.CSSProperties = { padding:'8px 12px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', color:'#fff', textDecoration:'none' };
 const errBox: React.CSSProperties = { background:'#3b0a0a', border:'1px solid #7f1d1d', padding:10, borderRadius:10 };
+const liveBtn = (active:boolean):React.CSSProperties =>
+  ({ padding:'8px 12px', borderRadius:8, border: active?'none':'1px solid #333', background: active?'#0ea5e9':'transparent', color:'#fff' });

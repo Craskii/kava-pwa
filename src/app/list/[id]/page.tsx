@@ -95,16 +95,19 @@ function coerceList(raw: any): ListGame | null {
 /* POST save (no If-Match → avoids 412). */
 async function saveList(doc: ListGame) {
   try {
+    const me = JSON.parse(localStorage.getItem('kava_me') || 'null');
     await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        'x-user-id': me?.id || ''
+      },
       body: JSON.stringify({ ...doc, schema: 'v2' }),
       keepalive: true,
       cache: 'no-store',
     });
   } catch {}
 }
-
 /* ============ Component ============ */
 export default function ListLobby() {
   const r = useRouter();

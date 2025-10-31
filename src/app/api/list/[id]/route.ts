@@ -27,7 +27,7 @@ type ListGame = {
   queue8: string[];
   queue9: string[];
   prefs?: Record<string, Pref>;
-  coHosts?: string[];            // <-- NEW
+  coHosts?: string[];
 };
 
 const LKEY = (id: string) => `l:${id}`;
@@ -111,7 +111,7 @@ function coerceIn(doc: any): ListGame {
     queue8,
     queue9,
     prefs,
-    coHosts,                     // <-- keep
+    coHosts,
   } as ListGame;
 }
 
@@ -165,10 +165,20 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   return new NextResponse(JSON.stringify(out), { headers: { "content-type": "application/json", ETag: etag, "Cache-Control": "public, max-age=0, stale-while-revalidate=30", "x-l-version": String(v) } });
 }
 
-/* ---------- PUT/POST ---------- */
+/* ---------- PUT/POST (AUTH added) ---------- */
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
+
+  let body: ListGame;
+  try { body = coerceIn(await req.json()); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
+  if (body.id !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 });
+
+  // 🔐 Only host or co-hosts can modify
+  const caller = (req.headers.get("x-user-id") || "").trim();
+  if (!caller || (caller !== body.hostId && !(body.coHosts ?? []).includes(caller))) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   const ifMatch = req.headers.get("if-match");
   const curV = await getV(env, id);
@@ -179,10 +189,6 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   const prevRaw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   const prev = prevRaw ? coerceIn(JSON.parse(prevRaw)) : null;
   const prevPlayers = new Set((prev?.players ?? []).map(p => p.id));
-
-  let body: ListGame;
-  try { body = coerceIn(await req.json()); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
-  if (body.id !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 });
 
   reconcileSeating(body);
 
