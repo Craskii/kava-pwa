@@ -5,6 +5,7 @@ import Link from "next/link";
 import AlertsToggle from "@/components/AlertsToggle";
 import InstallPWAButton from "./InstallPWAButton";
 import IOSInstallTip from "./IOSInstallTip";
+import JoinWithCode from '@/components/JoinWithCode';
 
 export default function Home() {
   return (
@@ -31,12 +32,12 @@ export default function Home() {
               placeItems: "center",
               background: "#0ea5e9",
             }}
+            aria-label="Kava Tournaments logo"
           >
             🏓
           </div>
           <h1 style={{ fontSize: 24, margin: 0 }}>Kava Tournaments</h1>
         </div>
-        {/* 🔔 Alerts toggle lives on Home now */}
         <AlertsToggle />
       </header>
 
@@ -45,7 +46,7 @@ export default function Home() {
         style={{
           display: "grid",
           gap: 16,
-          alignContent: "center",
+          alignContent: "start",
           maxWidth: 560,
           width: "100%",
           justifySelf: "center",
@@ -54,8 +55,22 @@ export default function Home() {
         <Link href="/me" style={btnGhost}>🧑‍💼 My tournaments</Link>
         <Link href="/lists" style={btnGhost}>📝 My lists</Link>
         <Link href="/create" style={btnPrimary}>➕ Create game</Link>
-        <Link href="/join" style={btnGhost}>🔐 Join with code</Link>
         <Link href="/nearby" style={btnGhost}>📍 Find nearby</Link>
+
+        {/* Inline Join with code (sends userId + name so indices update immediately) */}
+        <section
+          style={{
+            marginTop: 8,
+            padding: 14,
+            borderRadius: 14,
+            background: "rgba(255,255,255,0.06)",
+            border: "1px solid rgba(255,255,255,0.12)",
+          }}
+          aria-labelledby="join-with-code-title"
+        >
+          <h3 id="join-with-code-title" style={{ marginTop: 0, marginBottom: 10 }}>🔐 Join with code</h3>
+          <JoinWithCode />
+        </section>
 
         {/* PWA install helpers */}
         <div style={{ justifySelf: "center", marginTop: 6 }}>
