@@ -1,123 +1,104 @@
+// src/app/tournaments/page.tsx
 'use client';
-export const runtime = 'edge';
 
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import BackButton from '../components/BackButton';
-import { useEffect, useState } from 'react';
+import BackButton from '@/components/BackButton';
+import { getOrCreateMe } from '@/lib/me';
 
-type Me = { id: string; name: string };
-type TournamentRow = { id: string; name: string; status?: string; players?: any[] };
+type Tournament = {
+  id: string;
+  hostId: string;
+  name: string;
+  code?: string;
+  createdAt: number;
+  players: { id: string; name: string }[];
+};
 
-function getMe(): Me {
-  try {
-    const saved = JSON.parse(localStorage.getItem('kava_me') || 'null');
-    if (saved?.id && saved?.name !== undefined) return saved;
-  } catch {}
-  const me = { id: crypto.randomUUID(), name: '' };
-  localStorage.setItem('kava_me', JSON.stringify(me));
-  return me;
-}
-
-export default function TournamentsPage() {
-  const [me] = useState<Me>(() => getMe());
-  const [hosting, setHosting] = useState<TournamentRow[] | null>(null);
-  const [playing, setPlaying] = useState<TournamentRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+export default function MyTournamentsPage() {
+  const me = useMemo(() => getOrCreateMe('Player'), []);
+  const [hosting, setHosting] = useState<Tournament[]>([]);
+  const [playing, setPlaying] = useState<Tournament[]>([]);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    (async () => {
-      setError(null);
-      setHosting(null);
-      setPlaying(null);
+    let cancelled = false;
+    async function load() {
+      setErr(null); setLoading(true);
       try {
-        const res = await fetch(`/api/tournaments?userId=${me.id}`, {
-          cache: 'no-store',
-        });
-        const text = await res.text();
-
-        let data: any;
-        try {
-          data = JSON.parse(text);
-        } catch {
-          // Not JSON -> surface the raw body
-          throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+        const res = await fetch(`/api/tournaments?userId=${encodeURIComponent(me.id)}`, { cache: 'no-store' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        if (!cancelled) {
+          setHosting(Array.isArray(json?.hosting) ? json.hosting : []);
+          setPlaying(Array.isArray(json?.playing) ? json.playing : []);
         }
-
-        if (!res.ok) {
-          throw new Error(data?.error || `HTTP ${res.status}`);
-        }
-
-        setHosting(data.hosting || []);
-        setPlaying(data.playing || []);
       } catch (e: any) {
-        setError(
-          `Couldn't load tournaments. ${e?.message || String(e)}`
-        );
-        setHosting([]);
-        setPlaying([]);
+        if (!cancelled) setErr(e?.message || 'Failed to load tournaments');
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-    })();
-  }, [me.id]);
+    }
+    if (me?.id) load();
+    return () => { cancelled = true; };
+  }, [me?.id]);
 
   return (
-    <main style={{ minHeight: '100vh', background: '#0b0b0b', color: '#fff', fontFamily: 'system-ui', padding: 16 }}>
-      <div style={{ marginBottom: 10 }}>
+    <main style={wrap}>
+      <div style={container}>
         <BackButton href="/" />
+        <h1 style={h1}>My tournaments</h1>
+        {err && <div style={errBox}>{err}</div>}
+
+        <section style={card}>
+          <h3 style={{marginTop:0}}>Hosting</h3>
+          {loading ? <div style={{opacity:.7}}>Loading…</div> :
+            hosting.length === 0 ? <div style={{opacity:.7}}>You’re not hosting any tournaments yet.</div> :
+            <ul style={list}>
+              {hosting.map(t => (
+                <li key={t.id} style={row}>
+                  <div>
+                    <div style={{fontWeight:600}}>{t.name}</div>
+                    <div style={sub}>{t.code ? <>Private code: <b>{t.code}</b></> : 'Public'} • {t.players.length} players</div>
+                  </div>
+                  <Link href={`/t/${encodeURIComponent(t.id)}`} style={btn}>Open</Link>
+                </li>
+              ))}
+            </ul>
+          }
+        </section>
+
+        <section style={card}>
+          <h3 style={{marginTop:0}}>Playing</h3>
+          {loading ? <div style={{opacity:.7}}>Loading…</div> :
+            playing.length === 0 ? <div style={{opacity:.7}}>You’re not in any tournaments yet.</div> :
+            <ul style={list}>
+              {playing.map(t => (
+                <li key={t.id} style={row}>
+                  <div>
+                    <div style={{fontWeight:600}}>{t.name}</div>
+                    <div style={sub}>{t.code ? <>Private code: <b>{t.code}</b></> : 'Public'} • {t.players.length} players</div>
+                  </div>
+                  <Link href={`/t/${encodeURIComponent(t.id)}`} style={btnGhost}>Open</Link>
+                </li>
+              ))}
+            </ul>
+          }
+        </section>
       </div>
-
-      <h2 style={{ margin: '0 0 10px' }}>My tournaments</h2>
-
-      {error && (
-        <div style={{padding: '10px 12px', border: '1px solid rgba(255,80,80,.35)', background: 'rgba(255,80,80,.1)', borderRadius: 10, marginBottom: 10}}>
-          {error}
-        </div>
-      )}
-
-      <section style={{ display: 'grid', gap: 12 }}>
-        <Card title="Hosting" right="Live">
-          {hosting === null ? (
-            <span>Loading...</span>
-          ) : hosting.length === 0 ? (
-            <span>You're not hosting any tournaments yet.</span>
-          ) : (
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {hosting.map((t) => (
-                <li key={t.id}>
-                  <Link href={`/t/${t.id}`}>{t.name || t.id}</Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-
-        <Card title="Playing">
-          {playing === null ? (
-            <span>Loading...</span>
-          ) : playing.length === 0 ? (
-            <span>You're not in any tournaments yet.</span>
-          ) : (
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              {playing.map((t) => (
-                <li key={t.id}>
-                  <Link href={`/t/${t.id}`}>{t.name || t.id}</Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      </section>
     </main>
   );
 }
 
-function Card(props: { title: string; right?: string; children: any }) {
-  return (
-    <div style={{ border: '1px solid rgba(255,255,255,.12)', background: 'rgba(255,255,255,.06)', borderRadius: 14, padding: 14 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-        <strong>{props.title}</strong>
-        <span style={{ opacity: 0.6 }}>{props.right}</span>
-      </div>
-      <div>{props.children}</div>
-    </div>
-  );
-}
+/* styles */
+const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', fontFamily:'system-ui', padding:24 };
+const container: React.CSSProperties = { width:'100%', maxWidth:1000, margin:'0 auto', display:'grid', gap:14 };
+const h1: React.CSSProperties = { margin:'8px 0 6px' };
+const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14 };
+const list: React.CSSProperties = { listStyle:'none', padding:0, margin:0, display:'grid', gap:8 };
+const row: React.CSSProperties = { display:'flex', alignItems:'center', justifyContent:'space-between', background:'#111', borderRadius:10, padding:'10px 12px' };
+const sub: React.CSSProperties = { opacity:.75, fontSize:13 };
+const btn: React.CSSProperties = { padding:'8px 12px', borderRadius:8, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, textDecoration:'none' };
+const btnGhost: React.CSSProperties = { padding:'8px 12px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', color:'#fff', textDecoration:'none' };
+const errBox: React.CSSProperties = { background:'#3b0a0a', border:'1px solid #7f1d1d', padding:10, borderRadius:10 };
