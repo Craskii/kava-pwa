@@ -1,14 +1,18 @@
 // src/app/tournaments/page.tsx
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import BackButton from '@/components/BackButton';
 import { getOrCreateMe } from '@/lib/me';
 
 type Tournament = {
-  id: string; hostId: string; name: string; code?: string; createdAt: number;
-  players: { id: string; name: string }[]; pending: { id: string; name: string }[];
+  id: string;
+  hostId: string;
+  name: string;
+  code?: string;
+  createdAt: number;
+  players: { id: string; name: string }[];
 };
 
 export default function MyTournamentsPage() {
@@ -17,8 +21,10 @@ export default function MyTournamentsPage() {
   const [playing, setPlaying] = useState<Tournament[]>([]);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const timer = useRef<number | null>(null);
 
-  async function load() {
+  const load = async () => {
+    if (!me?.id) return;
     setErr(null); setLoading(true);
     try {
       const res = await fetch(`/api/tournaments?userId=${encodeURIComponent(me.id)}`, { cache: 'no-store' });
@@ -31,14 +37,17 @@ export default function MyTournamentsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  };
 
-  useEffect(() => { if (me?.id) load(); }, [me?.id]);
+  useEffect(() => { load(); }, [me?.id]);
+
+  // Refresh when the tab regains focus (and every 10s while open)
   useEffect(() => {
     const onVis = () => { if (document.visibilityState === 'visible') load(); };
-    window.addEventListener('visibilitychange', onVis);
-    return () => window.removeEventListener('visibilitychange', onVis);
-  }, []);
+    document.addEventListener('visibilitychange', onVis);
+    timer.current = window.setInterval(load, 10000);
+    return () => { document.removeEventListener('visibilitychange', onVis); if (timer.current) clearInterval(timer.current); };
+  }, [me?.id]);
 
   return (
     <main style={wrap}>
@@ -50,7 +59,7 @@ export default function MyTournamentsPage() {
         <section style={card}>
           <h3 style={{marginTop:0}}>Hosting ({hosting.length})</h3>
           {loading ? <div style={{opacity:.7}}>Loading…</div> :
-            hosting.length === 0 ? <div style={{opacity:.7}}>You’re not hosting any tournaments yet.</div> :
+            hosting.length === 0 ? <div style={{opacity:.7}}>You aren’t hosting any tournaments yet.</div> :
             <ul style={list}>
               {hosting.map(t => (
                 <li key={t.id} style={row}>
@@ -74,10 +83,7 @@ export default function MyTournamentsPage() {
                 <li key={t.id} style={row}>
                   <div>
                     <div style={{fontWeight:600}}>{t.name}</div>
-                    <div style={sub}>
-                      {t.code ? <>Private code: <b>{t.code}</b></> : 'Public'} • {t.players.length} players
-                      {t.pending?.length ? <> • pending: {t.pending.length}</> : null}
-                    </div>
+                    <div style={sub}>{t.code ? <>Private code: <b>{t.code}</b></> : 'Public'} • {t.players.length} players</div>
                   </div>
                   <Link href={`/t/${encodeURIComponent(t.id)}`} style={btnGhost}>Open</Link>
                 </li>

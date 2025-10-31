@@ -575,7 +575,15 @@ export default function ListLobby() {
           <header style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginTop:6}}>
             <div>
               <h1 style={{ margin:'8px 0 4px' }}>
-                <input defaultValue={g.name} onBlur={(e)=>iHaveMod && renameList(e.currentTarget.value)} style={nameInput} disabled={busy || !iHaveMod}/>
+                <input
+                  id="list-name"
+                  name="list-name"
+                  autoComplete="off"
+                  defaultValue={g.name}
+                  onBlur={(e)=>iHaveMod && renameList(e.currentTarget.value)}
+                  style={nameInput}
+                  disabled={busy || !iHaveMod}
+                />
               </h1>
               <div style={{ opacity:.8, fontSize:14, display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
                 Private code: <b>{g.code || '—'}</b> • {g.players.length} {g.players.length === 1 ? 'player' : 'players'}
@@ -718,11 +726,20 @@ export default function ListLobby() {
           </section>
 
           {/* Host / Co-host controls */}
-          {(iHaveMod) && (
+          {iHaveMod && (
             <section style={card}>
               <h3 style={{marginTop:0}}>Host controls</h3>
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
-                <input placeholder="Add player name..." value={nameField} onChange={(e)=>setNameField(e.target.value)} style={input} disabled={busy}/>
+                <input
+                  id="add-player-name"
+                  name="add-player-name"
+                  placeholder="Add player name..."
+                  autoComplete="off"
+                  value={nameField}
+                  onChange={(e)=>setNameField(e.target.value)}
+                  style={input}
+                  disabled={busy}
+                />
                 <button style={btn} onClick={addPlayer} disabled={busy || !nameField.trim()}>Add player (joins queue)</button>
               </div>
             </section>
