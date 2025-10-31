@@ -1,9 +1,9 @@
+// src/app/lists/page.tsx
 'use client';
 export const runtime = 'edge';
 
 import { useEffect, useMemo, useState } from 'react';
 import BackButton from '@/components/BackButton';
-import { startSmartPollETag } from '@/lib/poll';
 import { uid } from '@/lib/storage';
 
 type ListSummary = { id: string; name: string; createdAt: number; code?: string; hostId: string };
@@ -23,15 +23,29 @@ export default function ListsPage() {
   const [playing, setPlaying] = useState<ListSummary[]>([]);
   const [paused, setPaused] = useState(false);
 
+  // Lightweight pull every 20s + on focus (replaces aggressive ETag smart poll)
   useEffect(() => {
     if (!me?.id || paused) return;
-    const stopper = startSmartPollETag<{ hosting: ListSummary[]; playing: ListSummary[] }>({
-      url: `/api/lists?userId=${encodeURIComponent(me.id)}`,
-      key: `lists:${me.id}`,
-      versionHeader: 'x-lists-version',
-      onUpdate: (p) => { setHosting(p.hosting || []); setPlaying(p.playing || []); },
-    });
-    return () => stopper.stop();
+    let stop = false;
+
+    async function pull() {
+      if (stop) return;
+      try {
+        const res = await fetch(`/api/lists?userId=${encodeURIComponent(me.id)}&ts=${Date.now()}`, { cache: 'no-store' });
+        if (res.ok) {
+          const j = await res.json();
+          setHosting(j.hosting || []);
+          setPlaying(j.playing || []);
+        }
+      } finally {
+        if (!stop) setTimeout(pull, 20000);
+      }
+    }
+
+    pull();
+    const onFocus = () => pull();
+    window.addEventListener('focus', onFocus);
+    return () => { stop = true; window.removeEventListener('focus', onFocus); };
   }, [me?.id, paused]);
 
   async function deleteList(id: string) {
@@ -39,7 +53,7 @@ export default function ListsPage() {
     try {
       const res = await fetch(`/api/list/${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
-      // Let the poll refresh; optimistically remove
+      // Optimistic remove; next pull will confirm
       setHosting(h => h.filter(x => x.id !== id));
     } catch {
       alert('Could not delete the list.');

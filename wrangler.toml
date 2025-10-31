@@ -1,6 +1,6 @@
 # wrangler.toml
 name = "kava-pwa"
-main = "dist/worker/index.js" # (ignored by Pages, fine to keep)
+main = "dist/worker/index.js" # ignored by Pages
 
 # --- Durable Objects bindings ---
 [[durable_objects.bindings]]
@@ -11,12 +11,12 @@ class_name = "ListRoom"
 name = "TOURNAMENT_ROOM"
 class_name = "TournamentRoom"
 
-# For Pages, these are required so the DOs exist:
+# Migrations (append a new tag if you already used "v1")
 [[migrations]]
 tag = "v1"
 new_classes = ["ListRoom", "TournamentRoom"]
 
-# KV (for indices + code lookup)
+# KV
 [[kv_namespaces]]
 binding = "KAVA_TOURNAMENTS"
-id = "KAVA_TOURNAMENTS" # set to your KV id on production env
+id = "KAVA_TOURNAMENTS"

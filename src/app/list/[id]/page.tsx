@@ -27,18 +27,6 @@ type ListGame = {
   v?: number; schema?: 'v2';
 };
 
-/* ============ Globals ============ */
-type KavaGlobals = {
-  streams: Record<string, { es: EventSource | null; refs: number; backoff: number }>;
-  heartbeats: Record<string, { t: number | null; refs: number }>;
-  visHook: boolean;
-};
-function getGlobals(): KavaGlobals {
-  const any = globalThis as any;
-  if (!any.__kava_globs) any.__kava_globs = { streams: {}, heartbeats: {}, visHook: false } as KavaGlobals;
-  return any.__kava_globs as KavaGlobals;
-}
-
 /* ============ Helpers ============ */
 function coerceList(raw: any): ListGame | null {
   if (!raw) return null;
@@ -134,8 +122,13 @@ export default function ListLobby() {
   useEffect(() => { setSupportsDnD(!('ontouchstart' in window)); }, []);
 
   const me = useMemo<Player>(() => {
-    try { return JSON.parse(localStorage.getItem('kava_me') || 'null') || { id: uid(), name: 'Player' }; }
-    catch { return { id: uid(), name: 'Player' }; }
+    try {
+      const saved = JSON.parse(localStorage.getItem('kava_me') || 'null');
+      if (saved?.id) return saved;
+    } catch {}
+    const fresh = { id: uid(), name: 'Player' };
+    localStorage.setItem('kava_me', JSON.stringify(fresh));
+    return fresh;
   }, []);
   useEffect(() => { localStorage.setItem('kava_me', JSON.stringify(me)); }, [me]);
 
@@ -151,8 +144,8 @@ export default function ListLobby() {
   });
 
   const lastSeatSig = useRef<string>('');        // for bumpAlerts
-  const lastVersion = useRef<number>(0);
   const excludeSeatPidRef = useRef<string | null>(null);
+  const pageRootRef = useRef<HTMLDivElement | null>(null);
 
   const commitQ = useRef<(() => Promise<void>)[]>([]);
   const batchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -160,8 +153,6 @@ export default function ListLobby() {
 
   const suppressRef = useRef(false);
   const watchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pollRef = useRef<number | null>(null);
-  const pageRootRef = useRef<HTMLDivElement | null>(null);
 
   const seatChanged = (next: ListGame | null) => {
     if (!next) return false;
@@ -172,160 +163,63 @@ export default function ListLobby() {
     return false;
   };
 
-  /* ---- Stream + snapshot/poll ---- */
+  /* ---- Snapshot once + SSE via Durable Object room ---- */
   useEffect(() => {
+    let alive = true;
     if (!id || id === 'create') {
       setG(null);
       setErr(id === 'create' ? 'Waiting for a new list id…' : null);
       return;
     }
 
-    const gl = getGlobals();
-    if (!gl.streams[id]) gl.streams[id] = { es: null, refs: 0, backoff: 1000 };
-    gl.streams[id].refs++;
-    setErr(null);
-    lastVersion.current = 0;
-
-    const startPoller = () => {
-      if (pollRef.current) return;
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: 'no-store' });
-          if (!res.ok) return;
-          const doc = coerceList(await res.json()); if (!doc) return;
-          const v = doc.v ?? 0;
-          if (v <= lastVersion.current) return;
-          lastVersion.current = v;
-          setErr(null);
-          setG(doc);
-          if (seatChanged(doc)) bumpAlerts();
-        } catch {}
-      }, 3000);
-    };
-    const stopPoller = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-
-    const attach = () => {
-      const s = gl.streams[id];
-      if (s.es) return;
-      const es = new EventSource(`/api/list/${encodeURIComponent(id)}/stream`);
-      s.es = es;
-      es.onmessage = (e) => {
-        if (suppressRef.current) return;
-        try {
-          const doc = coerceList(JSON.parse(e.data));
-          if (!doc || !doc.id || !doc.hostId) return;
-          const incomingV = doc.v ?? 0;
-          if (incomingV <= lastVersion.current) return;
-          lastVersion.current = incomingV;
-          stopPoller();
-          setErr(null);
-          setG(doc);
-          if (seatChanged(doc)) bumpAlerts();
-        } catch {}
-      };
-      es.onerror = () => {
-        try { es.close(); } catch {}
-        s.es = null;
-        const delay = Math.min(15000, s.backoff);
-        s.backoff = Math.min(15000, s.backoff * 2);
-        startPoller();
-        setTimeout(() => { if (gl.streams[id]?.refs) attach(); }, delay);
-      };
-      s.backoff = 1000;
-    };
-
     (async () => {
       try {
-        const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: 'no-store' });
-        if (!res.ok) {
-          if (res.status === 404) {
-            setErr('List not found yet (404). If you just created it, give it a moment.');
-            startPoller();
-          } else {
-            setErr(`Failed to load list (${res.status}). Retrying…`);
-            startPoller();
-          }
-          attach();
-          return;
+        const res = await fetch(`/api/room/list/${encodeURIComponent(id)}/snapshot`, { cache: 'no-store' });
+        if (res.ok) {
+          const j = await res.json();
+          const doc = coerceList(j?.payload);
+          if (alive && doc) { setG(doc); setErr(null); }
+        } else {
+          setErr(`Failed to load list (${res.status})`);
         }
-        const doc = coerceList(await res.json()); if (!doc) { setErr('Invalid list data'); startPoller(); attach(); return; }
-        lastVersion.current = doc.v ?? 0;
-        setErr(null);
-        setG(doc);
-        attach();
       } catch {
-        setErr('Network error loading list. Retrying…');
-        startPoller();
-        attach();
+        setErr('Network error loading list.');
       }
     })();
 
-    // heartbeat
-    const hbKey = `hb:${id}:${me.id}`;
-    if (!gl.heartbeats[hbKey]) gl.heartbeats[hbKey] = { t: null, refs: 0 };
-    gl.heartbeats[hbKey].refs++;
-    if (gl.heartbeats[hbKey].t) { clearTimeout(gl.heartbeats[hbKey].t as number); gl.heartbeats[hbKey].t = null; }
-    const HEARTBEAT_MS = 25_000;
-    const sendHeartbeat = () => {
-      const url = `/api/me/status?userId=${encodeURIComponent(me.id)}&listId=${encodeURIComponent(id)}&ts=${Date.now()}`;
-      try { fetch(url, { method: 'GET', keepalive: true, cache: 'no-store' }).catch(() => {}); }
-      catch { const img = new Image(); img.src = url; }
-      gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, HEARTBEAT_MS);
-    };
-    gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, 500);
+    // attach SSE
+    let es: EventSource | null = null;
+    let backoff = 1000;
 
-    // visibility (re-attach on focus)
-    if (!gl.visHook) {
-      gl.visHook = true;
-      document.addEventListener('visibilitychange', () => {
-        const hidden = document.visibilityState === 'hidden';
-        const g1 = getGlobals();
-        for (const [lid, rec] of Object.entries(g1.streams)) {
-          if (!rec.refs) continue;
-          if (hidden) {
-            if (rec.es) { try { rec.es.close(); } catch {} rec.es = null; }
-          } else if (!rec.es) {
-            const es = new EventSource(`/api/list/${encodeURIComponent(lid)}/stream`);
-            rec.es = es;
-            es.onmessage = (e) => {
-              if (suppressRef.current) return;
-              try {
-                const doc = coerceList(JSON.parse(e.data));
-                if (!doc || !doc.id || !doc.hostId) return;
-                const incomingV = doc.v ?? 0;
-                if (incomingV <= lastVersion.current) return;
-                lastVersion.current = incomingV;
-                setG(prev => (doc.id === prev?.id ? doc : doc));
-                setErr(null);
-                if (seatChanged(doc)) bumpAlerts();
-              } catch {}
-            };
-            es.onerror = () => { try { es.close(); } catch {}; rec.es = null; };
-          }
-        }
-      });
-    }
-
-    return () => {
-      const s = gl.streams[id];
-      if (s) {
-        s.refs--;
-        if (s.refs <= 0) {
-          if (s.es) { try { s.es.close(); } catch {} }
-          delete gl.streams[id];
-        }
-      }
-      const hb = gl.heartbeats[hbKey];
-      if (hb) {
-        hb.refs--;
-        if (hb.refs <= 0) {
-          if (hb.t) clearTimeout(hb.t as number);
-          delete gl.heartbeats[hbKey];
-        }
-      }
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    const attach = () => {
+      if (!alive) return;
+      try {
+        es = new EventSource(`/api/room/list/${encodeURIComponent(id)}/sse`);
+        es.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data?.__ping) return;
+            const doc = coerceList(data);
+            if (doc) {
+              setErr(null);
+              setG(prev => (doc.id === prev?.id ? doc : doc));
+              if (seatChanged(doc)) bumpAlerts();
+            }
+          } catch {}
+        };
+        es.onerror = () => {
+          try { es?.close(); } catch {}
+          es = null;
+          const wait = Math.min(15000, backoff);
+          backoff = Math.min(15000, backoff * 2);
+          setTimeout(() => { attach(); }, wait);
+        };
+      } catch {}
     };
-  }, [id, me.id]);
+
+    attach();
+    return () => { alive = false; try { es?.close(); } catch {}; es = null; };
+  }, [id]);
 
   /* ---- Disable Android long-press ---- */
   useEffect(() => {
@@ -575,10 +469,11 @@ export default function ListLobby() {
           <header style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginTop:6}}>
             <div>
               <h1 style={{ margin:'8px 0 4px' }}>
+                {/* ✅ give input an id+name for accessibility & autofill */}
                 <input
                   id="list-name"
-                  name="list-name"
-                  autoComplete="off"
+                  name="listName"
+                  autoComplete="organization"
                   defaultValue={g.name}
                   onBlur={(e)=>iHaveMod && renameList(e.currentTarget.value)}
                   style={nameInput}
@@ -613,7 +508,7 @@ export default function ListLobby() {
                     </li>
                   ))}
                 </ul>
-              )}
+              ))}
             </section>
           )}
 
@@ -726,15 +621,16 @@ export default function ListLobby() {
           </section>
 
           {/* Host / Co-host controls */}
-          {iHaveMod && (
+          {(iHaveMod) && (
             <section style={card}>
               <h3 style={{marginTop:0}}>Host controls</h3>
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
+                {/* ✅ give input an id+name + autocomplete */}
                 <input
-                  id="add-player-name"
-                  name="add-player-name"
+                  id="new-player"
+                  name="playerName"
+                  autoComplete="name"
                   placeholder="Add player name..."
-                  autoComplete="off"
                   value={nameField}
                   onChange={(e)=>setNameField(e.target.value)}
                   style={input}
