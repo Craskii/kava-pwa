@@ -11,29 +11,47 @@ type KVNamespace = {
 };
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-// normalize to 5-digit numeric code (e.g., "09897")
-function norm(code: string) {
-  return String(code || "").trim().replace(/\D+/g, "").slice(-5);
+function normCode(x: unknown): string {
+  const digits = String(x ?? "").replace(/\D+/g, "");
+  return digits.slice(-5).padStart(5, "0");
 }
 
-const CKEY = (code: string) => `code:${code}`;
+const LKEY = (id: string) => `l:${id}`;
 
-export async function GET(_: Request, { params }: { params: { code: string } }) {
-  const { env: rawEnv } = getRequestContext(); 
+export async function GET(
+  _req: Request,
+  { params }: { params: { code: string } }
+) {
+  const { env: rawEnv } = getRequestContext();
   const env = rawEnv as unknown as Env;
 
-  const code = norm(params.code);
-  if (!code || code.length !== 5) {
-    return NextResponse.json({ error: "Invalid code" }, { status: 400 });
+  const code = normCode(params.code);
+  const mapping = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
+  if (!mapping) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  let kind: "list" | "tournament" = "list";
+  let id = mapping;
+  try {
+    const parsed = JSON.parse(mapping);
+    if (parsed && typeof parsed === "object" && parsed.id) {
+      id = String(parsed.id);
+      if (parsed.kind === "tournament") kind = "tournament";
+    }
+  } catch {
+    /* legacy string; treat as list */
   }
 
-  const id = await env.KAVA_TOURNAMENTS.get(CKEY(code));
-  if (!id) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // Optional existence check
+  const exists =
+    kind === "list"
+      ? !!(await env.KAVA_TOURNAMENTS.get(LKEY(id)))
+      : true; // adjust for tournaments if needed
 
-  return NextResponse.json({ id }, {
-    headers: {
-      "content-type": "application/json",
-      "Cache-Control": "no-store",
-    },
-  });
+  if (!exists)
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  const href =
+    kind === "list" ? `/list/${encodeURIComponent(id)}` : `/t/${encodeURIComponent(id)}`;
+
+  return NextResponse.json({ ok: true, kind, id, href, code });
 }
