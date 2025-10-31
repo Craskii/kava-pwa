@@ -4,45 +4,26 @@ export const runtime = "edge";
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
-/* ---------- KV ---------- */
+/* ---------- KV & keys ---------- */
 type KVNamespace = {
   get(key: string): Promise<string | null>;
   put(key: string, value: string): Promise<void>;
   delete(key: string): Promise<void>;
 };
-type Env = { KAVA_TOURNAMENTS?: KVNamespace };
+type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-/* ---------- Types ---------- */
-type Player = { id: string; name: string };
-type Report = "win" | "loss" | undefined;
-type Match = { a?: string; b?: string; winner?: string; reports?: Record<string, Report> };
-type TournamentStatus = "setup" | "active" | "completed";
-type Tournament = {
-  id: string; name: string; code?: string; hostId: string; status: TournamentStatus;
-  createdAt: number; players: Player[]; pending: Player[]; queue: string[]; rounds: Match[][];
-  v?: number; coHosts?: string[];
-};
+const TKEY  = (id: string) => `t:${id}`;
+const TVER  = (id: string) => `tv:${id}`;
+const THOST = (hostId: string) => `tidx:h:${hostId}`; // string[]
+const TPLAY = (pid: string)    => `tidx:p:${pid}`;    // string[]
 
-/* ---------- keys ---------- */
-const TKEY = (id: string) => `t:${id}`;
-const TVER = (id: string) => `tv:${id}`;
-const PIDX = (playerId: string) => `tidx:p:${playerId}`; // string[]
-
-async function getV(env: Env, id: string): Promise<number> {
-  const raw = await env.KAVA_TOURNAMENTS!.get(TVER(id));
-  const n = raw ? Number(raw) : 0;
-  return Number.isFinite(n) ? n : 0;
-}
-async function setV(env: Env, id: string, v: number) {
-  await env.KAVA_TOURNAMENTS!.put(TVER(id), String(v));
-}
-
+/* ---------- helpers ---------- */
 async function readArr(env: Env, key: string): Promise<string[]> {
-  const raw = (await env.KAVA_TOURNAMENTS!.get(key)) || "[]";
+  const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
   try { return JSON.parse(raw) as string[]; } catch { return []; }
 }
 async function writeArr(env: Env, key: string, arr: string[]) {
-  await env.KAVA_TOURNAMENTS!.put(key, JSON.stringify(arr));
+  await env.KAVA_TOURNAMENTS.put(key, JSON.stringify(arr));
 }
 async function addTo(env: Env, key: string, id: string) {
   const arr = await readArr(env, key);
@@ -53,115 +34,145 @@ async function removeFrom(env: Env, key: string, id: string) {
   const next = arr.filter(x => x !== id);
   if (next.length !== arr.length) await writeArr(env, key, next);
 }
+async function getV(env: Env, id: string) {
+  const raw = await env.KAVA_TOURNAMENTS.get(TVER(id));
+  const n = raw ? Number(raw) : 0;
+  return Number.isFinite(n) ? n : 0;
+}
+async function bumpV(env: Env, id: string) {
+  const cur = await getV(env, id);
+  await env.KAVA_TOURNAMENTS.put(TVER(id), String(cur + 1));
+}
 
-/* ---------- GET (ETag/304) ---------- */
-export async function GET(req: Request, { params }: { params: { id: string } }) {
+/* ---------- types + coercion ---------- */
+type Player = { id: string; name: string };
+type Match = { a?: string; b?: string; winner?: string; reports?: Record<string,"win"|"loss"> };
+type Tournament = {
+  id: string; name: string; code?: string; hostId: string;
+  players: Player[]; pending: Player[]; rounds: Match[][];
+  status: "setup"|"active"|"completed";
+  createdAt: number; updatedAt?: number;
+  coHosts?: string[];
+  v?: number; // header echo
+};
+
+function coerceTournament(raw: any): Tournament | null {
+  if (!raw) return null;
   try {
-    const { env: rawEnv } = getRequestContext();
-    const env = rawEnv as unknown as Env;
-    if (!env?.KAVA_TOURNAMENTS) {
-      return NextResponse.json({ error: "KV binding KAVA_TOURNAMENTS missing" }, { status: 500 });
-    }
+    const players: Player[] = Array.isArray(raw.players) ? raw.players.map((p:any)=>({id:String(p?.id??""), name:String(p?.name??"Player")})) : [];
+    const pending: Player[] = Array.isArray(raw.pending) ? raw.pending.map((p:any)=>({id:String(p?.id??""), name:String(p?.name??"Player")})) : [];
+    const rounds: Match[][] = Array.isArray(raw.rounds)
+      ? raw.rounds.map((r:any)=>Array.isArray(r)?r.map((m:any)=>({
+          a: m?.a?String(m.a):undefined,
+          b: m?.b?String(m.b):undefined,
+          winner: m?.winner?String(m.winner):undefined,
+          reports: typeof m?.reports==="object" && m?.reports ? m.reports : {},
+        })) : [])
+      : [];
+    const status = (raw.status==="setup"||raw.status==="active"||raw.status==="completed") ? raw.status : "setup";
+    return {
+      id:String(raw.id??""),
+      name:String(raw.name??"Untitled"),
+      code: raw.code?String(raw.code):undefined,
+      hostId:String(raw.hostId??""),
+      players, pending, rounds, status,
+      createdAt:Number(raw.createdAt ?? Date.now()),
+      updatedAt:Number(raw.updatedAt ?? Date.now()),
+      coHosts: Array.isArray(raw.coHosts) ? raw.coHosts.map(String) : [],
+    };
+  } catch { return null; }
+}
 
-    const id = params.id;
-    if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
+/* ---------- GET ---------- */
+export async function GET(req: Request, { params }: { params: { id: string } }) {
+  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
+  const id = params.id;
 
-    const v = await getV(env, id);
-    const etag = `"t-${v}"`;
-
-    const inm = req.headers.get("if-none-match");
-    if (inm && inm === etag) {
-      return new NextResponse(null, {
-        status: 304,
-        headers: {
-          ETag: etag,
-          "Cache-Control": "public, max-age=0, stale-while-revalidate=30",
-          "x-t-version": String(v),
-        }
-      });
-    }
-
-    const raw = await env.KAVA_TOURNAMENTS.get(TKEY(id));
-    if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
-
-    // Validate JSON so we don't throw on malformed data
-    try { JSON.parse(raw); } catch (e) {
-      return NextResponse.json({ error: "Corrupt tournament JSON in KV" }, { status: 500 });
-    }
-
-    return new NextResponse(raw, {
+  const v = await getV(env, id);
+  const etag = `"t-${v}"`;
+  const inm = req.headers.get("if-none-match");
+  if (inm && inm === etag) {
+    return new NextResponse(null, {
+      status: 304,
       headers: {
-        "content-type": "application/json",
         ETag: etag,
         "Cache-Control": "public, max-age=0, stale-while-revalidate=30",
         "x-t-version": String(v),
       }
     });
-  } catch (err: any) {
-    return NextResponse.json({ error: "Unhandled server error", detail: String(err?.message || err) }, { status: 500 });
   }
+
+  const raw = await env.KAVA_TOURNAMENTS.get(TKEY(id));
+  if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  const doc = coerceTournament(JSON.parse(raw));
+  if (!doc) return NextResponse.json({ error: "Corrupt" }, { status: 500 });
+
+  return new NextResponse(JSON.stringify(doc), {
+    headers: {
+      "content-type": "application/json",
+      "Cache-Control": "public, max-age=0, stale-while-revalidate=30",
+      "x-t-version": String(v),
+      ETag: etag,
+    }
+  });
 }
 
-/* ---------- PUT (If-Match) ---------- */
-export async function PUT(req: Request, { params }: { params: { id: string } }) {
-  try {
-    const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
-    if (!env?.KAVA_TOURNAMENTS) {
-      return NextResponse.json({ error: "KV binding KAVA_TOURNAMENTS missing" }, { status: 500 });
-    }
+/* ---------- PUT / POST (save) ---------- */
+export async function PUT(req: Request, ctx: { params: { id: string } }) {
+  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
+  const id = ctx.params.id;
 
-    const id = params.id;
-    const ifMatch = req.headers.get("if-match");
-    const curV = await getV(env, id);
-    if (ifMatch !== null && String(curV) !== String(ifMatch)) {
-      return NextResponse.json({ error: "Version conflict" }, { status: 412 });
-    }
+  let body: any;
+  try { body = await req.json(); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
+  if (String(body?.id ?? "") !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 });
 
-    const prevRaw = await env.KAVA_TOURNAMENTS.get(TKEY(id));
-    const prev: Tournament | null = prevRaw ? JSON.parse(prevRaw) : null;
-    const prevPlayers = new Set((prev?.players ?? []).map(p => p.id));
+  const next = coerceTournament(body);
+  if (!next) return NextResponse.json({ error: "Bad doc" }, { status: 400 });
 
-    let body: Tournament;
-    try { body = await req.json(); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
-    if (body.id !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 });
-
-    await env.KAVA_TOURNAMENTS.put(TKEY(id), JSON.stringify(body));
-    const nextV = curV + 1;
-    await setV(env, id, nextV);
-
-    const nextPlayers = new Set((body.players ?? []).map(p => p.id));
-    for (const p of nextPlayers) if (!prevPlayers.has(p)) await addTo(env, PIDX(p), id);
-    for (const p of prevPlayers) if (!nextPlayers.has(p)) await removeFrom(env, PIDX(p), id);
-
-    return new NextResponse(null, { status: 204, headers: { "x-t-version": String(nextV), ETag: `"t-${nextV}"` } });
-  } catch (err: any) {
-    return NextResponse.json({ error: "Unhandled server error", detail: String(err?.message || err) }, { status: 500 });
+  // maintain indices
+  const prevRaw = await env.KAVA_TOURNAMENTS.get(TKEY(id));
+  if (prevRaw) {
+    try {
+      const prev = coerceTournament(JSON.parse(prevRaw));
+      if (prev?.hostId && prev.hostId !== next.hostId) await removeFrom(env, THOST(prev.hostId), id);
+      const prevPlayers = new Set((prev?.players ?? []).map(p => p.id));
+      const nextPlayers = new Set((next.players ?? []).map(p => p.id));
+      for (const p of nextPlayers) if (!prevPlayers.has(p)) await addTo(env, TPLAY(p), id);
+      for (const p of prevPlayers) if (!nextPlayers.has(p)) await removeFrom(env, TPLAY(p), id);
+    } catch {}
   }
+
+  if (next.hostId) await addTo(env, THOST(next.hostId), id);
+
+  next.updatedAt = Date.now();
+  await env.KAVA_TOURNAMENTS.put(TKEY(id), JSON.stringify(next));
+  await bumpV(env, id);
+
+  return new NextResponse(null, { status: 204 });
+}
+export async function POST(req: Request, ctx: { params: { id: string } }) {
+  return PUT(req, ctx); // allow sendBeacon/keepalive
 }
 
 /* ---------- DELETE ---------- */
 export async function DELETE(_: Request, { params }: { params: { id: string } }) {
-  try {
-    const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
-    if (!env?.KAVA_TOURNAMENTS) {
-      return NextResponse.json({ error: "KV binding KAVA_TOURNAMENTS missing" }, { status: 500 });
-    }
+  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
+  const id = params.id;
 
-    const id = params.id;
-
-    const raw = await env.KAVA_TOURNAMENTS.get(TKEY(id));
-    if (raw) {
-      try {
-        const doc = JSON.parse(raw) as Tournament;
-        if (doc.code) await env.KAVA_TOURNAMENTS.delete(`code:${doc.code}`);
-        for (const p of (doc.players || [])) await removeFrom(env, PIDX(p.id), id);
-      } catch {}
-    }
-
-    await env.KAVA_TOURNAMENTS.delete(TKEY(id));
-    await env.KAVA_TOURNAMENTS.delete(TVER(id));
-    return new NextResponse(null, { status: 204 });
-  } catch (err: any) {
-    return NextResponse.json({ error: "Unhandled server error", detail: String(err?.message || err) }, { status: 500 });
+  const raw = await env.KAVA_TOURNAMENTS.get(TKEY(id));
+  if (raw) {
+    try {
+      const t = coerceTournament(JSON.parse(raw));
+      if (t?.code) await env.KAVA_TOURNAMENTS.delete(`code:${t.code}`);
+      if (t?.hostId) await removeFrom(env, THOST(t.hostId), id);
+      for (const p of (t?.players ?? [])) await removeFrom(env, TPLAY(p.id), id);
+      for (const p of (t?.pending ?? [])) await removeFrom(env, TPLAY(p.id), id);
+    } catch {}
   }
+
+  await env.KAVA_TOURNAMENTS.delete(TKEY(id));
+  await env.KAVA_TOURNAMENTS.delete(TVER(id));
+
+  return new NextResponse(null, { status: 204 });
 }
