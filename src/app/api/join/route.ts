@@ -26,21 +26,18 @@ type ListGame = {
   createdAt: number;
   tables: Table[];
   players: Player[];
+  queue?: string[];
   queue8?: string[];
   queue9?: string[];
-  queue?: string[]; // legacy single queue
   prefs?: Record<string, Pref>;
 };
 
-/* ---------- keys + helpers ---------- */
 const LKEY = (id: string) => `l:${id}`;
 const LVER = (id: string) => `lv:${id}`;
 
 function normCode(x: unknown): string {
   const digits = String(x ?? "").replace(/\D+/g, "");
-  // keep last 5 digits; pad if shorter (so “974” -> “00974”)
-  const last5 = digits.slice(-5).padStart(5, "0");
-  return last5;
+  return digits.slice(-5).padStart(5, "0");
 }
 
 async function getV(env: Env, id: string): Promise<number> {
@@ -84,18 +81,14 @@ function coerceList(raw: any): ListGame | null {
       }
     }
 
-    // Combine queues (prefer 9ft first to avoid starvation, like your server GET)
+    // merge queues (your GET does 9ft first — we just keep array order here)
     let queue: string[] = [];
     if (Array.isArray(raw.queue)) {
       queue = raw.queue.map((x: any) => String(x)).filter(Boolean);
     } else {
-      const q9 = Array.isArray(raw.queue9)
-        ? raw.queue9.map((x: any) => String(x)).filter(Boolean)
-        : [];
-      const q8 = Array.isArray(raw.queue8)
-        ? raw.queue8.map((x: any) => String(x)).filter(Boolean)
-        : [];
-      queue = [...q9, ...q8];
+      const q9 = Array.isArray(raw.queue9) ? raw.queue9 : [];
+      const q8 = Array.isArray(raw.queue8) ? raw.queue8 : [];
+      queue = [...q9, ...q8].map((x: any) => String(x)).filter(Boolean);
     }
 
     return {
@@ -124,10 +117,57 @@ function uid() {
   }
 }
 
+/** Server-side auto-seat: if a seat empty, pop next from queue matching table label (or any) */
+function reconcileSeating(x: ListGame) {
+  const seated = new Set<string>();
+  for (const t of x.tables) {
+    if (t.a) seated.add(t.a);
+    if (t.b) seated.add(t.b);
+  }
+  const q = x.queue ?? [];
+  const prefs = x.prefs ?? {};
+
+  const take = (want: TableLabel): string | undefined => {
+    for (let i = 0; i < q.length; i++) {
+      const pid = q[i];
+      if (!pid || seated.has(pid)) continue;
+      const pf = (prefs[pid] ?? "any") as Pref;
+      if (pf === "any" || pf === want) {
+        q.splice(i, 1);
+        return pid;
+      }
+    }
+    return undefined;
+  };
+
+  for (const t of x.tables) {
+    if (!t.a) {
+      const pid = take(t.label);
+      if (pid) {
+        t.a = pid;
+        seated.add(pid);
+      }
+    }
+    if (!t.b) {
+      const pid = take(t.label);
+      if (pid) {
+        t.b = pid;
+        seated.add(pid);
+      }
+    }
+  }
+
+  x.queue = q;
+}
+
 /* ---------- POST /api/join ---------- */
 /** Body: { code: string, name?: string }
- *  Looks up code → listId, adds player (if missing), appends to queue, bumps version
- *  Response: { ok: true, id, href } or 404 {error:"Not found"}
+ *  - Resolves code → list id
+ *  - Ensures player (with provided name) exists
+ *  - Enqueues player (end of queue)
+ *  - Server-side auto-seats if any seat is empty
+ *  - Bumps version
+ *  - Returns { ok, id, href, me } so the client can store local identity
  */
 export async function POST(req: Request) {
   const { env: rawEnv } = getRequestContext();
@@ -142,77 +182,63 @@ export async function POST(req: Request) {
 
   const code = normCode(body?.code);
   const name = String(body?.name ?? "").trim() || "Player";
-
   if (!code || code.length !== 5) {
     return NextResponse.json({ error: "Invalid code" }, { status: 400 });
   }
 
   const mapKey = `code:${code}`;
   const mapping = await env.KAVA_TOURNAMENTS.get(mapKey);
-  if (!mapping) {
-    // No mapping = no such code
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
+  if (!mapping) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  // Mapping can be either plain listId (legacy) or JSON with {kind,id}
+  // mapping may be a bare id or a JSON {kind,id}
   let kind: "list" | "tournament" = "list";
   let listId = mapping;
   try {
     const parsed = JSON.parse(mapping);
-    if (parsed && typeof parsed === "object" && parsed.id) {
+    if (parsed?.id) {
       listId = String(parsed.id);
       if (parsed.kind === "tournament") kind = "tournament";
     }
-  } catch {
-    /* legacy string; treat as list */
-  }
+  } catch {}
 
   if (kind !== "list") {
-    // For tournaments you'd have a separate join flow; for now, not supported here.
     return NextResponse.json(
       { error: "This code is for a tournament (unsupported here)." },
       { status: 400 }
     );
   }
 
-  // Load list
   const raw = await env.KAVA_TOURNAMENTS.get(LKEY(listId));
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const doc = coerceList(JSON.parse(raw));
-  if (!doc || !doc.id) {
-    return NextResponse.json({ error: "Corrupt list" }, { status: 500 });
+  if (!doc || !doc.id) return NextResponse.json({ error: "Corrupt list" }, { status: 500 });
+
+  // ensure player exists (reuse same-name if present)
+  let me =
+    doc.players.find((p) => p.name.toLowerCase() === name.toLowerCase()) ?? null;
+  if (!me) {
+    me = { id: uid(), name };
+    doc.players.push(me);
   }
 
-  // Ensure player exists
-  // If there’s already a player with same name, keep that; otherwise create new player id
-  let player: Player | null =
-    doc.players.find((p) => p.name.toLowerCase() === name.toLowerCase()) ||
-    null;
-  if (!player) {
-    player = { id: uid(), name };
-    doc.players.push(player);
-  }
-
-  // Ensure prefs map and default
   doc.prefs ??= {};
-  if (!doc.prefs[player.id]) doc.prefs[player.id] = "any";
+  if (!doc.prefs[me.id]) doc.prefs[me.id] = "any";
 
-  // Ensure in queue (end of queue)
   doc.queue ??= [];
-  if (!doc.queue.includes(player.id)) {
-    doc.queue.push(player.id);
-  }
+  if (!doc.queue.includes(me.id)) doc.queue.push(me.id);
 
-  // Save doc and bump version
+  // seat if there are empty slots
+  reconcileSeating(doc);
+
   await env.KAVA_TOURNAMENTS.put(LKEY(doc.id), JSON.stringify(doc));
-  const curV = await getV(env, doc.id);
-  await setV(env, doc.id, curV + 1);
+  const cur = await getV(env, doc.id);
+  await setV(env, doc.id, cur + 1);
 
-  // Respond with where the client should navigate
   return NextResponse.json({
     ok: true,
     id: doc.id,
     href: `/list/${encodeURIComponent(doc.id)}`,
+    me, // {id, name} → client saves to localStorage so the UI shows their name (not "Player")
   });
 }

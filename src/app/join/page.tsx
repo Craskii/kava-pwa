@@ -1,91 +1,78 @@
 // src/app/join/page.tsx
-"use client";
+'use client';
+export const runtime = 'edge';
 
-import { useRouter } from "next/navigation";
-import { useState, useMemo } from "react";
-import BackButton from "../../components/BackButton";
-import { uid } from "../../lib/storage";
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 
-export default function JoinPage() {
-  const r = useRouter();
-  const [name, setName] = useState("");
-  const [code, setCode] = useState("");
+export default function JoinWithCode() {
+  const [code, setCode] = useState('');
+  const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const router = useRouter();
 
-  const me = useMemo(() => {
-    try { return JSON.parse(localStorage.getItem("kava_me") || "null"); }
-    catch { return null; }
-  }, []);
-
-  function ensureMe(n: string) {
-    let m = me as { id: string; name: string } | null;
-    if (!m) m = { id: uid(), name: n || "Player" };
-    else if (n && m.name !== n) m = { ...m, name: n };
-    localStorage.setItem("kava_me", JSON.stringify(m));
-    return m!;
-  }
-
-  async function onJoin() {
-    if (busy) return;
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
     setErr(null);
-
-    const n = name.trim() || "Player";
-    const c = code.replace(/[^0-9]/g, "").slice(0, 5);
-    if (c.length !== 5) { setErr("Enter the 5-digit code."); return; }
+    const c = code.replace(/\D+/g,'').slice(-5).padStart(5,'0');
+    const nm = name.trim() || 'Player';
+    if (!c) { setErr('Enter a 5-digit code'); return; }
 
     setBusy(true);
     try {
-      const m = ensureMe(n); // <-- make sure server gets the chosen name
-      const res = await fetch("/api/join", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ code: c, player: m }), // server adds to pending
-        cache: "no-store",
-      });
-      if (!res.ok) throw new Error(await res.text());
+      // save my identity locally so the list UI shows my name (not "Player")
+      const me = { id: (crypto as any).randomUUID?.() ?? `p_${Math.random().toString(36).slice(2)}`, name: nm };
+      localStorage.setItem('kava_me', JSON.stringify(me));
 
-      // Success: go to “My tournaments” (your spec)
-      r.push("/me");
-      r.refresh();
-    } catch (e) {
-      console.error(e);
-      setErr("Could not join. Check the code.");
+      const res = await fetch('/api/join', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: c, name: nm }),
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        try { setErr(JSON.parse(txt)?.error || 'Could not join. Check the code.'); }
+        catch { setErr('Could not join. Check the code.'); }
+        return;
+        }
+
+      const data = await res.json() as { href: string, me?: {id:string,name:string} };
+      // prefer server-provided me (to match existing same-name user), then navigate
+      if (data?.me) localStorage.setItem('kava_me', JSON.stringify(data.me));
+      router.push(data.href || '/');
+
+    } catch {
+      setErr('Network error.');
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <main style={{ minHeight:"100vh", background:"#0b1220", color:"#fff", padding:16 }}>
-      <BackButton href="/" />
-      <h1>Join a tournament</h1>
-      <input
-        value={name}
-        onChange={e=>setName(e.target.value)}
-        placeholder="Your name"
-        style={input}
-        disabled={busy}
-      />
-      <input
-        value={code}
-        onChange={e=>setCode(e.target.value.replace(/[^0-9]/g, "").slice(0,5))}
-        placeholder="5-digit code"
-        inputMode="numeric"
-        style={{ ...input, marginTop:8 }}
-        disabled={busy}
-      />
-      <button onClick={onJoin} disabled={busy} style={{ ...btn, opacity: busy ? .7 : 1, pointerEvents: busy ? "none" : "auto" }}>
-        {busy ? "Joining…" : "Join"}
-      </button>
-      {err && <p style={{ color:"#fca5a5", marginTop:8 }}>{err}</p>}
+    <main style={{minHeight:'100vh',background:'#0b0b0b',color:'#fff',padding:24,fontFamily:'system-ui'}}>
+      <h1>Join with code</h1>
+      <form onSubmit={onSubmit} style={{display:'grid',gap:8,maxWidth:360}}>
+        <input
+          placeholder="Your name"
+          value={name}
+          onChange={(e)=>setName(e.target.value)}
+          style={{padding:'10px 12px',borderRadius:10,border:'1px solid #333',background:'#111',color:'#fff'}}
+        />
+        <input
+          placeholder="5-digit code"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          value={code}
+          onChange={(e)=>setCode(e.target.value)}
+          style={{padding:'10px 12px',borderRadius:10,border:'1px solid #333',background:'#111',color:'#fff',letterSpacing:2}}
+        />
+        <button disabled={busy} style={{padding:'10px 14px',borderRadius:10,border:'none',background:'#0ea5e9',color:'#fff',fontWeight:700,cursor:'pointer'}}>
+          {busy ? 'Joining…' : 'Join'}
+        </button>
+        {err && <div style={{opacity:.85,color:'#f88'}}>{err}</div>}
+      </form>
     </main>
   );
 }
-
-const input: React.CSSProperties = {
-  width:"100%", padding:"12px 14px", borderRadius:10, border:"1px solid #333", background:"#111", color:"#fff"
-};
-const btn: React.CSSProperties = {
-  marginTop:10, padding:"12px 16px", borderRadius:12, background:"#0ea5e9", border:"none", color:"#fff", fontWeight:700, cursor:"pointer"
-};

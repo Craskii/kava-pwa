@@ -16,14 +16,9 @@ type Table = { a?: string; b?: string; label: "8 foot" | "9 foot" };
 type Player = { id: string; name: string };
 type Pref = "8 foot" | "9 foot" | "any";
 
-/** Persisted list model (supports dual-queue but keeps prefs too) */
 type ListGame = {
-  id: string;
-  name: string;
-  code?: string;                // <-- 5-digit numeric string
-  hostId: string;
-  status: "active";
-  createdAt: number;
+  id: string; name: string; code?: string; hostId: string;
+  status: "active"; createdAt: number;
   tables: Table[];
   players: Player[];
   queue8: string[];
@@ -31,14 +26,10 @@ type ListGame = {
   prefs?: Record<string, Pref>;
 };
 
-const LKEY   = (id: string) => `l:${id}`;
-const LVER   = (id: string) => `lv:${id}`;
-const LPLAYER= (playerId: string) => `lidx:p:${playerId}`;
-const LHOST  = (hostId: string)   => `lidx:h:${hostId}`;
-const CKEY   = (code: string)     => `code:${code}`;
-
-const normCode = (code?: string) =>
-  (code ?? "").trim().replace(/\D+/g, "").padStart(5, "0").slice(-5);
+const LKEY = (id: string) => `l:${id}`;
+const LVER = (id: string) => `lv:${id}`;
+const LPLAYER = (playerId: string) => `lidx:p:${playerId}`;
+const LHOST   = (hostId: string)   => `lidx:h:${hostId}`;
 
 async function getV(env: Env, id: string): Promise<number> {
   const raw = await env.KAVA_TOURNAMENTS.get(LVER(id));
@@ -65,7 +56,6 @@ async function removeFrom(env: Env, key: string, id: string) {
   if (next.length !== arr.length) await writeArr(env, key, next);
 }
 
-/** Back-compat coercion for incoming JSON */
 function coerceIn(doc: any): ListGame {
   const players: Player[] = Array.isArray(doc?.players)
     ? doc.players.map((p: any) => ({ id: String(p?.id ?? ""), name: String(p?.name ?? "Player") }))
@@ -103,13 +93,10 @@ function coerceIn(doc: any): ListGame {
     }
   }
 
-  const rawCode = doc?.code ? String(doc.code) : undefined;
-  const code = rawCode ? normCode(rawCode) : undefined;
-
   return {
     id: String(doc?.id ?? ""),
     name: String(doc?.name ?? "Untitled"),
-    code,
+    code: doc?.code ? String(doc.code) : undefined,
     hostId: String(doc?.hostId ?? ""),
     status: "active",
     createdAt: Number(doc?.createdAt ?? Date.now()),
@@ -121,11 +108,15 @@ function coerceIn(doc: any): ListGame {
   } as unknown as ListGame;
 }
 
-/** Outgoing (GET) keeps a legacy combined queue */
-function coerceOut(stored: any) {
+function coerceOut(stored: any, v: number) {
   const x = coerceIn(stored);
   const queue = [...x.queue9, ...x.queue8];
-  return { ...x, queue };
+  return {
+    ...x,
+    queue,
+    v,          // <— include version number in response body
+    schema: "v2"
+  };
 }
 
 function dropFromQueues(x: ListGame, pid?: string) {
@@ -149,12 +140,18 @@ function reconcileSeating(x: ListGame) {
     return undefined;
   }
   for (const t of x.tables) {
-    if (!t.a) { const pid = nextFrom(t.label); if (pid) { t.a = pid; seated.add(pid); dropFromQueues(x, pid); } }
-    if (!t.b) { const pid = nextFrom(t.label); if (pid) { t.b = pid; seated.add(pid); dropFromQueues(x, pid); } }
+    if (!t.a) {
+      const pid = nextFrom(t.label);
+      if (pid) { t.a = pid; seated.add(pid); dropFromQueues(x, pid); }
+    }
+    if (!t.b) {
+      const pid = nextFrom(t.label);
+      if (pid) { t.b = pid; seated.add(pid); dropFromQueues(x, pid); }
+    }
   }
 }
 
-/* ---------- GET (ETag/304) ---------- */
+/* ---------- GET ---------- */
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
@@ -176,10 +173,8 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const out = coerceOut(JSON.parse(raw));
-  const serialized = JSON.stringify(out);
-
-  return new NextResponse(serialized, {
+  const out = coerceOut(JSON.parse(raw), v);
+  return new NextResponse(JSON.stringify(out), {
     headers: {
       "content-type": "application/json",
       ETag: etag,
@@ -189,7 +184,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   });
 }
 
-/* ---------- PUT (If-Match; accepts legacy body) ---------- */
+/* ---------- PUT (If-Match optional) ---------- */
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
@@ -200,38 +195,26 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
     return NextResponse.json({ error: "Version conflict" }, { status: 412 });
   }
 
-  // read previous (for indices + code mapping)
   const prevRaw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   const prev = prevRaw ? coerceIn(JSON.parse(prevRaw)) : null;
   const prevPlayers = new Set((prev?.players ?? []).map(p => p.id));
-  const prevCode = prev?.code;
 
   let body: ListGame;
   try { body = coerceIn(await req.json()); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
   if (body.id !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 });
 
-  // Normalize code to 5 digits if present
-  if (body.code) body.code = normCode(body.code);
-
-  // Reconcile seats, then save
   reconcileSeating(body);
 
-  // Write main doc
+  // Ensure code mapping exists if body.code present
+  if (body.code) {
+    const codeKey = `code:${String(body.code).replace(/\D+/g, "").slice(-5).padStart(5,"0")}`;
+    await env.KAVA_TOURNAMENTS.put(codeKey, JSON.stringify({ kind: "list", id }));
+  }
+
   await env.KAVA_TOURNAMENTS.put(LKEY(id), JSON.stringify(body));
   const nextV = curV + 1;
   await setV(env, id, nextV);
 
-  // ---- code mapping maintenance ----
-  // remove old mapping if code changed
-  if (prevCode && prevCode !== body.code) {
-    await env.KAVA_TOURNAMENTS.delete(CKEY(prevCode));
-  }
-  // write new mapping
-  if (body.code) {
-    await env.KAVA_TOURNAMENTS.put(CKEY(body.code), id);
-  }
-
-  // ---- indices: players + host
   const nextPlayers = new Set((body.players ?? []).map(p => p.id));
   for (const p of nextPlayers) if (!prevPlayers.has(p)) await addTo(env, LPLAYER(p), id);
   for (const p of prevPlayers) if (!nextPlayers.has(p)) await removeFrom(env, LPLAYER(p), id);
@@ -242,7 +225,7 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   return new NextResponse(null, { status: 204, headers: { "x-l-version": String(nextV), ETag: `"l-${nextV}"` } });
 }
 
-/* ---------- POST (alias for PUT; for keepalive/sendBeacon) ---------- */
+/* ---------- POST (alias for PUT; for sendBeacon/no If-Match) ---------- */
 export async function POST(req: Request, ctx: { params: { id: string } }) {
   return PUT(req, ctx);
 }
@@ -256,13 +239,11 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
   if (raw) {
     try {
       const doc = coerceIn(JSON.parse(raw));
-      // delete code mapping if present
-      if (doc.code) await env.KAVA_TOURNAMENTS.delete(CKEY(doc.code));
+      if (doc.code) await env.KAVA_TOURNAMENTS.delete(`code:${doc.code}`);
       for (const p of (doc.players || [])) await removeFrom(env, LPLAYER(p.id), id);
       if (doc.hostId) await removeFrom(env, LHOST(doc.hostId), id);
     } catch {}
   }
-
   await env.KAVA_TOURNAMENTS.delete(LKEY(id));
   await env.KAVA_TOURNAMENTS.delete(LVER(id));
   return new NextResponse(null, { status: 204 });

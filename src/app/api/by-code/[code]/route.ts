@@ -33,25 +33,17 @@ export async function GET(
   let id = mapping;
   try {
     const parsed = JSON.parse(mapping);
-    if (parsed && typeof parsed === "object" && parsed.id) {
+    if (parsed?.id) {
       id = String(parsed.id);
       if (parsed.kind === "tournament") kind = "tournament";
     }
-  } catch {
-    /* legacy string; treat as list */
+  } catch {}
+
+  if (kind === "list") {
+    const exists = !!(await env.KAVA_TOURNAMENTS.get(LKEY(id)));
+    if (!exists) return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  // Optional existence check
-  const exists =
-    kind === "list"
-      ? !!(await env.KAVA_TOURNAMENTS.get(LKEY(id)))
-      : true; // adjust for tournaments if needed
-
-  if (!exists)
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-
-  const href =
-    kind === "list" ? `/list/${encodeURIComponent(id)}` : `/t/${encodeURIComponent(id)}`;
-
+  const href = kind === "list" ? `/list/${encodeURIComponent(id)}` : `/t/${encodeURIComponent(id)}`;
   return NextResponse.json({ ok: true, kind, id, href, code });
 }
