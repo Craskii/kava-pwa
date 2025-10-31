@@ -32,21 +32,51 @@ type ListGame = {
   prefs?: Record<string, Pref>;
 };
 
-const LKEY = (id: string) => `l:${id}`;
-const LVER = (id: string) => `lv:${id}`;
+type Tournament = {
+  id: string;
+  name: string;
+  code?: string;
+  hostId: string;
+  createdAt: number;
+  status?: "setup" | "active" | "completed";
+  players: Player[];
+  pending?: Player[];
+  rounds?: any[];
+  coHosts?: string[];
+};
+
+const LKEY   = (id: string) => `l:${id}`;
+const LVER   = (id: string) => `lv:${id}`;
+const LPLAY  = (pid: string) => `lidx:p:${pid}`;
+
+const TKEY   = (id: string) => `t:${id}`;
+const TVER   = (id: string) => `tv:${id}`;
+const TPLAY  = (pid: string) => `tidx:p:${pid}`;
 
 function normCode(x: unknown): string {
   const digits = String(x ?? "").replace(/\D+/g, "");
   return digits.slice(-5).padStart(5, "0");
 }
 
-async function getV(env: Env, id: string): Promise<number> {
-  const raw = await env.KAVA_TOURNAMENTS.get(LVER(id));
+async function getV(env: Env, key: (id: string) => string, id: string): Promise<number> {
+  const raw = await env.KAVA_TOURNAMENTS.get(key(id));
   const n = raw ? Number(raw) : 0;
   return Number.isFinite(n) ? n : 0;
 }
-async function setV(env: Env, id: string, v: number) {
-  await env.KAVA_TOURNAMENTS.put(LVER(id), String(v));
+async function setV(env: Env, key: (id: string) => string, id: string, v: number) {
+  await env.KAVA_TOURNAMENTS.put(key(id), String(v));
+}
+
+async function readArr(env: Env, key: string): Promise<string[]> {
+  const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
+  try { return JSON.parse(raw) as string[]; } catch { return []; }
+}
+async function writeArr(env: Env, key: string, arr: string[]) {
+  await env.KAVA_TOURNAMENTS.put(key, JSON.stringify(arr));
+}
+async function addTo(env: Env, key: string, id: string) {
+  const arr = await readArr(env, key);
+  if (!arr.includes(id)) { arr.push(id); await writeArr(env, key, arr); }
 }
 
 function coerceList(raw: any): ListGame | null {
@@ -56,32 +86,25 @@ function coerceList(raw: any): ListGame | null {
       ? raw.tables.map((t: any, i: number) => ({
           a: t?.a ? String(t.a) : undefined,
           b: t?.b ? String(t.b) : undefined,
-          label:
-            t?.label === "9 foot" || t?.label === "8 foot"
-              ? (t.label as TableLabel)
-              : (i === 1 ? "9 foot" : "8 foot"),
+          label: t?.label === "9 foot" || t?.label === "8 foot"
+            ? (t.label as TableLabel)
+            : (i === 1 ? "9 foot" : "8 foot"),
         }))
       : [{ label: "8 foot" }, { label: "9 foot" }];
 
     const players: Player[] = Array.isArray(raw.players)
-      ? raw.players.map((p: any) => ({
-          id: String(p?.id ?? ""),
-          name: String(p?.name ?? "Player"),
-        }))
+      ? raw.players.map((p: any) => ({ id: String(p?.id ?? ""), name: String(p?.name ?? "Player") }))
       : [];
 
     const prefs: Record<string, Pref> = {};
     if (raw.prefs && typeof raw.prefs === "object") {
       for (const [pid, v] of Object.entries(raw.prefs)) {
         const vv = String(v);
-        prefs[pid] =
-          vv === "9 foot" || vv === "8 foot" || vv === "any"
-            ? (vv as Pref)
-            : "any";
+        prefs[pid] = vv === "9 foot" || vv === "8 foot" || vv === "any" ? (vv as Pref) : "any";
       }
     }
 
-    // merge queues (your GET does 9ft first — we just keep array order here)
+    // Merge queues (keep existing order)
     let queue: string[] = [];
     if (Array.isArray(raw.queue)) {
       queue = raw.queue.map((x: any) => String(x)).filter(Boolean);
@@ -98,10 +121,7 @@ function coerceList(raw: any): ListGame | null {
       hostId: String(raw.hostId ?? ""),
       status: "active",
       createdAt: Number(raw.createdAt ?? Date.now()),
-      tables,
-      players,
-      queue,
-      prefs,
+      tables, players, queue, prefs,
     };
   } catch {
     return null;
@@ -117,13 +137,10 @@ function uid() {
   }
 }
 
-/** Server-side auto-seat: if a seat empty, pop next from queue matching table label (or any) */
+/** Server-side auto-seat for lists */
 function reconcileSeating(x: ListGame) {
   const seated = new Set<string>();
-  for (const t of x.tables) {
-    if (t.a) seated.add(t.a);
-    if (t.b) seated.add(t.b);
-  }
+  for (const t of x.tables) { if (t.a) seated.add(t.a); if (t.b) seated.add(t.b); }
   const q = x.queue ?? [];
   const prefs = x.prefs ?? {};
 
@@ -141,104 +158,119 @@ function reconcileSeating(x: ListGame) {
   };
 
   for (const t of x.tables) {
-    if (!t.a) {
-      const pid = take(t.label);
-      if (pid) {
-        t.a = pid;
-        seated.add(pid);
-      }
-    }
-    if (!t.b) {
-      const pid = take(t.label);
-      if (pid) {
-        t.b = pid;
-        seated.add(pid);
-      }
-    }
+    if (!t.a) { const pid = take(t.label); if (pid) { t.a = pid; seated.add(pid); } }
+    if (!t.b) { const pid = take(t.label); if (pid) { t.b = pid; seated.add(pid); } }
   }
-
   x.queue = q;
 }
 
 /* ---------- POST /api/join ---------- */
-/** Body: { code: string, name?: string }
- *  - Resolves code → list id
- *  - Ensures player (with provided name) exists
- *  - Enqueues player (end of queue)
- *  - Server-side auto-seats if any seat is empty
- *  - Bumps version
- *  - Returns { ok, id, href, me } so the client can store local identity
- */
 export async function POST(req: Request) {
   const { env: rawEnv } = getRequestContext();
   const env = rawEnv as unknown as Env;
 
   let body: any = null;
-  try {
-    body = await req.json();
-  } catch {
+  try { body = await req.json(); } catch {
     return NextResponse.json({ error: "Bad JSON" }, { status: 400 });
   }
 
   const code = normCode(body?.code);
-  const name = String(body?.name ?? "").trim() || "Player";
   if (!code || code.length !== 5) {
     return NextResponse.json({ error: "Invalid code" }, { status: 400 });
   }
 
-  const mapKey = `code:${code}`;
-  const mapping = await env.KAVA_TOURNAMENTS.get(mapKey);
-  if (!mapping) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // player payload formats: {name} OR {player:{id,name}}
+  let me: Player | null = null;
+  if (body?.player?.id && body?.player?.name) {
+    me = { id: String(body.player.id), name: String(body.player.name).trim() || "Player" };
+  } else {
+    const name = String(body?.name ?? "").trim() || "Player";
+    me = { id: uid(), name };
+  }
 
-  // mapping may be a bare id or a JSON {kind,id}
-  let kind: "list" | "tournament" = "list";
-  let listId = mapping;
+  // code map may be "id" or JSON with { type|kind, id }
+  const rawMap = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
+  if (!rawMap) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  let roomType: "list" | "tournament" = "list";
+  let roomId = rawMap;
   try {
-    const parsed = JSON.parse(mapping);
-    if (parsed?.id) {
-      listId = String(parsed.id);
-      if (parsed.kind === "tournament") kind = "tournament";
+    const x = JSON.parse(rawMap);
+    if (x?.id) {
+      roomId = String(x.id);
+      const t = (x.type || x.kind || "list").toString();
+      roomType = (t === "tournament" || t === "tour" || t === "t") ? "tournament" : "list";
     }
   } catch {}
 
-  if (kind !== "list") {
-    return NextResponse.json(
-      { error: "This code is for a tournament (unsupported here)." },
-      { status: 400 }
-    );
+  if (roomType === "list") {
+    const raw = await env.KAVA_TOURNAMENTS.get(LKEY(roomId));
+    if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+    const doc = coerceList(JSON.parse(raw));
+    if (!doc?.id) return NextResponse.json({ error: "Corrupt list" }, { status: 500 });
+
+    // ensure player
+    const has = doc.players.some(p => p.id === me!.id);
+    if (!has) doc.players.push(me!);
+
+    // indices: add lidx:p
+    await addTo(env, LPLAY(me!.id), doc.id);
+
+    // queue + prefs
+    doc.prefs ??= {};
+    if (!doc.prefs[me!.id]) doc.prefs[me!.id] = "any";
+    doc.queue ??= [];
+    if (!doc.queue.includes(me!.id)) doc.queue.push(me!.id);
+
+    reconcileSeating(doc);
+
+    await env.KAVA_TOURNAMENTS.put(LKEY(doc.id), JSON.stringify(doc));
+    const cur = await getV(env, LVER, doc.id);
+    await setV(env, LVER, doc.id, cur + 1);
+
+    return NextResponse.json({
+      ok: true, type: "list", id: doc.id,
+      href: `/list/${encodeURIComponent(doc.id)}`,
+      me
+    });
   }
 
-  const raw = await env.KAVA_TOURNAMENTS.get(LKEY(listId));
-  if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // tournament join
+  const traw = await env.KAVA_TOURNAMENTS.get(TKEY(roomId));
+  if (!traw) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  const doc = coerceList(JSON.parse(raw));
-  if (!doc || !doc.id) return NextResponse.json({ error: "Corrupt list" }, { status: 500 });
-
-  // ensure player exists (reuse same-name if present)
-  let me =
-    doc.players.find((p) => p.name.toLowerCase() === name.toLowerCase()) ?? null;
-  if (!me) {
-    me = { id: uid(), name };
-    doc.players.push(me);
+  let t: Tournament;
+  try { t = JSON.parse(traw) as Tournament; } catch {
+    return NextResponse.json({ error: "Corrupt tournament" }, { status: 500 });
   }
 
-  doc.prefs ??= {};
-  if (!doc.prefs[me.id]) doc.prefs[me.id] = "any";
+  // ensure arrays
+  t.players = Array.isArray(t.players) ? t.players : [];
+  t.pending = Array.isArray(t.pending) ? t.pending : [];
 
-  doc.queue ??= [];
-  if (!doc.queue.includes(me.id)) doc.queue.push(me.id);
+  const inPlayers = t.players.some(p => p.id === me!.id);
+  const inPending = t.pending.some(p => p.id === me!.id);
 
-  // seat if there are empty slots
-  reconcileSeating(doc);
+  if (!inPlayers && !inPending) {
+    // default: require approval if status is setup/active and you use pending
+    if (t.status === "setup" || t.status === "active" || typeof t.pending !== 'undefined') {
+      t.pending.push(me!);
+    } else {
+      t.players.push(me!);
+    }
+  }
 
-  await env.KAVA_TOURNAMENTS.put(LKEY(doc.id), JSON.stringify(doc));
-  const cur = await getV(env, doc.id);
-  await setV(env, doc.id, cur + 1);
+  // indices: add tidx:p
+  await addTo(env, TPLAY(me!.id), t.id);
+
+  await env.KAVA_TOURNAMENTS.put(TKEY(t.id), JSON.stringify(t));
+  const curT = await getV(env, TVER, t.id);
+  await setV(env, TVER, t.id, curT + 1);
 
   return NextResponse.json({
-    ok: true,
-    id: doc.id,
-    href: `/list/${encodeURIComponent(doc.id)}`,
-    me, // {id, name} → client saves to localStorage so the UI shows their name (not "Player")
+    ok: true, type: "tournament", id: t.id,
+    href: `/t/${encodeURIComponent(t.id)}`,
+    me
   });
 }
