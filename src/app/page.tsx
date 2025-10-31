@@ -5,7 +5,54 @@ import Link from "next/link";
 import AlertsToggle from "@/components/AlertsToggle";
 import InstallPWAButton from "./InstallPWAButton";
 import IOSInstallTip from "./IOSInstallTip";
-import JoinWithCode from '@/components/JoinWithCode';
+import dynamic from "next/dynamic";
+
+// 👇 Load JoinWithCode only on the client to avoid `localStorage is not defined`
+const JoinWithCode = dynamic(() => import('@/components/JoinWithCode'), {
+  ssr: false,
+  loading: () => (
+    <form
+      aria-busy="true"
+      style={{
+        display: "grid",
+        gap: 8,
+        gridTemplateColumns: "1fr auto",
+        alignItems: "center",
+      }}
+    >
+      <input
+        id="join-code-skel"
+        name="code"
+        placeholder="Enter 5-digit code"
+        inputMode="numeric"
+        pattern="[0-9]*"
+        autoComplete="one-time-code"
+        disabled
+        style={{
+          padding: "10px 12px",
+          borderRadius: 10,
+          border: "1px solid rgba(255,255,255,.2)",
+          background: "rgba(255,255,255,.06)",
+          color: "#bbb",
+        }}
+      />
+      <button
+        type="button"
+        disabled
+        style={{
+          padding: "10px 14px",
+          borderRadius: 10,
+          border: "none",
+          background: "rgba(255,255,255,.12)",
+          color: "#999",
+          fontWeight: 700,
+        }}
+      >
+        Join
+      </button>
+    </form>
+  ),
+});
 
 export default function Home() {
   return (
@@ -57,7 +104,7 @@ export default function Home() {
         <Link href="/create" style={btnPrimary}>➕ Create game</Link>
         <Link href="/nearby" style={btnGhost}>📍 Find nearby</Link>
 
-        {/* Inline Join with code (sends userId + name so indices update immediately) */}
+        {/* Inline Join with code (client-only, avoids SSR localStorage crash) */}
         <section
           style={{
             marginTop: 8,
