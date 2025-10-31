@@ -22,10 +22,9 @@ type Pref = "8 foot" | "9 foot" | "any";
 type ListGame = {
   id: string; name: string; code?: string; hostId: string;
   status: "active"; createdAt: number;
-  tables: Table[]; players: Player[];
-  queue?: string[]; queue8?: string[]; queue9?: string[];
+  tables: Table[]; players: Player[]; queue?: string[];
   prefs?: Record<string, Pref>;
-  coHosts?: string[];
+  cohosts?: string[];
 };
 
 type Match = { a?: string; b?: string; winner?: string; reports?: Record<string,"win"|"loss"> };
@@ -33,7 +32,7 @@ type Tournament = {
   id: string; name: string; code?: string; hostId: string;
   players: Player[]; pending: Player[]; rounds: Match[][];
   status: "setup"|"active"|"completed"; createdAt: number; updatedAt?: number;
-  coHosts?: string[];
+  cohosts?: string[];
 };
 
 /* ---------- Keys ---------- */
@@ -67,13 +66,13 @@ async function addTo(env: Env, key: string, id: string) {
   const arr = await readArr(env, key);
   if (!arr.includes(id)) { arr.push(id); await writeArr(env, key, arr); }
 }
-async function getV(env: Env, key: string) {
-  const raw = await env.KAVA_TOURNAMENTS.get(key);
+async function getV(env: Env, id: string) {
+  const raw = await env.KAVA_TOURNAMENTS.get(LVER(id));
   const n = raw ? Number(raw) : 0;
   return Number.isFinite(n) ? n : 0;
 }
-async function setV(env: Env, key: string, v: number) {
-  await env.KAVA_TOURNAMENTS.put(key, String(v));
+async function setV(env: Env, id: string, v: number) {
+  await env.KAVA_TOURNAMENTS.put(LVER(id), String(v));
 }
 
 /* ---------- coercers ---------- */
@@ -85,8 +84,7 @@ function coerceList(raw: any): ListGame | null {
           a: t?.a?String(t.a):undefined,
           b: t?.b?String(t.b):undefined,
           label: (t?.label==="9 foot"||t?.label==="8 foot") ? t.label : (i===1?"9 foot":"8 foot"),
-        }))
-      : [{label:"8 foot"},{label:"9 foot"}];
+        })) : [{label:"8 foot"},{label:"9 foot"}];
 
     const players: Player[] = Array.isArray(raw.players)
       ? raw.players.map((p:any)=>({id:String(p?.id ?? ""), name:String(p?.name ?? "Player")}))
@@ -100,19 +98,15 @@ function coerceList(raw: any): ListGame | null {
       }
     }
 
-    const coHosts: string[] = Array.isArray(raw.coHosts) ? raw.coHosts.map(String) : [];
-
-    const q = Array.isArray(raw.queue)
-      ? raw.queue
-      : [...(Array.isArray(raw.queue9)?raw.queue9:[]), ...(Array.isArray(raw.queue8)?raw.queue8:[])];
+    const q = Array.isArray(raw.queue) ? raw.queue.map(String).filter(Boolean) : [];
 
     return {
       id:String(raw.id ?? ""), name:String(raw.name ?? "Untitled"),
       code: raw.code ? String(raw.code) : undefined,
       hostId:String(raw.hostId ?? ""), status:"active",
       createdAt:Number(raw.createdAt ?? Date.now()),
-      tables, players, prefs, coHosts,
-      queue:q.map((x:any)=>String(x)).filter(Boolean),
+      tables, players, prefs, cohosts: Array.isArray(raw.cohosts)?raw.cohosts.map(String):[],
+      queue:q,
     };
   } catch { return null; }
 }
@@ -121,17 +115,14 @@ function coerceTournament(raw:any): Tournament | null {
   try {
     const players: Player[] = Array.isArray(raw.players) ? raw.players.map((p:any)=>({id:String(p?.id??""), name:String(p?.name??"Player")})) : [];
     const pending: Player[] = Array.isArray(raw.pending) ? raw.pending.map((p:any)=>({id:String(p?.id??""), name:String(p?.name??"Player")})) : [];
-    const rounds: Match[][] = Array.isArray(raw.rounds) ? raw.rounds.map((r:any)=>Array.isArray(r)?r.map((m:any)=>({
-      a: m?.a?String(m.a):undefined, b:m?.b?String(m.b):undefined,
-      winner: m?.winner?String(m.winner):undefined, reports: typeof m?.reports==="object"&&m?.reports?m.reports:{}
-    })) : []) : [];
+    const rounds: Match[][] = Array.isArray(raw.rounds) ? raw.rounds : [];
     const status = (raw.status==="setup"||raw.status==="active"||raw.status==="completed") ? raw.status : "setup";
     return {
       id:String(raw.id ?? ""), name:String(raw.name ?? "Untitled"),
       code: raw.code ? String(raw.code) : undefined,
       hostId:String(raw.hostId ?? ""), players, pending, rounds, status,
       createdAt:Number(raw.createdAt ?? Date.now()), updatedAt:Number(raw.updatedAt ?? Date.now()),
-      coHosts: Array.isArray(raw.coHosts) ? raw.coHosts.map(String) : [],
+      cohosts: Array.isArray(raw.cohosts) ? raw.cohosts.map(String) : [],
     };
   } catch { return null; }
 }
@@ -189,11 +180,7 @@ export async function POST(req: Request) {
 
   const code = normCode(body?.code);
   const meName = String(body?.name ?? "").trim() || "Player";
-
-  // accept both names for backward-compat
-  const meIdBody = String(body?.userId ?? body?.meId ?? "") || "";
-  const meIdHeader = req.headers.get("x-user-id") || "";
-  const meId = (meIdBody || meIdHeader || "").trim();
+  const meId = String(body?.userId ?? body?.meId ?? req.headers.get("x-user-id") ?? "").trim();
 
   if (!code || code.length !== 5) return NextResponse.json({ error:"Invalid code" },{ status:400 });
 
@@ -209,32 +196,26 @@ export async function POST(req: Request) {
 
     const callerIsHost = !!meId && meId === doc.hostId;
 
-    // If host is "joining", do nothing—just let them in
-    if (callerIsHost) {
-      await addTo(env, LHOST(doc.hostId), doc.id);
-      return NextResponse.json({ ok:true, kind:"list", id:doc.id, href:`/list/${encodeURIComponent(doc.id)}`, me:{ id: meId, name: meName } });
+    if (!callerIsHost) {
+      let me: Player | null =
+        (meId && doc.players.find(p=>p.id===meId)) ||
+        doc.players.find(p=>p.name.toLowerCase()===meName.toLowerCase()) || null;
+
+      if (!me) { me = { id: meId || uid(), name: meName }; doc.players.push(me); }
+      if (!doc.players.some(p=>p.id===me.id)) doc.players.push(me);
+
+      doc.prefs ??= {}; if (!doc.prefs[me.id]) doc.prefs[me.id] = "any";
+      doc.queue ??= []; if (!doc.queue.includes(me.id)) doc.queue.push(me.id);
+
+      reconcileSeatingList(doc);
+
+      await env.KAVA_TOURNAMENTS.put(LKEY(doc.id), JSON.stringify(doc));
+      const cur = await getV(env, doc.id); await setV(env, doc.id, cur + 1);
+
+      await addTo(env, LPLAY(me.id), doc.id);
     }
-
-    // ensure player exists or create
-    let me: Player | null =
-      (meId && doc.players.find(p=>p.id===meId)) ||
-      doc.players.find(p=>p.name.toLowerCase()===meName.toLowerCase()) || null;
-
-    if (!me) { me = { id: meId || uid(), name: meName }; doc.players.push(me); }
-    if (!doc.players.some(p=>p.id===me.id)) doc.players.push(me);
-
-    doc.prefs ??= {}; if (!doc.prefs[me.id]) doc.prefs[me.id] = "any";
-    doc.queue ??= []; if (!doc.queue.includes(me.id)) doc.queue.push(me.id);
-
-    reconcileSeatingList(doc);
-
-    await env.KAVA_TOURNAMENTS.put(LKEY(doc.id), JSON.stringify(doc));
-    const cur = await getV(env, LVER(doc.id)); await setV(env, LVER(doc.id), cur + 1);
-
     await addTo(env, LHOST(doc.hostId), doc.id);
-    await addTo(env, LPLAY(me.id), doc.id);
-
-    return NextResponse.json({ ok:true, kind:"list", id:doc.id, href:`/list/${encodeURIComponent(doc.id)}`, me });
+    return NextResponse.json({ ok:true, kind:"list", id:doc.id, href:`/list/${encodeURIComponent(doc.id)}` });
   }
 
   /* ----- TOURNAMENT ----- */
@@ -244,15 +225,13 @@ export async function POST(req: Request) {
   if (!t || !t.id) return NextResponse.json({ error:"Corrupt tournament" },{ status:500 });
 
   const callerIsHost = !!meId && meId === t.hostId;
-  const isCoHost = !!meId && (t.coHosts ?? []).includes(meId);
+  const isCoHost = !!meId && (t.cohosts ?? []).includes(meId);
 
-  // Host / co-host “joining with code”: do nothing, just return success
   if (callerIsHost || isCoHost) {
     await addTo(env, THOST(t.hostId), t.id);
-    return NextResponse.json({ ok:true, kind:"tournament", id:t.id, href:`/t/${encodeURIComponent(t.id)}`, me:{ id: meId, name: meName } });
+    return NextResponse.json({ ok:true, kind:"tournament", id:t.id, href:`/t/${encodeURIComponent(t.id)}` });
   }
 
-  // Everyone else → always PENDING (never straight to players)
   const already =
     t.players.some(p=>p.id===meId || p.name.toLowerCase()===meName.toLowerCase()) ||
     t.pending.some(p=>p.id===meId || p.name.toLowerCase()===meName.toLowerCase());
@@ -260,12 +239,14 @@ export async function POST(req: Request) {
   if (!already) {
     const me: Player = { id: meId || uid(), name: meName };
     t.pending.push(me);
-    await addTo(env, TPLAY(me.id), t.id);
+    await addTo(env, TPLAY(me.id), t.id); // <-- lets “My tournaments” find it
   }
 
   t.updatedAt = Date.now();
   await env.KAVA_TOURNAMENTS.put(TKEY(t.id), JSON.stringify(t));
-  const tv = await getV(env, TVER(t.id)); await setV(env, TVER(t.id), tv + 1);
+  const tvRaw = await env.KAVA_TOURNAMENTS.get(TVER(t.id));
+  const tv = tvRaw ? Number(tvRaw) : 0;
+  await env.KAVA_TOURNAMENTS.put(TVER(t.id), String((Number.isFinite(tv)?tv:0) + 1));
 
   await addTo(env, THOST(t.hostId), t.id);
 

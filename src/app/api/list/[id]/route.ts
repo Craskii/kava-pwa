@@ -4,11 +4,7 @@ export const runtime = "edge";
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
-type KVNamespace = {
-  get(key: string): Promise<string | null>;
-  put(key: string, value: string): Promise<void>;
-  delete(key: string): Promise<void>;
-};
+type KVNamespace = { get(key:string):Promise<string|null>; put(key:string,v:string):Promise<void>; delete(key:string):Promise<void>; };
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
 type Table = { a?: string; b?: string; label: "8 foot" | "9 foot" };
@@ -16,18 +12,10 @@ type Player = { id: string; name: string };
 type Pref = "8 foot" | "9 foot" | "any";
 
 type ListGame = {
-  id: string;
-  name: string;
-  code?: string;
-  hostId: string;
-  status: "active";
-  createdAt: number;
-  tables: Table[];
-  players: Player[];
-  queue8: string[];
-  queue9: string[];
+  id: string; name: string; code?: string; hostId: string; status: "active"; createdAt: number;
+  tables: Table[]; players: Player[]; queue8: string[]; queue9: string[];
   prefs?: Record<string, Pref>;
-  coHosts?: string[]; // canonical on server
+  cohosts?: string[]; // <- lowercase everywhere
 };
 
 const LKEY = (id: string) => `l:${id}`;
@@ -35,7 +23,7 @@ const LVER = (id: string) => `lv:${id}`;
 const LPLAYER = (playerId: string) => `lidx:p:${playerId}`;
 const LHOST   = (hostId: string)   => `lidx:h:${hostId}`;
 
-async function getV(env: Env, id: string): Promise<number> {
+async function getV(env: Env, id: string) {
   const raw = await env.KAVA_TOURNAMENTS.get(LVER(id));
   const n = raw ? Number(raw) : 0;
   return Number.isFinite(n) ? n : 0;
@@ -43,7 +31,7 @@ async function getV(env: Env, id: string): Promise<number> {
 async function setV(env: Env, id: string, v: number) {
   await env.KAVA_TOURNAMENTS.put(LVER(id), String(v));
 }
-async function readArr(env: Env, key: string): Promise<string[]> {
+async function readArr(env: Env, key: string) {
   const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
   try { return JSON.parse(raw) as string[]; } catch { return []; }
 }
@@ -60,71 +48,44 @@ async function removeFrom(env: Env, key: string, id: string) {
   if (next.length !== arr.length) await writeArr(env, key, next);
 }
 
-/* ---------- Coercers (accept both coHosts/cohosts) ---------- */
-function coerceIn(doc: any): ListGame {
-  const players: Player[] = Array.isArray(doc?.players)
-    ? doc.players.map((p: any) => ({ id: String(p?.id ?? ""), name: String(p?.name ?? "Player") }))
-    : [];
-
+function coerceIn(doc:any): ListGame {
+  const players: Player[] = Array.isArray(doc?.players) ? doc.players.map((p:any)=>({id:String(p?.id??""), name:String(p?.name??"Player")})) : [];
   const tables: Table[] = Array.isArray(doc?.tables)
-    ? doc.tables.map((t: any, i: number) => ({
-        a: t?.a ? String(t.a) : undefined,
-        b: t?.b ? String(t.b) : undefined,
-        label: (t?.label === "9 foot" || t?.label === "8 foot")
-          ? t.label
-          : (i === 1 ? "9 foot" : "8 foot")
-      }))
-    : [{ label: "8 foot" }, { label: "9 foot" }];
+    ? doc.tables.map((t:any,i:number)=>({ a:t?.a?String(t.a):undefined, b:t?.b?String(t.b):undefined, label:(t?.label==="9 foot"||t?.label==="8 foot")?t.label:(i===1?"9 foot":"8 foot") }))
+    : [{label:"8 foot"},{label:"9 foot"}];
 
-  const prefs: Record<string, Pref> = {};
-  if (doc?.prefs && typeof doc.prefs === "object") {
-    for (const [pid, v] of Object.entries(doc.prefs)) {
-      prefs[String(pid)] = (v === "8 foot" || v === "9 foot" || v === "any") ? (v as Pref) : "any";
+  const prefs: Record<string,Pref> = {};
+  if (doc?.prefs && typeof doc.prefs==="object") {
+    for (const [pid,v] of Object.entries(doc.prefs)) {
+      const s = String(v); prefs[String(pid)] = (s==="8 foot"||s==="9 foot"||s==="any") ? (s as Pref) : "any";
     }
   }
 
-  let queue8: string[] = [];
-  let queue9: string[] = [];
+  let queue8:string[]=[]; let queue9:string[]=[];
   if (Array.isArray(doc?.queue8) || Array.isArray(doc?.queue9)) {
-    queue8 = (doc?.queue8 ?? []).map((x: any) => String(x)).filter(Boolean);
-    queue9 = (doc?.queue9 ?? []).map((x: any) => String(x)).filter(Boolean);
+    queue8 = (doc?.queue8 ?? []).map(String).filter(Boolean);
+    queue9 = (doc?.queue9 ?? []).map(String).filter(Boolean);
   } else if (Array.isArray(doc?.queue)) {
     for (const x of doc.queue as any[]) {
-      const pid = String(x);
-      const pref = prefs[pid] ?? "any";
-      if (pref === "9 foot") queue9.push(pid);
-      else queue8.push(pid);
+      const pid = String(x); const pref = prefs[pid] ?? "any";
+      if (pref==="9 foot") queue9.push(pid); else queue8.push(pid);
     }
   }
 
-  // Accept BOTH keys from clients
-  const coHostsSrc =
-    Array.isArray(doc?.coHosts) ? doc.coHosts :
-    Array.isArray(doc?.cohosts) ? doc.cohosts :
-    [];
-  const coHosts: string[] = coHostsSrc.map((s: any) => String(s)).filter(Boolean);
+  const cohosts: string[] = Array.isArray(doc?.cohosts) ? doc.cohosts.map((s:any)=>String(s)).filter(Boolean)
+                       : Array.isArray(doc?.coHosts) ? doc.coHosts.map((s:any)=>String(s)).filter(Boolean) : [];
 
   return {
-    id: String(doc?.id ?? ""),
-    name: String(doc?.name ?? "Untitled"),
-    code: doc?.code ? String(doc.code) : undefined,
-    hostId: String(doc?.hostId ?? ""),
-    status: "active",
-    createdAt: Number(doc?.createdAt ?? Date.now()),
-    tables,
-    players,
-    queue8,
-    queue9,
-    prefs,
-    coHosts,
-  } as ListGame;
+    id:String(doc?.id ?? ""), name:String(doc?.name ?? "Untitled"), code: doc?.code ? String(doc.code) : undefined,
+    hostId:String(doc?.hostId ?? ""), status:"active", createdAt:Number(doc?.createdAt ?? Date.now()),
+    tables, players, queue8, queue9, prefs, cohosts
+  };
 }
 
-function coerceOut(stored: any) {
+function coerceOut(stored:any) {
   const x = coerceIn(stored);
   const queue = [...x.queue9, ...x.queue8];
-  // Return BOTH spellings to satisfy older clients
-  return { ...x, queue, cohosts: x.coHosts };
+  return { ...x, queue, cohosts: x.cohosts };
 }
 
 function dropFromQueues(x: ListGame, pid?: string) {
@@ -132,24 +93,17 @@ function dropFromQueues(x: ListGame, pid?: string) {
   x.queue8 = x.queue8.filter(id => id !== pid);
   x.queue9 = x.queue9.filter(id => id !== pid);
 }
-
 function reconcileSeating(x: ListGame) {
   const seated = new Set<string>();
-  for (const t of x.tables) {
-    if (t.a) seated.add(t.a);
-    if (t.b) seated.add(t.b);
-  }
-  function nextFrom(label: "8 foot" | "9 foot"): string | undefined {
-    const src = label === "9 foot" ? x.queue9 : x.queue8;
-    while (src.length) {
-      const pid = src.shift()!;
-      if (!seated.has(pid)) return pid;
-    }
+  for (const t of x.tables) { if (t.a) seated.add(t.a); if (t.b) seated.add(t.b); }
+  function nextFrom(label:"8 foot"|"9 foot") {
+    const src = label==="9 foot" ? x.queue9 : x.queue8;
+    while (src.length) { const pid = src.shift()!; if (!seated.has(pid)) return pid; }
     return undefined;
   }
   for (const t of x.tables) {
-    if (!t.a) { const pid = nextFrom(t.label); if (pid) { t.a = pid; seated.add(pid); dropFromQueues(x, pid); } }
-    if (!t.b) { const pid = nextFrom(t.label); if (pid) { t.b = pid; seated.add(pid); dropFromQueues(x, pid); } }
+    if (!t.a) { const pid = nextFrom(t.label); if (pid) { t.a = pid; seated.add(pid); dropFromQueues(x,pid); } }
+    if (!t.b) { const pid = nextFrom(t.label); if (pid) { t.b = pid; seated.add(pid); dropFromQueues(x,pid); } }
   }
 }
 
@@ -160,18 +114,17 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
   const v = await getV(env, id);
   const etag = `"l-${v}"`;
-  const inm = req.headers.get("if-none-match");
-  if (inm && inm === etag) {
-    return new NextResponse(null, { status: 304, headers: { ETag: etag, "Cache-Control": "public, max-age=0, stale-while-revalidate=30", "x-l-version": String(v) } });
+  if (req.headers.get("if-none-match") === etag) {
+    return new NextResponse(null, { status: 304, headers: { ETag: etag, "Cache-Control":"no-store", "x-l-version": String(v) } });
   }
 
   const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const out = coerceOut(JSON.parse(raw));
-  return new NextResponse(JSON.stringify(out), { headers: { "content-type": "application/json", ETag: etag, "Cache-Control": "public, max-age=0, stale-while-revalidate=30", "x-l-version": String(v) } });
+  return new NextResponse(JSON.stringify(out), { headers: { "content-type":"application/json", ETag: etag, "Cache-Control":"no-store", "x-l-version": String(v) } });
 }
 
-/* ---------- PUT/POST (auth: host or co-host) ---------- */
+/* ---------- PUT/POST (auth: host or cohost) ---------- */
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
@@ -181,15 +134,11 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   if (body.id !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 });
 
   const caller = (req.headers.get("x-user-id") || "").trim();
-  if (!caller || (caller !== body.hostId && !(body.coHosts ?? []).includes(caller))) {
+  if (!caller || (caller !== body.hostId && !(body.cohosts ?? []).includes(caller))) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const ifMatch = req.headers.get("if-match");
   const curV = await getV(env, id);
-  if (ifMatch !== null && String(curV) !== String(ifMatch)) {
-    return NextResponse.json({ error: "Version conflict" }, { status: 412 });
-  }
 
   const prevRaw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   const prev = prevRaw ? coerceIn(JSON.parse(prevRaw)) : null;
@@ -204,7 +153,6 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   const nextPlayers = new Set((body.players ?? []).map(p => p.id));
   for (const p of nextPlayers) if (!prevPlayers.has(p)) await addTo(env, LPLAYER(p), id);
   for (const p of prevPlayers) if (!nextPlayers.has(p)) await removeFrom(env, LPLAYER(p), id);
-
   if (prev?.hostId && prev.hostId !== body.hostId) await removeFrom(env, LHOST(prev.hostId), id);
   if (body.hostId) await addTo(env, LHOST(body.hostId), id);
 
@@ -214,9 +162,7 @@ export async function POST(req: Request, ctx: { params: { id: string } }) { retu
 
 /* ---------- DELETE ---------- */
 export async function DELETE(_: Request, { params }: { params: { id: string } }) {
-  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
-  const id = params.id;
-
+  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env; const id = params.id;
   const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   if (raw) {
     try {
@@ -226,7 +172,6 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
       if (doc.hostId) await removeFrom(env, LHOST(doc.hostId), id);
     } catch {}
   }
-
   await env.KAVA_TOURNAMENTS.delete(LKEY(id));
   await env.KAVA_TOURNAMENTS.delete(LVER(id));
   return new NextResponse(null, { status: 204 });
