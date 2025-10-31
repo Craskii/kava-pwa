@@ -3,7 +3,7 @@
 export const runtime = 'edge';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
 import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
@@ -19,7 +19,6 @@ type ListGame = {
   id: string; name: string; code?: string; hostId: string;
   status: 'active'; createdAt: number;
   tables: Table[]; players: Player[];
-  // server returns combined queue too; we keep single combined locally
   queue?: string[];
   queue8?: string[]; queue9?: string[];
   prefs?: Record<string, Pref>;
@@ -65,12 +64,10 @@ function coerceList(raw: any): ListGame | null {
     }
     for (const p of players) if (!prefs[p.id]) prefs[p.id] = 'any';
 
-    // combined queue preferred (server exposes)
     let queue: string[] = Array.isArray(raw.queue)
       ? raw.queue.map((x: any) => String(x)).filter(Boolean)
       : [];
     if (queue.length === 0) {
-      // fallback combine if older server
       queue = [
         ...(Array.isArray(raw.queue9) ? raw.queue9 : []),
         ...(Array.isArray(raw.queue8) ? raw.queue8 : []),
@@ -110,6 +107,7 @@ async function saveList(doc: ListGame) {
 
 /* ============ Component ============ */
 export default function ListLobby() {
+  const r = useRouter();
   const params = useParams<{ id: string }>();
   const id = decodeURIComponent(String(params?.id ?? ''));
 
@@ -119,9 +117,8 @@ export default function ListLobby() {
   const [showTableControls, setShowTableControls] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [supportsDnD, setSupportsDnD] = useState<boolean>(false); // touch fallback for Android/iPad
+  const [supportsDnD, setSupportsDnD] = useState<boolean>(false);
 
-  // DnD only on non-touch; show arrows otherwise.
   useEffect(() => { setSupportsDnD(!('ontouchstart' in window)); }, []);
 
   const me = useMemo<Player>(() => {
@@ -145,7 +142,6 @@ export default function ListLobby() {
   const lastVersion = useRef<number>(0);
   const excludeSeatPidRef = useRef<string | null>(null);
 
-  // commit serial queue + micro-batcher
   const commitQ = useRef<(() => Promise<void>)[]>([]);
   const batchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingDraft = useRef<ListGame | null>(null);
@@ -354,7 +350,7 @@ export default function ListLobby() {
   const nameOf = (pid?: string) => (pid ? players.find(p => p.id === pid)?.name || '??' : '—');
   const inQueue = (pid: string) => queue.includes(pid);
 
-  /* ---- seating helper (client hint; server also reconciles) ---- */
+  /* ---- seating helper ---- */
   function autoSeat(next: ListGame) {
     const excluded = excludeSeatPidRef.current;
     const pmap = next.prefs || {};
@@ -405,7 +401,7 @@ export default function ListLobby() {
     excludeSeatPidRef.current = null;
   }
 
-  /* ---- commit with micro-batching ---- */
+  /* ---- commit batching ---- */
   function flushPending() {
     if (!pendingDraft.current) return;
     const toSave = pendingDraft.current;
@@ -434,7 +430,6 @@ export default function ListLobby() {
   }
   function scheduleCommit(mut: (draft: ListGame) => void) {
     if (!g) return;
-    // clone once per batch window
     if (!pendingDraft.current) {
       pendingDraft.current = JSON.parse(JSON.stringify(g));
       pendingDraft.current.prefs ??= {};
@@ -443,11 +438,7 @@ export default function ListLobby() {
     }
     mut(pendingDraft.current);
     autoSeat(pendingDraft.current);
-
-    // bump UI immediately
     setG(pendingDraft.current);
-
-    // micro-batch window (200ms)
     if (batchTimer.current) clearTimeout(batchTimer.current);
     batchTimer.current = setTimeout(() => {
       batchTimer.current = null;
@@ -467,12 +458,27 @@ export default function ListLobby() {
   const enqueuePid = (pid: string) => scheduleCommit(d => { d.queue ??= []; if (!d.queue.includes(pid)) d.queue.push(pid); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = (d.queue ?? []).filter(x => x !== pid); });
 
-  // Cohost assign/remove (host only)
-  const toggleCohost = (pid: string) => scheduleCommit(d => {
-    d.cohosts ??= [];
-    if (d.cohosts.includes(pid)) d.cohosts = d.cohosts.filter(x => x !== pid);
-    else d.cohosts.push(pid);
+  // NEW: leave list (for any non-host in Players)
+  const leaveList = () => scheduleCommit(d => {
+    d.players = d.players.filter(p => p.id !== me.id);
+    d.queue = (d.queue ?? []).filter(x => x !== me.id);
+    d.tables = d.tables.map(t => ({
+      ...t,
+      a: t.a === me.id ? undefined : t.a,
+      b: t.b === me.id ? undefined : t.b
+    }));
+    if (d.prefs) delete d.prefs[me.id];
   });
+
+  // Cohost assign/remove — now allowed for host **and** cohost (full powers)
+  const toggleCohost = (pid: string) => {
+    if (!iHaveMod) return;
+    scheduleCommit(d => {
+      d.cohosts ??= [];
+      if (d.cohosts.includes(pid)) d.cohosts = d.cohosts.filter(x => x !== pid);
+      else d.cohosts.push(pid);
+    });
+  };
 
   // Touch fallback reorder
   const moveUp = (index: number) => scheduleCommit(d => {
@@ -486,7 +492,6 @@ export default function ListLobby() {
     const a = d.queue[index + 1]; d.queue[index + 1] = d.queue[index]; d.queue[index] = a;
   });
 
-  // Skip first → put #1 under #2
   const skipFirst = () => scheduleCommit(d => {
     d.queue ??= [];
     if (d.queue.length >= 2) {
@@ -574,6 +579,10 @@ export default function ListLobby() {
             <div style={{display:'grid',gap:6,justifyItems:'end'}}>
               {!seated && !queue.includes(me.id) && <button style={btn} onClick={joinQueue} disabled={busy}>Join queue</button>}
               {queue.includes(me.id) && <button style={btnGhost} onClick={leaveQueue} disabled={busy}>Leave queue</button>}
+              {/* NEW: Leave list (for anyone who isn’t the host but is a player) */}
+              {!iAmHost && players.some(p => p.id === me.id) && (
+                <button style={btnGhost} onClick={leaveList} disabled={busy}>Leave list</button>
+              )}
             </div>
           </header>
 
@@ -677,7 +686,6 @@ export default function ListLobby() {
                         {idx+1}. {nameOf(pid)}
                       </span>
 
-                      {/* Touch fallback controls */}
                       {!supportsDnD && iHaveMod && (
                         <div style={{display:'flex',gap:4,marginRight:6}}>
                           <button style={btnTiny} onClick={()=>moveUp(idx)} disabled={busy || idx===0} aria-label="Move up">▲</button>
@@ -703,7 +711,7 @@ export default function ListLobby() {
             )}
           </section>
 
-          {/* Host / Cohost controls */}
+          {/* Host / Co-host controls */}
           {(iHaveMod) && (
             <section style={card}>
               <h3 style={{marginTop:0}}>Host controls</h3>
@@ -737,7 +745,8 @@ export default function ListLobby() {
                             <button style={pref==='8 foot'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'8 foot')} disabled={busy}>8-ft</button>
                           </div>
                         )}
-                        {(iAmHost && p.id !== g.hostId) && (
+                        {/* FULL CO-HOST POWERS: allow cohosts to grant/remove cohost too */}
+                        {iHaveMod && p.id !== g.hostId && (
                           <button style={btnMini} onClick={()=>toggleCohost(p.id)} disabled={busy}>
                             {isCohost ? 'Remove cohost' : 'Make cohost'}
                           </button>

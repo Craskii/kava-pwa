@@ -4,7 +4,6 @@ export const runtime = "edge";
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
-/* KV + types */
 type KVNamespace = {
   get(key: string): Promise<string | null>;
   put(key: string, value: string): Promise<void>;
@@ -17,13 +16,18 @@ type Player = { id: string; name: string };
 type Pref = "8 foot" | "9 foot" | "any";
 
 type ListGame = {
-  id: string; name: string; code?: string; hostId: string;
-  status: "active"; createdAt: number;
+  id: string;
+  name: string;
+  code?: string;
+  hostId: string;
+  status: "active";
+  createdAt: number;
   tables: Table[];
   players: Player[];
   queue8: string[];
   queue9: string[];
   prefs?: Record<string, Pref>;
+  coHosts?: string[];            // <-- NEW
 };
 
 const LKEY = (id: string) => `l:${id}`;
@@ -80,7 +84,6 @@ function coerceIn(doc: any): ListGame {
 
   let queue8: string[] = [];
   let queue9: string[] = [];
-
   if (Array.isArray(doc?.queue8) || Array.isArray(doc?.queue9)) {
     queue8 = (doc?.queue8 ?? []).map((x: any) => String(x)).filter(Boolean);
     queue9 = (doc?.queue9 ?? []).map((x: any) => String(x)).filter(Boolean);
@@ -93,6 +96,9 @@ function coerceIn(doc: any): ListGame {
     }
   }
 
+  const coHosts: string[] = Array.isArray(doc?.coHosts)
+    ? doc.coHosts.map((s: any) => String(s)).filter(Boolean) : [];
+
   return {
     id: String(doc?.id ?? ""),
     name: String(doc?.name ?? "Untitled"),
@@ -104,19 +110,15 @@ function coerceIn(doc: any): ListGame {
     players,
     queue8,
     queue9,
-    prefs
-  } as unknown as ListGame;
+    prefs,
+    coHosts,                     // <-- keep
+  } as ListGame;
 }
 
-function coerceOut(stored: any, v: number) {
+function coerceOut(stored: any) {
   const x = coerceIn(stored);
   const queue = [...x.queue9, ...x.queue8];
-  return {
-    ...x,
-    queue,
-    v,          // <— include version number in response body
-    schema: "v2"
-  };
+  return { ...x, queue };
 }
 
 function dropFromQueues(x: ListGame, pid?: string) {
@@ -140,14 +142,8 @@ function reconcileSeating(x: ListGame) {
     return undefined;
   }
   for (const t of x.tables) {
-    if (!t.a) {
-      const pid = nextFrom(t.label);
-      if (pid) { t.a = pid; seated.add(pid); dropFromQueues(x, pid); }
-    }
-    if (!t.b) {
-      const pid = nextFrom(t.label);
-      if (pid) { t.b = pid; seated.add(pid); dropFromQueues(x, pid); }
-    }
+    if (!t.a) { const pid = nextFrom(t.label); if (pid) { t.a = pid; seated.add(pid); dropFromQueues(x, pid); } }
+    if (!t.b) { const pid = nextFrom(t.label); if (pid) { t.b = pid; seated.add(pid); dropFromQueues(x, pid); } }
   }
 }
 
@@ -160,31 +156,16 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   const etag = `"l-${v}"`;
   const inm = req.headers.get("if-none-match");
   if (inm && inm === etag) {
-    return new NextResponse(null, {
-      status: 304,
-      headers: {
-        ETag: etag,
-        "Cache-Control": "public, max-age=0, stale-while-revalidate=30",
-        "x-l-version": String(v),
-      }
-    });
+    return new NextResponse(null, { status: 304, headers: { ETag: etag, "Cache-Control": "public, max-age=0, stale-while-revalidate=30", "x-l-version": String(v) } });
   }
 
   const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
   if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
-
-  const out = coerceOut(JSON.parse(raw), v);
-  return new NextResponse(JSON.stringify(out), {
-    headers: {
-      "content-type": "application/json",
-      ETag: etag,
-      "Cache-Control": "public, max-age=0, stale-while-revalidate=30",
-      "x-l-version": String(v),
-    }
-  });
+  const out = coerceOut(JSON.parse(raw));
+  return new NextResponse(JSON.stringify(out), { headers: { "content-type": "application/json", ETag: etag, "Cache-Control": "public, max-age=0, stale-while-revalidate=30", "x-l-version": String(v) } });
 }
 
-/* ---------- PUT (If-Match optional) ---------- */
+/* ---------- PUT/POST ---------- */
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
@@ -205,12 +186,6 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
 
   reconcileSeating(body);
 
-  // Ensure code mapping exists if body.code present
-  if (body.code) {
-    const codeKey = `code:${String(body.code).replace(/\D+/g, "").slice(-5).padStart(5,"0")}`;
-    await env.KAVA_TOURNAMENTS.put(codeKey, JSON.stringify({ kind: "list", id }));
-  }
-
   await env.KAVA_TOURNAMENTS.put(LKEY(id), JSON.stringify(body));
   const nextV = curV + 1;
   await setV(env, id, nextV);
@@ -224,11 +199,7 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
 
   return new NextResponse(null, { status: 204, headers: { "x-l-version": String(nextV), ETag: `"l-${nextV}"` } });
 }
-
-/* ---------- POST (alias for PUT; for sendBeacon/no If-Match) ---------- */
-export async function POST(req: Request, ctx: { params: { id: string } }) {
-  return PUT(req, ctx);
-}
+export async function POST(req: Request, ctx: { params: { id: string } }) { return PUT(req, ctx); }
 
 /* ---------- DELETE ---------- */
 export async function DELETE(_: Request, { params }: { params: { id: string } }) {
@@ -244,6 +215,7 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
       if (doc.hostId) await removeFrom(env, LHOST(doc.hostId), id);
     } catch {}
   }
+
   await env.KAVA_TOURNAMENTS.delete(LKEY(id));
   await env.KAVA_TOURNAMENTS.delete(LVER(id));
   return new NextResponse(null, { status: 204 });
