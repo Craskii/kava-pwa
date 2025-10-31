@@ -1,5 +1,6 @@
 // src/app/api/join/route.ts
 export const runtime = "edge";
+export const dynamic = "force-dynamic";
 
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
@@ -104,7 +105,6 @@ function coerceList(raw: any): ListGame | null {
       }
     }
 
-    // Merge queues (keep existing order)
     let queue: string[] = [];
     if (Array.isArray(raw.queue)) {
       queue = raw.queue.map((x: any) => String(x)).filter(Boolean);
@@ -165,6 +165,7 @@ function reconcileSeating(x: ListGame) {
 }
 
 /* ---------- POST /api/join ---------- */
+/** Body: { code, name? }  OR  { code, player:{id,name} } */
 export async function POST(req: Request) {
   const { env: rawEnv } = getRequestContext();
   const env = rawEnv as unknown as Env;
@@ -179,23 +180,24 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid code" }, { status: 400 });
   }
 
-  // player payload formats: {name} OR {player:{id,name}}
-  let me: Player | null = null;
+  // incoming player
+  let incoming: Player;
   if (body?.player?.id && body?.player?.name) {
-    me = { id: String(body.player.id), name: String(body.player.name).trim() || "Player" };
+    incoming = { id: String(body.player.id), name: String(body.player.name).trim() || "Player" };
   } else {
-    const name = String(body?.name ?? "").trim() || "Player";
-    me = { id: uid(), name };
+    const nm = String(body?.name ?? "").trim() || "Player";
+    incoming = { id: uid(), name: nm };
   }
+  const incomingNameLC = incoming.name.toLowerCase();
 
-  // code map may be "id" or JSON with { type|kind, id }
-  const rawMap = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
-  if (!rawMap) return NextResponse.json({ error: "Not found" }, { status: 404 });
+  // lookup code mapping
+  const mapped = await env.KAVA_TOURNAMENTS.get(`code:${code}`);
+  if (!mapped) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   let roomType: "list" | "tournament" = "list";
-  let roomId = rawMap;
+  let roomId = mapped;
   try {
-    const x = JSON.parse(rawMap);
+    const x = JSON.parse(mapped);
     if (x?.id) {
       roomId = String(x.id);
       const t = (x.type || x.kind || "list").toString();
@@ -203,6 +205,7 @@ export async function POST(req: Request) {
     }
   } catch {}
 
+  /* ---------- LISTS ---------- */
   if (roomType === "list") {
     const raw = await env.KAVA_TOURNAMENTS.get(LKEY(roomId));
     if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -210,18 +213,40 @@ export async function POST(req: Request) {
     const doc = coerceList(JSON.parse(raw));
     if (!doc?.id) return NextResponse.json({ error: "Corrupt list" }, { status: 500 });
 
-    // ensure player
-    const has = doc.players.some(p => p.id === me!.id);
-    if (!has) doc.players.push(me!);
+    // identify host player (by hostId, fallback by name)
+    const hostPlayer = doc.players.find(p => p.id === doc.hostId)
+      ?? doc.players.find(p => p.name.toLowerCase() === incomingNameLC)
+      ?? null;
 
-    // indices: add lidx:p
-    await addTo(env, LPLAY(me!.id), doc.id);
+    // If incoming matches host (id or same name), reuse host identity and DO NOT mutate doc
+    if (hostPlayer && (incoming.id === doc.hostId || hostPlayer.name.toLowerCase() === incomingNameLC)) {
+      // make sure host is indexed for "My lists"
+      await addTo(env, LPLAY(doc.hostId), doc.id);
 
-    // queue + prefs
+      return NextResponse.json({
+        ok: true, type: "list", id: doc.id,
+        href: `/list/${encodeURIComponent(doc.id)}`,
+        me: { id: doc.hostId, name: hostPlayer.name },
+      });
+    }
+
+    // Otherwise, reuse existing player by id or by name; else add
+    let me =
+      doc.players.find(p => p.id === incoming.id)
+      ?? doc.players.find(p => p.name.toLowerCase() === incomingNameLC)
+      ?? null;
+
+    if (!me) {
+      me = { id: incoming.id, name: incoming.name };
+      doc.players.push(me);
+    }
+
+    await addTo(env, LPLAY(me.id), doc.id);
+
     doc.prefs ??= {};
-    if (!doc.prefs[me!.id]) doc.prefs[me!.id] = "any";
+    if (!doc.prefs[me.id]) doc.prefs[me.id] = "any";
     doc.queue ??= [];
-    if (!doc.queue.includes(me!.id)) doc.queue.push(me!.id);
+    if (!doc.queue.includes(me.id)) doc.queue.push(me.id);
 
     reconcileSeating(doc);
 
@@ -236,7 +261,7 @@ export async function POST(req: Request) {
     });
   }
 
-  // tournament join
+  /* ---------- TOURNAMENTS ---------- */
   const traw = await env.KAVA_TOURNAMENTS.get(TKEY(roomId));
   if (!traw) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -245,24 +270,43 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Corrupt tournament" }, { status: 500 });
   }
 
-  // ensure arrays
   t.players = Array.isArray(t.players) ? t.players : [];
   t.pending = Array.isArray(t.pending) ? t.pending : [];
 
-  const inPlayers = t.players.some(p => p.id === me!.id);
-  const inPending = t.pending.some(p => p.id === me!.id);
+  const hostById = t.players.find(p => p.id === t.hostId) ?? null;
+  const hostByName = t.players.find(p => p.name.toLowerCase() === incomingNameLC) ?? null;
+  const matchesHost = (incoming.id === t.hostId) || (!!hostByName && hostByName.id === t.hostId);
 
-  if (!inPlayers && !inPending) {
-    // default: require approval if status is setup/active and you use pending
-    if (t.status === "setup" || t.status === "active" || typeof t.pending !== 'undefined') {
-      t.pending.push(me!);
+  // Host joining with code → do nothing, just index + return
+  if (matchesHost) {
+    await addTo(env, TPLAY(t.hostId), t.id);
+    return NextResponse.json({
+      ok: true, type: "tournament", id: t.id,
+      href: `/t/${encodeURIComponent(t.id)}`,
+      me: { id: t.hostId, name: (hostById?.name ?? hostByName?.name ?? "Host") }
+    });
+  }
+
+  // Reuse existing player by id or by name, else add (pending if you gate with approvals)
+  let me =
+    t.players.find(p => p.id === incoming.id)
+    ?? t.players.find(p => p.name.toLowerCase() === incomingNameLC)
+    ?? t.pending.find(p => p.id === incoming.id)
+    ?? t.pending.find(p => p.name.toLowerCase() === incomingNameLC)
+    ?? null;
+
+  if (!me) {
+    // default: use pending when status uses approvals
+    if (t.status === "setup" || t.status === "active" || typeof t.pending !== "undefined") {
+      me = { id: incoming.id, name: incoming.name };
+      t.pending.push(me);
     } else {
-      t.players.push(me!);
+      me = { id: incoming.id, name: incoming.name };
+      t.players.push(me);
     }
   }
 
-  // indices: add tidx:p
-  await addTo(env, TPLAY(me!.id), t.id);
+  await addTo(env, TPLAY(me.id), t.id);
 
   await env.KAVA_TOURNAMENTS.put(TKEY(t.id), JSON.stringify(t));
   const curT = await getV(env, TVER, t.id);
