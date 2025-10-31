@@ -4,67 +4,60 @@ export const runtime = "edge";
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
-type KV = { get(k:string):Promise<string|null>; put(k:string,v:string):Promise<void> };
-type Env = { KAVA_TOURNAMENTS: KV };
+type KVNamespace = {
+  get(key: string): Promise<string | null>;
+  put(key: string, value: string): Promise<void>;
+};
+type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-type Player = { id:string; name:string };
-type Match = { a?:string; b?:string; winner?:string; reports?:Record<string,"win"|"loss"> };
-type Tournament = {
-  id:string; name:string; code?:string; hostId:string;
-  players:Player[]; pending:Player[]; rounds:Match[][];
-  status:"setup"|"active"|"completed"; createdAt:number; updatedAt?:number;
-  coHosts?: string[];
+type Tourney = {
+  id: string;
+  name: string;
+  hostId: string;
+  status: "setup" | "active" | "done";
+  createdAt: number;
+  players?: { id: string; name: string }[];
 };
 
-const TKEY  = (id: string) => `t:${id}`;
-const THOST = (hostId: string) => `tidx:h:${hostId}`;
-const TPLAY = (pid: string) => `tidx:p:${pid}`;
+const TKEY = (id: string) => `t:${id}`;
+const TPLAYER = (pid: string) => `tidx:p:${pid}`;
+const THOST = (hid: string) => `tidx:h:${hid}`;
 
-async function readArr(env: Env, key: string): Promise<string[]> {
-  const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
-  try { return JSON.parse(raw) as string[]; } catch { return []; }
-}
-function pick(t: any): Tournament | null {
-  try {
-    const p = JSON.parse(t) as Tournament;
-    if (!p?.id) return null;
-    return {
-      id: String(p.id),
-      name: String(p.name ?? "Untitled"),
-      code: p.code ? String(p.code) : undefined,
-      hostId: String(p.hostId ?? ""),
-      players: Array.isArray(p.players) ? p.players : [],
-      pending: Array.isArray(p.pending) ? p.pending : [],
-      rounds: Array.isArray(p.rounds) ? p.rounds : [],
-      status: (p.status === "setup" || p.status === "active" || p.status === "completed") ? p.status : "setup",
-      createdAt: Number(p.createdAt ?? Date.now()),
-      updatedAt: Number(p.updatedAt ?? Date.now()),
-      coHosts: Array.isArray(p.coHosts) ? p.coHosts.map(String) : [],
-    };
-  } catch { return null; }
+async function readIds(env: Env, key: string): Promise<string[]> {
+  try { return JSON.parse((await env.KAVA_TOURNAMENTS.get(key)) || "[]"); } catch { return []; }
 }
 
 export async function GET(req: Request) {
-  const { env: raw } = getRequestContext(); const env = raw as unknown as Env;
-  const userId = (new URL(req.url)).searchParams.get("userId") || "";
-  if (!userId) return NextResponse.json({ error:"Missing userId" },{ status:400 });
+  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
+  const url = new URL(req.url);
+  const userId = (url.searchParams.get("userId") || "").trim();
+  if (!userId) return NextResponse.json({ error: "Missing userId" }, { status: 400 });
 
   const [hostingIds, playingIds] = await Promise.all([
-    readArr(env, THOST(userId)),
-    readArr(env, TPLAY(userId)), // includes “pending” memberships too
+    readIds(env, THOST(userId)),
+    readIds(env, TPLAYER(userId)),
   ]);
 
-  const uniq = (xs: string[]) => Array.from(new Set(xs));
-  const hIds = uniq(hostingIds);
-  const pIds = uniq(playingIds);
+  async function hydrate(ids: string[]): Promise<Tourney[]> {
+    const out: Tourney[] = [];
+    for (const id of ids) {
+      const raw = await env.KAVA_TOURNAMENTS.get(TKEY(id));
+      if (!raw) continue;
+      try {
+        const t = JSON.parse(raw) as Tourney;
+        out.push({
+          id: String(t.id),
+          name: String(t.name || "Untitled"),
+          hostId: String(t.hostId || ""),
+          status: (t.status as any) || "setup",
+          createdAt: Number(t.createdAt || Date.now()),
+        });
+      } catch {}
+    }
+    // newest first
+    return out.sort((a,b)=>b.createdAt - a.createdAt);
+  }
 
-  const [hosting, playing] = await Promise.all([
-    Promise.all(hIds.map(async id => pick(await env.KAVA_TOURNAMENTS.get(TKEY(id)) || "null"))),
-    Promise.all(pIds.map(async id => pick(await env.KAVA_TOURNAMENTS.get(TKEY(id)) || "null"))),
-  ]);
-
-  return NextResponse.json({
-    hosting: hosting.filter(Boolean).map(t => ({ id:t!.id, hostId:t!.hostId, name:t!.name, code:t!.code, createdAt:t!.createdAt, players:t!.players })),
-    playing: playing.filter(Boolean).map(t => ({ id:t!.id, hostId:t!.hostId, name:t!.name, code:t!.code, createdAt:t!.createdAt, players:t!.players })),
-  }, { headers: { "cache-control":"no-store" }});
+  const [hosting, playing] = await Promise.all([hydrate(hostingIds), hydrate(playingIds)]);
+  return NextResponse.json({ hosting, playing }, { headers: { "cache-control": "no-store" } });
 }
