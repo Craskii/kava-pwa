@@ -3,7 +3,7 @@
 export const runtime = 'edge';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
 import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
@@ -22,7 +22,7 @@ type ListGame = {
   queue?: string[];
   queue8?: string[]; queue9?: string[];
   prefs?: Record<string, Pref>;
-  cohosts?: string[];
+  cohosts?: string[]; // client field (we also mirror to coHosts when saving)
   audit?: AuditEntry[];
   v?: number; schema?: 'v2';
 };
@@ -74,7 +74,12 @@ function coerceList(raw: any): ListGame | null {
       ].map((x: any) => String(x)).filter(Boolean);
     }
 
-    const cohosts: string[] = Array.isArray(raw.cohosts) ? raw.cohosts.map(String) : [];
+    // accept either key from server
+    const cohosts: string[] =
+      Array.isArray(raw.cohosts) ? raw.cohosts.map(String) :
+      Array.isArray(raw.coHosts) ? raw.coHosts.map(String) :
+      [];
+
     const audit: AuditEntry[] = Array.isArray(raw.audit) ? raw.audit.slice(-100) : [];
 
     return {
@@ -92,25 +97,29 @@ function coerceList(raw: any): ListGame | null {
   } catch { return null; }
 }
 
-/* POST save (no If-Match → avoids 412). */
+/* POST save (mirror coHosts & send x-user-id) */
 async function saveList(doc: ListGame) {
   try {
     const me = JSON.parse(localStorage.getItem('kava_me') || 'null');
+    const payload: any = { ...doc, schema: 'v2' };
+    // mirror both keys so server/old clients agree
+    payload.coHosts = Array.isArray(doc.cohosts) ? [...doc.cohosts] : [];
+    payload.cohosts = Array.isArray(doc.cohosts) ? [...doc.cohosts] : [];
     await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'x-user-id': me?.id || ''
       },
-      body: JSON.stringify({ ...doc, schema: 'v2' }),
+      body: JSON.stringify(payload),
       keepalive: true,
       cache: 'no-store',
     });
   } catch {}
 }
+
 /* ============ Component ============ */
 export default function ListLobby() {
-  const r = useRouter();
   const params = useParams<{ id: string }>();
   const id = decodeURIComponent(String(params?.id ?? ''));
 
@@ -120,7 +129,7 @@ export default function ListLobby() {
   const [showTableControls, setShowTableControls] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [supportsDnD, setSupportsDnD] = useState<boolean>(false);
+  const [supportsDnD, setSupportsDnD] = useState<boolean>(false); // touch fallback
 
   useEffect(() => { setSupportsDnD(!('ontouchstart' in window)); }, []);
 
@@ -265,7 +274,7 @@ export default function ListLobby() {
     };
     gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, 500);
 
-    // visibility
+    // visibility (re-attach on focus)
     if (!gl.visHook) {
       gl.visHook = true;
       document.addEventListener('visibilitychange', () => {
@@ -332,7 +341,7 @@ export default function ListLobby() {
   }, []);
 
   /* ---- Early UI ---- */
-  if (!id || id === 'create' || !g) {
+  if (!id || !g) {
     return (
       <main ref={pageRootRef} style={wrap}>
         <BackButton href="/" />
@@ -440,6 +449,8 @@ export default function ListLobby() {
       pendingDraft.current.v = (Number(pendingDraft.current.v) || 0) + 1;
     }
     mut(pendingDraft.current);
+    // keep both cohost keys mirrored while editing
+    (pendingDraft.current as any).coHosts = [...(pendingDraft.current.cohosts ?? [])];
     autoSeat(pendingDraft.current);
     setG(pendingDraft.current);
     if (batchTimer.current) clearTimeout(batchTimer.current);
@@ -461,25 +472,20 @@ export default function ListLobby() {
   const enqueuePid = (pid: string) => scheduleCommit(d => { d.queue ??= []; if (!d.queue.includes(pid)) d.queue.push(pid); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = (d.queue ?? []).filter(x => x !== pid); });
 
-  // NEW: leave list (for any non-host in Players)
   const leaveList = () => scheduleCommit(d => {
     d.players = d.players.filter(p => p.id !== me.id);
     d.queue = (d.queue ?? []).filter(x => x !== me.id);
-    d.tables = d.tables.map(t => ({
-      ...t,
-      a: t.a === me.id ? undefined : t.a,
-      b: t.b === me.id ? undefined : t.b
-    }));
+    d.tables = d.tables.map(t => ({ ...t, a: t.a === me.id ? undefined : t.a, b: t.b === me.id ? undefined : t.b }));
     if (d.prefs) delete d.prefs[me.id];
   });
 
-  // Cohost assign/remove — now allowed for host **and** cohost (full powers)
+  // FULL co-host powers; keep both keys mirrored
   const toggleCohost = (pid: string) => {
-    if (!iHaveMod) return;
     scheduleCommit(d => {
       d.cohosts ??= [];
-      if (d.cohosts.includes(pid)) d.cohosts = d.cohosts.filter(x => x !== pid);
-      else d.cohosts.push(pid);
+      const has = d.cohosts.includes(pid);
+      d.cohosts = has ? d.cohosts.filter(x => x !== pid) : [...d.cohosts, pid];
+      (d as any).coHosts = [...d.cohosts];
     });
   };
 
@@ -498,10 +504,8 @@ export default function ListLobby() {
   const skipFirst = () => scheduleCommit(d => {
     d.queue ??= [];
     if (d.queue.length >= 2) {
-      const first = d.queue.shift()!;
-      const second = d.queue.shift()!;
-      d.queue.unshift(first);
-      d.queue.unshift(second);
+      const first = d.queue.shift()!; const second = d.queue.shift()!;
+      d.queue.unshift(first); d.queue.unshift(second);
     }
   });
 
@@ -582,7 +586,6 @@ export default function ListLobby() {
             <div style={{display:'grid',gap:6,justifyItems:'end'}}>
               {!seated && !queue.includes(me.id) && <button style={btn} onClick={joinQueue} disabled={busy}>Join queue</button>}
               {queue.includes(me.id) && <button style={btnGhost} onClick={leaveQueue} disabled={busy}>Leave queue</button>}
-              {/* NEW: Leave list (for anyone who isn’t the host but is a player) */}
               {!iAmHost && players.some(p => p.id === me.id) && (
                 <button style={btnGhost} onClick={leaveList} disabled={busy}>Leave list</button>
               )}
@@ -748,7 +751,7 @@ export default function ListLobby() {
                             <button style={pref==='8 foot'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'8 foot')} disabled={busy}>8-ft</button>
                           </div>
                         )}
-                        {/* FULL CO-HOST POWERS: allow cohosts to grant/remove cohost too */}
+                        {/* FULL co-host powers */}
                         {iHaveMod && p.id !== g.hostId && (
                           <button style={btnMini} onClick={()=>toggleCohost(p.id)} disabled={busy}>
                             {isCohost ? 'Remove cohost' : 'Make cohost'}

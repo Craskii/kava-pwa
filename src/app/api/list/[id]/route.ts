@@ -27,7 +27,7 @@ type ListGame = {
   queue8: string[];
   queue9: string[];
   prefs?: Record<string, Pref>;
-  coHosts?: string[];
+  coHosts?: string[]; // canonical on server
 };
 
 const LKEY = (id: string) => `l:${id}`;
@@ -60,6 +60,7 @@ async function removeFrom(env: Env, key: string, id: string) {
   if (next.length !== arr.length) await writeArr(env, key, next);
 }
 
+/* ---------- Coercers (accept both coHosts/cohosts) ---------- */
 function coerceIn(doc: any): ListGame {
   const players: Player[] = Array.isArray(doc?.players)
     ? doc.players.map((p: any) => ({ id: String(p?.id ?? ""), name: String(p?.name ?? "Player") }))
@@ -96,8 +97,12 @@ function coerceIn(doc: any): ListGame {
     }
   }
 
-  const coHosts: string[] = Array.isArray(doc?.coHosts)
-    ? doc.coHosts.map((s: any) => String(s)).filter(Boolean) : [];
+  // Accept BOTH keys from clients
+  const coHostsSrc =
+    Array.isArray(doc?.coHosts) ? doc.coHosts :
+    Array.isArray(doc?.cohosts) ? doc.cohosts :
+    [];
+  const coHosts: string[] = coHostsSrc.map((s: any) => String(s)).filter(Boolean);
 
   return {
     id: String(doc?.id ?? ""),
@@ -118,7 +123,8 @@ function coerceIn(doc: any): ListGame {
 function coerceOut(stored: any) {
   const x = coerceIn(stored);
   const queue = [...x.queue9, ...x.queue8];
-  return { ...x, queue };
+  // Return BOTH spellings to satisfy older clients
+  return { ...x, queue, cohosts: x.coHosts };
 }
 
 function dropFromQueues(x: ListGame, pid?: string) {
@@ -165,7 +171,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   return new NextResponse(JSON.stringify(out), { headers: { "content-type": "application/json", ETag: etag, "Cache-Control": "public, max-age=0, stale-while-revalidate=30", "x-l-version": String(v) } });
 }
 
-/* ---------- PUT/POST (AUTH added) ---------- */
+/* ---------- PUT/POST (auth: host or co-host) ---------- */
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
@@ -174,7 +180,6 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   try { body = coerceIn(await req.json()); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
   if (body.id !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 });
 
-  // 🔐 Only host or co-hosts can modify
   const caller = (req.headers.get("x-user-id") || "").trim();
   if (!caller || (caller !== body.hostId && !(body.coHosts ?? []).includes(caller))) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
