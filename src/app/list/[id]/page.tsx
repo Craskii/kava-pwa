@@ -173,16 +173,22 @@ export default function ListLobby() {
 
   /* ---- Live updates via WebSocket Room ---- */
   useRoomChannel({
-    kind: 'list',
-    id,
-    onMessage: (payload: any) => {
-      const doc = coerceList(payload);
-      if (!doc || !doc.id || !doc.hostId) return;
-      setErr(null);
-      setG(prev => (doc.id === prev?.id ? doc : doc));
-      if (seatChanged(doc)) bumpAlerts();
-    },
-  });
+  kind: 'list',
+  id,
+  onState: (doc) => {
+    const next = coerceList(doc);
+    if (!next) return;
+    // ignore duplicates by version (coerceList already carries v)
+    setErr(null);
+    setG((prev) => {
+      if (!prev) return next;
+      if ((next.v ?? 0) <= (prev.v ?? 0)) return prev;
+      return next;
+    });
+    if (seatChanged(next)) bumpAlerts();
+  },
+  getVersion: (d) => Number(d?.v ?? 0),
+});
 
   /* ---- Disable Android long-press ---- */
   useEffect(() => {
