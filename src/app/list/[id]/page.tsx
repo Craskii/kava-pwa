@@ -8,6 +8,7 @@ import BackButton from '../../../components/BackButton';
 import AlertsToggle from '../../../components/AlertsToggle';
 import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
 import { uid } from '@/lib/storage';
+import { useRoomChannel } from '@/hooks/useRoomChannel';
 
 /* ============ Types ============ */
 type TableLabel = '8 foot' | '9 foot';
@@ -26,18 +27,6 @@ type ListGame = {
   audit?: AuditEntry[];
   v?: number; schema?: 'v2';
 };
-
-/* ============ Globals ============ */
-type KavaGlobals = {
-  streams: Record<string, { es: EventSource | null; refs: number; backoff: number }>;
-  heartbeats: Record<string, { t: number | null; refs: number }>;
-  visHook: boolean;
-};
-function getGlobals(): KavaGlobals {
-  const any = globalThis as any;
-  if (!any.__kava_globs) any.__kava_globs = { streams: {}, heartbeats: {}, visHook: false } as KavaGlobals;
-  return any.__kava_globs as KavaGlobals;
-}
 
 /* ============ Helpers ============ */
 function coerceList(raw: any): ListGame | null {
@@ -101,14 +90,12 @@ async function saveList(doc: ListGame) {
   try {
     const me = JSON.parse(localStorage.getItem('kava_me') || 'null');
     const payload: any = { ...doc, schema: 'v2' };
+    // keep both keys mirrored for older clients/servers
     payload.coHosts = Array.isArray(doc.cohosts) ? [...doc.cohosts] : [];
     payload.cohosts = Array.isArray(doc.cohosts) ? [...doc.cohosts] : [];
     await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
       method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-user-id': me?.id || ''
-      },
+      headers: { 'content-type': 'application/json', 'x-user-id': me?.id || '' },
       body: JSON.stringify(payload),
       keepalive: true,
       cache: 'no-store',
@@ -128,7 +115,6 @@ export default function ListLobby() {
   const [showHistory, setShowHistory] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [supportsDnD, setSupportsDnD] = useState<boolean>(false);
-
   useEffect(() => { setSupportsDnD(!('ontouchstart' in window)); }, []);
 
   const me = useMemo<Player>(() => {
@@ -154,16 +140,7 @@ export default function ListLobby() {
   });
 
   const lastSeatSig = useRef<string>('');
-  const lastVersion = useRef<number>(0);
   const excludeSeatPidRef = useRef<string | null>(null);
-
-  const commitQ = useRef<(() => Promise<void>)[]>([]);
-  const batchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pendingDraft = useRef<ListGame | null>(null);
-
-  const suppressRef = useRef(false);
-  const watchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pollRef = useRef<number | null>(null);
   const pageRootRef = useRef<HTMLDivElement | null>(null);
 
   const seatChanged = (next: ListGame | null) => {
@@ -175,160 +152,37 @@ export default function ListLobby() {
     return false;
   };
 
-  /* ---- Stream + snapshot/poll ---- */
+  /* ---- Initial snapshot ---- */
   useEffect(() => {
     if (!id || id === 'create') {
       setG(null);
       setErr(id === 'create' ? 'Waiting for a new list id…' : null);
       return;
     }
-
-    const gl = getGlobals();
-    if (!gl.streams[id]) gl.streams[id] = { es: null, refs: 0, backoff: 1000 };
-    gl.streams[id].refs++;
-    setErr(null);
-    lastVersion.current = 0;
-
-    const startPoller = () => {
-      if (pollRef.current) return;
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: 'no-store' });
-          if (!res.ok) return;
-          const doc = coerceList(await res.json()); if (!doc) return;
-          const v = doc.v ?? 0;
-          if (v <= lastVersion.current) return;
-          lastVersion.current = v;
-          setErr(null);
-          setG(doc);
-          if (seatChanged(doc)) bumpAlerts();
-        } catch {}
-      }, 3000);
-    };
-    const stopPoller = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
-
-    const attach = () => {
-      const s = gl.streams[id];
-      if (s.es) return;
-      const es = new EventSource(`/api/list/${encodeURIComponent(id)}/stream`);
-      s.es = es;
-      es.onmessage = (e) => {
-        if (suppressRef.current) return;
-        try {
-          const doc = coerceList(JSON.parse(e.data));
-          if (!doc || !doc.id || !doc.hostId) return;
-          const incomingV = doc.v ?? 0;
-          if (incomingV <= lastVersion.current) return;
-          lastVersion.current = incomingV;
-          stopPoller();
-          setErr(null);
-          setG(doc);
-          if (seatChanged(doc)) bumpAlerts();
-        } catch {}
-      };
-      es.onerror = () => {
-        try { es.close(); } catch {}
-        s.es = null;
-        const delay = Math.min(15000, s.backoff);
-        s.backoff = Math.min(15000, s.backoff * 2);
-        startPoller();
-        setTimeout(() => { if (gl.streams[id]?.refs) attach(); }, delay);
-      };
-      s.backoff = 1000;
-    };
-
+    let cancelled = false;
     (async () => {
       try {
         const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: 'no-store' });
-        if (!res.ok) {
-          if (res.status === 404) {
-            setErr('List not found yet (404). If you just created it, give it a moment.');
-            startPoller();
-          } else {
-            setErr(`Failed to load list (${res.status}). Retrying…`);
-            startPoller();
-          }
-          attach();
-          return;
-        }
-        const doc = coerceList(await res.json()); if (!doc) { setErr('Invalid list data'); startPoller(); attach(); return; }
-        lastVersion.current = doc.v ?? 0;
-        setErr(null);
-        setG(doc);
-        attach();
-      } catch {
-        setErr('Network error loading list. Retrying…');
-        startPoller();
-        attach();
-      }
+        if (!res.ok) { setErr(`Failed to load list (${res.status})`); return; }
+        const doc = coerceList(await res.json()); if (!doc) { setErr('Invalid list data'); return; }
+        if (!cancelled) { setErr(null); setG(doc); }
+      } catch { if (!cancelled) setErr('Network error loading list'); }
     })();
+    return () => { cancelled = true; };
+  }, [id]);
 
-    // heartbeat
-    const hbKey = `hb:${id}:${me.id}`;
-    if (!gl.heartbeats[hbKey]) gl.heartbeats[hbKey] = { t: null, refs: 0 };
-    gl.heartbeats[hbKey].refs++;
-    if (gl.heartbeats[hbKey].t) { clearTimeout(gl.heartbeats[hbKey].t as number); gl.heartbeats[hbKey].t = null; }
-    const HEARTBEAT_MS = 25_000;
-    const sendHeartbeat = () => {
-      const url = `/api/me/status?userId=${encodeURIComponent(me.id)}&listId=${encodeURIComponent(id)}&ts=${Date.now()}`;
-      try { fetch(url, { method: 'GET', keepalive: true, cache: 'no-store' }).catch(() => {}); }
-      catch { const img = new Image(); img.src = url; }
-      gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, HEARTBEAT_MS);
-    };
-    gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, 500);
-
-    // visibility
-    if (!gl.visHook) {
-      gl.visHook = true;
-      document.addEventListener('visibilitychange', () => {
-        const hidden = document.visibilityState === 'hidden';
-        const g1 = getGlobals();
-        for (const [lid, rec] of Object.entries(g1.streams)) {
-          if (!rec.refs) continue;
-          if (hidden) {
-            if (rec.es) { try { rec.es.close(); } catch {} rec.es = null; }
-          } else if (!rec.es) {
-            const es = new EventSource(`/api/list/${encodeURIComponent(lid)}/stream`);
-            rec.es = es;
-            es.onmessage = (e) => {
-              if (suppressRef.current) return;
-              try {
-                const doc = coerceList(JSON.parse(e.data));
-                if (!doc || !doc.id || !doc.hostId) return;
-                const incomingV = doc.v ?? 0;
-                if (incomingV <= lastVersion.current) return;
-                lastVersion.current = incomingV;
-                setG(prev => (doc.id === prev?.id ? doc : doc));
-                setErr(null);
-                if (seatChanged(doc)) bumpAlerts();
-              } catch {}
-            };
-            es.onerror = () => { try { es.close(); } catch {}; rec.es = null; };
-          }
-        }
-      });
-    }
-
-    return () => {
-      const s = gl.streams[id];
-      if (s) {
-        s.refs--;
-        if (s.refs <= 0) {
-          if (s.es) { try { s.es.close(); } catch {} }
-          delete gl.streams[id];
-        }
-      }
-      const hb = gl.heartbeats[hbKey];
-      if (hb) {
-        hb.refs--;
-        if (hb.refs <= 0) {
-          if (hb.t) clearTimeout(hb.t as number);
-          delete gl.heartbeats[hbKey];
-        }
-      }
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    };
-  }, [id, me.id]);
+  /* ---- Live updates via WebSocket Room ---- */
+  useRoomChannel({
+    kind: 'list',
+    id,
+    onMessage: (payload: any) => {
+      const doc = coerceList(payload);
+      if (!doc || !doc.id || !doc.hostId) return;
+      setErr(null);
+      setG(prev => (doc.id === prev?.id ? doc : doc));
+      if (seatChanged(doc)) bumpAlerts();
+    },
+  });
 
   /* ---- Disable Android long-press ---- */
   useEffect(() => {
@@ -417,23 +271,22 @@ export default function ListLobby() {
   }
 
   /* ---- commit batching ---- */
+  const commitQ = useRef<(() => Promise<void>)[]>([]);
+  const batchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingDraft = useRef<ListGame | null>(null);
+
   function flushPending() {
     if (!pendingDraft.current) return;
     const toSave = pendingDraft.current;
     pendingDraft.current = null;
     commitQ.current.push(async () => {
       setBusy(true);
-      suppressRef.current = true;
-      if (watchRef.current) clearTimeout(watchRef.current);
-      watchRef.current = setTimeout(() => { setBusy(false); suppressRef.current = false; }, 8000);
       try {
         setG(toSave);
         await saveList(toSave);
         if (seatChanged(toSave)) bumpAlerts();
       } finally {
-        if (watchRef.current) { clearTimeout(watchRef.current); watchRef.current = null; }
         setBusy(false);
-        suppressRef.current = false;
       }
     });
     if (commitQ.current.length === 1) runNext();
@@ -456,10 +309,7 @@ export default function ListLobby() {
     autoSeat(pendingDraft.current);
     setG(pendingDraft.current);
     if (batchTimer.current) clearTimeout(batchTimer.current);
-    batchTimer.current = setTimeout(() => {
-      batchTimer.current = null;
-      flushPending();
-    }, 200);
+    batchTimer.current = setTimeout(() => { batchTimer.current = null; flushPending(); }, 200);
   }
 
   /* ---- actions ---- */
@@ -519,37 +369,6 @@ export default function ListLobby() {
       d.queue = (d.queue ?? []).filter(x => x !== loser);
       d.queue!.push(loser);
       excludeSeatPidRef.current = loser;
-    });
-  };
-
-  /* ---- DnD ---- */
-  type DragInfo =
-    | { type: 'seat'; table: number; side: 'a'|'b'; pid?: string }
-    | { type: 'queue'; index: number; pid: string };
-  const onDragStart = (e: React.DragEvent, info: DragInfo) => { if (!iHaveMod) return; e.dataTransfer.setData('application/json', JSON.stringify(info)); e.dataTransfer.effectAllowed = 'move'; };
-  const onDragOver = (e: React.DragEvent) => { if (!iHaveMod) return; e.preventDefault(); };
-  const parseInfo = (ev: React.DragEvent): DragInfo | null => { try { return JSON.parse(ev.dataTransfer.getData('application/json')); } catch { return null; } };
-  const handleDrop = (ev: React.DragEvent, target: DragInfo) => {
-    if (!iHaveMod) return; ev.preventDefault();
-    const src = parseInfo(ev); if (!src) return;
-    scheduleCommit(d => {
-      d.queue ??= [];
-      const moveWithin = (arr: string[], from: number, to: number) => { const a = [...arr]; const [p] = a.splice(from, 1); a.splice(Math.max(0, Math.min(a.length, to)), 0, p); return a; };
-      const removeEverywhere = (pid: string) => { d.queue = (d.queue ?? []).filter(x => x !== pid); d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b })); };
-      const placeSeat = (ti: number, side: 'a'|'b', pid?: string) => { if (!pid) return; removeEverywhere(pid); d.tables[ti][side] = pid; };
-
-      if (target.type === 'seat') {
-        if (src.type === 'seat') {
-          const sp = d.tables[src.table][src.side], tp = d.tables[target.table][target.side];
-          d.tables[src.table][src.side] = tp; d.tables[target.table][target.side] = sp;
-        } else if (src.type === 'queue') {
-          d.queue = (d.queue ?? []).filter(x => x !== src.pid);
-          placeSeat(target.table, target.side, src.pid);
-        }
-      } else if (target.type === 'queue') {
-        if (src.type === 'queue') d.queue = moveWithin(d.queue!, src.index, target.index);
-        else if (src.type === 'seat') { const pid = d.tables[src.table][src.side]; d.tables[src.table][src.side] = undefined; if (pid) d.queue!.splice(target.index, 0, pid); }
-      }
     });
   };
 

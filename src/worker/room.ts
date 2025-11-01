@@ -1,93 +1,74 @@
-// src/worker/rooms.ts
-
-class BaseRoom {
+export class ListRoom {
   state: DurableObjectState;
-  env: any;
-  sinks = new Set<WritableStreamDefaultWriter<Uint8Array>>();
-  lastVersion = 0;
-  lastPayload: any = null;
+  sockets: Set<WebSocket>;
+  snapshot: any;
 
   constructor(state: DurableObjectState, env: any) {
     this.state = state;
-    this.env = env;
+    this.sockets = new Set();
+    this.snapshot = null;
   }
 
   async fetch(req: Request) {
     const url = new URL(req.url);
+    if (url.pathname === '/ws' && req.headers.get('upgrade') === 'websocket') {
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+      this.acceptSocket(server);
+      return new Response(null, { status: 101, webSocket: client });
+    }
 
-    if (req.method === "GET" && url.pathname.endsWith("/sse")) {
-      return this.handleSSE();
+    if (url.pathname === '/publish' && req.method === 'POST') {
+      const payload = await req.json().catch(() => ({}));
+      // update cached snapshot and fan out
+      this.snapshot = payload;
+      this.broadcast(JSON.stringify({ t: 'state', data: this.snapshot }));
+      return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
     }
-    if (req.method === "POST" && url.pathname.endsWith("/publish")) {
-      const body = await req.json().catch(() => ({}));
-      const version = Number(body?.version ?? 0);
-      const payload = body?.payload ?? null;
-      if (Number.isFinite(version) && version > this.lastVersion) {
-        this.lastVersion = version;
-        this.lastPayload = payload;
-        await this.broadcast(payload);
-      }
-      return new Response(null, { status: 204 });
-    }
-    if (req.method === "GET" && url.pathname.endsWith("/snapshot")) {
-      return new Response(JSON.stringify({ version: this.lastVersion, payload: this.lastPayload }), {
-        headers: { "content-type": "application/json", "cache-control": "no-store" },
+
+    if (url.pathname === '/snapshot') {
+      return new Response(JSON.stringify(this.snapshot ?? {}), {
+        headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
       });
     }
-    return new Response("Not found", { status: 404 });
+
+    return new Response('not found', { status: 404 });
   }
 
-  private handleSSE() {
-    const stream = new ReadableStream<Uint8Array>({
-      start: (controller) => {
-        const enc = new TextEncoder();
-        const writeObj = (obj: any) => controller.enqueue(enc.encode(`data: ${JSON.stringify(obj)}\n\n`));
+  acceptSocket(ws: WebSocket) {
+    ws.accept();
+    this.sockets.add(ws);
 
-        // send snapshot immediately
-        if (this.lastPayload) writeObj(this.lastPayload);
+    // send current snapshot to new client
+    if (this.snapshot) {
+      try { ws.send(JSON.stringify({ t: 'state', data: this.snapshot })); } catch {}
 
-        // keep-alive ping
-        const keep = setInterval(() => writeObj({ __ping: Date.now() }), 25_000);
-
-        // Writable writer for broadcast
-        // @ts-ignore - internal access to writer
-        const writer: WritableStreamDefaultWriter<Uint8Array> = controller.writable?.getWriter?.() ?? (controller as any);
-        this.sinks.add(writer);
-
-        // cleanup on cancel/close
-        // @ts-ignore
-        controller._cleanup = () => {
-          clearInterval(keep);
-          this.sinks.delete(writer);
-        };
-      },
-      cancel: (reason) => {
-        try {
-          // @ts-ignore
-          reason?._cleanup?.();
-        } catch {}
-      }
-    });
-
-    return new Response(stream, {
-      headers: {
-        "content-type": "text/event-stream",
-        "cache-control": "no-cache",
-        "connection": "keep-alive",
-      },
-    });
-  }
-
-  private async broadcast(payload: any) {
-    const enc = new TextEncoder();
-    const buf = enc.encode(`data: ${JSON.stringify(payload)}\n\n`);
-    const dead: WritableStreamDefaultWriter<Uint8Array>[] = [];
-    for (const w of this.sinks) {
-      try { await w.write?.(buf); } catch { dead.push(w); }
     }
-    for (const w of dead) this.sinks.delete(w);
+    // keepalive (server side)
+    const ping = () => { try { ws.send(JSON.stringify({ t: 'ping', ts: Date.now() })); } catch {} };
+    const pingTimer = setInterval(ping, 30000);
+
+    ws.addEventListener('message', (evt) => {
+      // optional: handle client pings or client->server actions
+      // const msg = JSON.parse(evt.data);
+    });
+
+    const close = () => {
+      clearInterval(pingTimer);
+      this.sockets.delete(ws);
+      try { ws.close(); } catch {}
+    };
+    ws.addEventListener('close', close);
+    ws.addEventListener('error', close);
+  }
+
+  broadcast(text: string) {
+    const dead: WebSocket[] = [];
+    for (const s of this.sockets) {
+      try { s.send(text); } catch { dead.push(s); }
+    }
+    for (const d of dead) this.sockets.delete(d);
   }
 }
 
-export class ListRoom extends BaseRoom {}
-export class TournamentRoom extends BaseRoom {}
+export class TournamentRoom extends ListRoom {}
