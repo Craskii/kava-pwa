@@ -1,24 +1,34 @@
-'use client';
-import React from 'react';
+"use client";
+import React from "react";
 
-type Props = { children: React.ReactNode; fallback?: React.ReactNode };
-type State = { hasError: boolean; err?: unknown };
-
-export default class ErrorBoundary extends React.Component<Props, State> {
-  state: State = { hasError: false };
-  static getDerivedStateFromError(err: unknown) { return { hasError: true, err }; }
-  componentDidCatch(err: unknown, info: unknown) {
-    console.error('Lists ErrorBoundary caught:', err, info);
+export class ErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: any }
+> {
+  constructor(props: any) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: any) {
+    return { error };
+  }
+  componentDidCatch(error: any, info: any) {
+    // eslint-disable-next-line no-console
+    console.error("[ErrorBoundary] caught:", error, info);
   }
   render() {
-    if (this.state.hasError) {
-      return this.props.fallback ?? (
-        <div style={{padding:16, background:'#3b0d0d', border:'1px solid #7f1d1d', borderRadius:8}}>
-          <b>Something went wrong loading this page.</b>
-          <div style={{opacity:.8, marginTop:6, fontSize:12}}>Check the browser console for details.</div>
+    if (!this.state.error) return this.props.children;
+    const e = this.state.error;
+    return (
+      <div style={{ border: "1px solid #f00", padding: 12, borderRadius: 8, background: "#220" }}>
+        <b>UI crashed</b>
+        <pre style={{ whiteSpace: "pre-wrap" }}>
+          {(e?.message || e || "").toString()}
+        </pre>
+        <div style={{ opacity: 0.7, fontSize: 12 }}>
+          Open DevTools → Console for full stack & component trace.
         </div>
-      );
-    }
-    return this.props.children;
+      </div>
+    );
   }
 }

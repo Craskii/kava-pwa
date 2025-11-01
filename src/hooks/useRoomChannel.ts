@@ -1,53 +1,67 @@
-// src/hooks/useRoomChannel.ts
 import { useEffect, useRef } from "react";
 
 type Handler = (msg: any) => void;
 
+const isBrowser = () => typeof window !== "undefined" && typeof document !== "undefined";
+
 /**
- * Subscribes to room SSE and emits parsed events:
- * - {t:"state", data: {...}}  // DO publish
- * Degrades silently (no throws) if SSE fails.
+ * Opens SSE to /api/room/:kind/:id/sse.
+ * Never throws during render. Retries with backoff.
+ * When ?debug=1 is in URL, logs messages to console.
  */
 export function useRoomChannel(kind: "list" | "tournament", id: string, onMessage: Handler) {
-  const onMessageRef = useRef(onMessage);
-  onMessageRef.current = onMessage;
+  const cbRef = useRef(onMessage);
+  cbRef.current = onMessage;
 
   useEffect(() => {
-    if (!id) return;
+    if (!isBrowser() || !id) return;
 
     let es: EventSource | null = null;
-    let stopped = false;
+    let stop = false;
+    let tries = 0;
+    const debug = new URLSearchParams(window.location.search).has("debug");
 
     const open = () => {
-      if (stopped) return;
+      if (stop) return;
       try {
         es = new EventSource(`/api/room/${kind}/${encodeURIComponent(id)}/sse`);
-      } catch {
+      } catch (e) {
+        if (debug) console.warn("[room] failed to create EventSource", e);
         es = null;
         return;
       }
       if (!es) return;
 
+      es.onopen = () => {
+        tries = 0;
+        if (debug) console.log("[room] SSE open");
+      };
+
       es.onmessage = (ev) => {
+        if (!ev?.data) return;
         try {
-          // Expect server to send JSON lines (we always send JSON from DO)
           const obj = JSON.parse(ev.data);
-          onMessageRef.current?.(obj);
-        } catch {
-          // ignore bad rows
+          if (debug) console.log("[room] message:", obj);
+          cbRef.current?.(obj);
+        } catch (e) {
+          if (debug) console.warn("[room] bad JSON:", ev.data);
         }
       };
+
       es.onerror = () => {
-        // backoff reopen
+        if (debug) console.warn("[room] SSE error; closing and retrying…");
         try { es?.close(); } catch {}
         es = null;
-        if (!stopped) setTimeout(open, 1500);
+        if (!stop) {
+          const backoff = Math.min(15000, 500 * Math.pow(2, tries++));
+          setTimeout(open, backoff);
+        }
       };
     };
 
     open();
     return () => {
-      stopped = true;
+      stop = true;
       try { es?.close(); } catch {}
       es = null;
     };

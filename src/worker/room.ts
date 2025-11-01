@@ -1,9 +1,6 @@
 // src/worker/room.ts
-// Durable Object for live room fanout (SSE-first). Keeps a cached snapshot.
-
 export class ListRoom {
   state: DurableObjectState;
-  // active SSE subscribers
   subscribers: Set<ReadableStreamDefaultController>;
   snapshot: any;
 
@@ -17,46 +14,26 @@ export class ListRoom {
     const url = new URL(req.url);
     const path = url.pathname;
 
-    // ---- SSE endpoint ----
     if (path === "/sse" && req.method === "GET") {
-      const encoder = new TextEncoder();
+      const enc = new TextEncoder();
 
       const stream = new ReadableStream({
         start: (controller) => {
-          // remember subscriber
           this.subscribers.add(controller);
-
-          // send initial headers/event
-          controller.enqueue(encoder.encode(`: welcome\n\n`));
-
-          // send current snapshot immediately
+          controller.enqueue(enc.encode(`: hello\n\n`));
           if (this.snapshot) {
-            const payload = JSON.stringify({ t: "state", data: this.snapshot });
-            controller.enqueue(encoder.encode(`data: ${payload}\n\n`));
+            controller.enqueue(enc.encode(`data: ${JSON.stringify({ t: "state", data: this.snapshot })}\n\n`));
           }
-
-          // heartbeat every 25s so CF/浏览器 keep it open
           const hb = setInterval(() => {
-            try {
-              controller.enqueue(encoder.encode(`: ping ${Date.now()}\n\n`));
-            } catch {
-              // if write fails, drop on next abort
-            }
+            try { controller.enqueue(enc.encode(`: ping ${Date.now()}\n\n`)); } catch {}
           }, 25000);
-
-          // if client aborts, clean up
-          const abort = () => {
+          // @ts-ignore
+          req.signal?.addEventListener("abort", () => {
             clearInterval(hb);
             this.subscribers.delete(controller);
             try { controller.close(); } catch {}
-          };
-          // next-on-pages / CF provides AbortSignal
-          // @ts-ignore
-          req.signal?.addEventListener("abort", abort);
-        },
-        cancel: () => {
-          // stream programmatically cancelled
-        },
+          });
+        }
       });
 
       return new Response(stream, {
@@ -69,7 +46,6 @@ export class ListRoom {
       });
     }
 
-    // ---- publish: update snapshot + fanout ----
     if (path === "/publish" && req.method === "POST") {
       const payload = await req.json().catch(() => ({}));
       this.snapshot = payload;
@@ -79,16 +55,13 @@ export class ListRoom {
       });
     }
 
-    // ---- snapshot: return cached ----
     if (path === "/snapshot" && req.method === "GET") {
       return new Response(JSON.stringify(this.snapshot ?? {}), {
         headers: { "content-type": "application/json", "cache-control": "no-store" },
       });
     }
 
-    // Back-compat: if someone hits /ws (we’re SSE-first now)
     if (path === "/ws" && req.headers.get("upgrade") === "websocket") {
-      // Nicely reject; we’re not using WS anymore.
       return new Response("SSE only", { status: 400 });
     }
 

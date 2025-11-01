@@ -9,6 +9,8 @@ import AlertsToggle from '../../../components/AlertsToggle';
 import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
 import { uid } from '@/lib/storage';
 import { useRoomChannel } from '@/hooks/useRoomChannel';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import DebugPanel, { debugLine } from '@/components/DebugPanel';
 
 /* ============ Types ============ */
 type TableLabel = '8 foot' | '9 foot';
@@ -173,20 +175,24 @@ export default function ListLobby() {
 
   // Live room feed: if DO publishes `{ t:'state', data:<listDoc> }`, apply it.
 useRoomChannel('list', id, (msg) => {
-  if (!msg) return;
-  if (msg.t === 'state' && msg.data) {
-    const doc = coerceList(msg.data);
-    if (!doc) return;
-    // version guard so we don't regress
-    const incomingV = doc.v ?? 0;
-    if (incomingV <= (lastVersion.current || 0)) return;
-    lastVersion.current = incomingV;
-    setErr(null);
-    setG(doc);
-    if (seatChanged(doc)) bumpAlerts();
+  try {
+    if (!msg) return;
+    if (msg.t === 'state' && msg.data) {
+      debugLine(`[SSE] v=${msg.data?.v ?? '-'} players=${(msg.data?.players||[]).length}`);
+      const doc = coerceList(msg.data);
+      if (!doc) return;
+      const incomingV = doc.v ?? 0;
+      if (incomingV <= (lastVersion.current || 0)) return;
+      lastVersion.current = incomingV;
+      setErr(null);
+      setG(doc);
+      if (seatChanged(doc)) bumpAlerts();
+    }
+  } catch (e:any) {
+    debugLine(`[SSE handler error] ${e?.message || e}`);
+    // do not throw
   }
 });
-
   /* ---- Disable Android long-press ---- */
   useEffect(() => {
     const root = pageRootRef.current;
@@ -203,11 +209,14 @@ useRoomChannel('list', id, (msg) => {
   /* ---- Early UI ---- */
   if (!id || !g) {
     return (
-      <main ref={pageRootRef} style={wrap}>
+  <ErrorBoundary>
+    <main ref={pageRootRef} style={wrap}>
         <BackButton href="/" />
         <p style={{ opacity: 0.7 }}>Loading…</p>
         {err && <p style={{opacity:.7, marginTop:6, fontSize:13}}>{err}</p>}
       </main>
+    <DebugPanel/>
+  </ErrorBoundary>
     );
   }
 
