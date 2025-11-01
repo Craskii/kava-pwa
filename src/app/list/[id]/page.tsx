@@ -171,22 +171,20 @@ export default function ListLobby() {
     return () => { cancelled = true; };
   }, [id]);
 
-  /* ---- Live updates via WebSocket Room ---- */
-  useRoomChannel({
-  kind: 'list',
-  id,
-  onState: (doc) => {
-    const next = coerceList(doc);
-    if (!next) return;
+  // Live room feed: if DO publishes `{ t:'state', data:<listDoc> }`, apply it.
+useRoomChannel('list', id, (msg) => {
+  if (!msg) return;
+  if (msg.t === 'state' && msg.data) {
+    const doc = coerceList(msg.data);
+    if (!doc) return;
+    // version guard so we don't regress
+    const incomingV = doc.v ?? 0;
+    if (incomingV <= (lastVersion.current || 0)) return;
+    lastVersion.current = incomingV;
     setErr(null);
-    setG(prev => {
-      if (!prev) return next;
-      if ((next.v ?? 0) <= (prev.v ?? 0)) return prev;
-      return next;
-    });
-    if (seatChanged(next)) bumpAlerts();
-  },
-  getVersion: (d) => Number(d?.v ?? 0),
+    setG(doc);
+    if (seatChanged(doc)) bumpAlerts();
+  }
 });
 
   /* ---- Disable Android long-press ---- */

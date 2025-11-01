@@ -1,23 +1,20 @@
 // src/app/api/room/[kind]/[id]/publish/route.ts
-export const runtime = 'edge';
+export const runtime = "edge";
+export const dynamic = "force-dynamic";
 
-type Env = {
-  LIST_ROOM: DurableObjectNamespace;
-  TOURNAMENT_ROOM: DurableObjectNamespace;
-};
+type Params = { params: { kind: "list" | "tournament"; id: string } };
 
-export async function POST(request: Request, { params }: { params: { kind: 'list'|'tournament'; id: string } }) {
-  const env: Env | undefined = (request as any).cf?.env;
-  if (!env) return new Response('env missing', { status: 500 });
-
-  const body = await request.text();
-  const { kind, id } = params;
-  const ns = kind === 'list' ? env.LIST_ROOM : env.TOURNAMENT_ROOM;
-  const stub = ns.get(ns.idFromName(id));
-
-  return stub.fetch('https://do/publish', {
-    method: 'POST',
-    headers: { 'content-type': request.headers.get('content-type') || 'application/json' },
-    body,
+export async function POST(req: Request, ctx: Params & { env: any }) {
+  const { kind, id } = ctx.params;
+  const binding = kind === "list" ? ctx.env.LIST_ROOM : ctx.env.TOURNAMENT_ROOM;
+  if (!binding?.idFromName) {
+    return new Response("Durable Object binding missing", { status: 500 });
+  }
+  const stub = binding.get(binding.idFromName(id));
+  const res = await stub.fetch("https://do/publish", {
+    method: "POST",
+    body: await req.text(), // forward raw body
+    headers: { "content-type": req.headers.get("content-type") ?? "application/json" },
   });
+  return new Response(await res.text(), { status: res.status, headers: { "content-type": "application/json" } });
 }
