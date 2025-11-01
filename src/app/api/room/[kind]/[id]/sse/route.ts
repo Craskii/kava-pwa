@@ -1,4 +1,4 @@
-// src/app/api/room/[kind]/[id]/publish/route.ts
+// src/app/api/room/[kind]/[id]/sse/route.ts
 export const runtime = 'edge';
 
 type Env = {
@@ -6,18 +6,17 @@ type Env = {
   TOURNAMENT_ROOM: DurableObjectNamespace;
 };
 
-export async function POST(request: Request, { params }: { params: { kind: 'list'|'tournament'; id: string } }) {
+export async function GET(request: Request, { params }: { params: { kind: 'list'|'tournament'; id: string } }) {
   const env: Env | undefined = (request as any).cf?.env;
   if (!env) return new Response('env missing', { status: 500 });
 
-  const body = await request.text();
   const { kind, id } = params;
   const ns = kind === 'list' ? env.LIST_ROOM : env.TOURNAMENT_ROOM;
   const stub = ns.get(ns.idFromName(id));
 
-  return stub.fetch('https://do/publish', {
-    method: 'POST',
-    headers: { 'content-type': request.headers.get('content-type') || 'application/json' },
-    body,
-  });
+  // proxy SSE from DO
+  return stub.fetch('https://do/sse', {
+    method: 'GET',
+    headers: { 'accept': 'text/event-stream' },
+  } as RequestInit);
 }

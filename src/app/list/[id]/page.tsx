@@ -178,9 +178,8 @@ export default function ListLobby() {
   onState: (doc) => {
     const next = coerceList(doc);
     if (!next) return;
-    // ignore duplicates by version (coerceList already carries v)
     setErr(null);
-    setG((prev) => {
+    setG(prev => {
       if (!prev) return next;
       if ((next.v ?? 0) <= (prev.v ?? 0)) return prev;
       return next;
