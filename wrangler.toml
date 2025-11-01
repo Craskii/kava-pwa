@@ -1,23 +1,31 @@
-# wrangler.toml
-name = "kava-pwa"
-main = "dist/worker/index.js"
+# wrangler.toml — Cloudflare Pages project
 
+name = "kava-pwa"
+compatibility_date = "2024-10-01"
+
+# This is a PAGES deployment (not a classic Worker), so NO `main` here.
+# next-on-pages/Next.js build outputs static assets here:
+[pages]
+pages_build_output_dir = ".vercel/output/static"
+
+# ---------- Durable Objects ----------
+# Names MUST match what your API routes expect: env.LIST_ROOMS / env.TOURNAMENT_ROOMS
 [[durable_objects.bindings]]
-name = "LIST_ROOM"
+name = "LIST_ROOMS"
 class_name = "ListRoom"
 
 [[durable_objects.bindings]]
-name = "TOURNAMENT_ROOM"
+name = "TOURNAMENT_ROOMS"
 class_name = "TournamentRoom"
 
+# Initial migration tag that registers both DO classes
 [[migrations]]
 tag = "v1"
 new_classes = ["ListRoom", "TournamentRoom"]
 
+# ---------- KV Namespaces ----------
+# Replace the id/preview_id values with your real KV namespace IDs from the CF dashboard.
 [[kv_namespaces]]
-binding = "KAVA_TOURNAMENTS"
-id = "KAVA_TOURNAMENTS"
-
-[pages]
-# next-on-pages outputs SSR artifacts; static assets end up here
-pages_build_output_dir = ".vercel/output/static"
+binding   = "KAVA_TOURNAMENTS"
+id        = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"       # production KV namespace ID (UUID)
+preview_id = "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"       # preview KV namespace ID (UUID)
