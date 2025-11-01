@@ -15,6 +15,8 @@ export async function POST(req: Request, ctx: Params & { env: any }) {
     headers: { "content-type": req.headers.get("content-type") ?? "application/json" },
   });
 
-  const text = await res.text().catch(() => "");
-  return new Response(text, { status: res.status, headers: { "content-type": "application/json" } });
+  return new Response(await res.text(), {
+    status: res.status,
+    headers: { "content-type": "application/json" },
+  });
 }

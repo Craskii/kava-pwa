@@ -9,7 +9,9 @@ export async function GET(req: Request, ctx: Params & { env: any }) {
   if (!binding?.idFromName) return new Response("DO binding missing", { status: 500 });
 
   const stub = binding.get(binding.idFromName(id));
-  const res = await stub.fetch("https://do/snapshot");
-  const text = await res.text().catch(() => "{}");
-  return new Response(text, { status: res.status, headers: { "content-type": "application/json" } });
+  const res = await stub.fetch("https://do/snapshot", { method: "GET" });
+  return new Response(await res.text(), {
+    status: res.status,
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
+  });
 }

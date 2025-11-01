@@ -23,13 +23,12 @@ export default function ListsPage() {
   const [playing, setPlaying] = useState<ListSummary[]>([]);
   const [paused, setPaused] = useState(false);
 
-  // Lightweight pull every 45s + on-focus refresh
   useEffect(() => {
     if (!me?.id || paused) return;
-    let stopped = false;
+    let stop = false;
 
-    const load = async () => {
-      if (stopped) return;
+    async function pull() {
+      if (stop) return;
       try {
         const res = await fetch(`/api/lists?userId=${encodeURIComponent(me.id)}&ts=${Date.now()}`, { cache: 'no-store' });
         if (res.ok) {
@@ -37,15 +36,15 @@ export default function ListsPage() {
           setHosting(j.hosting || []);
           setPlaying(j.playing || []);
         }
-      } catch {/* ignore */}
-    };
+      } finally {
+        if (!stop) setTimeout(pull, 20000);
+      }
+    }
 
-    load();
-    const iv = setInterval(load, 45000);
-    const onFocus = () => load();
+    pull();
+    const onFocus = () => pull();
     window.addEventListener('focus', onFocus);
-
-    return () => { stopped = true; clearInterval(iv); window.removeEventListener('focus', onFocus); };
+    return () => { stop = true; window.removeEventListener('focus', onFocus); };
   }, [me?.id, paused]);
 
   async function deleteList(id: string) {
@@ -53,7 +52,6 @@ export default function ListsPage() {
     try {
       const res = await fetch(`/api/list/${encodeURIComponent(id)}`, { method: 'DELETE' });
       if (!res.ok) throw new Error(await res.text());
-      // Optimistic remove; next pull will confirm
       setHosting(h => h.filter(x => x.id !== id));
     } catch {
       alert('Could not delete the list.');
