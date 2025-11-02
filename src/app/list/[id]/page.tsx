@@ -180,18 +180,33 @@ export default function ListLobby() {
     return false;
   };
 
-  /* ---- attach SSE channel EARLY; no conditionals ---- */
-  useRoomChannel('list', id, (msg) => {
-    if (msg?.t !== 'state' || !msg.data) return;
-  const doc = coerceList(msg.data);
-  if (!doc) return;
-  const incomingV = doc.v ?? 0;
-  if (incomingV <= (lastVersion.current || 0)) return;
-  lastVersion.current = incomingV;
-  setErr(null);
-  setG(doc);
-  if (seatChanged(doc)) bumpAlerts();
-}, sseEnabled);
+  // ---- define sseEnabled *before* using it anywhere ----
+  const sseEnabled = typeof document !== 'undefined' && document.visibilityState === 'visible';
+
+  /* ---- attach SSE channel EARLY; no conditionals that reference later consts ---- */
+  // Use the object form to avoid positional signature mismatches.
+  useRoomChannel({
+    kind: 'list',
+    id,
+    enabled: sseEnabled,
+    onState: (msg: any) => {
+      if (!msg) return;
+      // our useRoomChannel sends either the raw state or {t:'state', data}
+      const raw = msg?.t === 'state' ? msg.data : msg;
+      const doc = coerceList(raw);
+      if (!doc) return;
+      const incomingV = doc.v ?? 0;
+      if (incomingV <= (lastVersion.current || 0)) return;
+      lastVersion.current = incomingV;
+      setErr(null);
+      setG(doc);
+      if (seatChanged(doc)) bumpAlerts();
+    },
+    onError: (e: any) => {
+      debugLine(`[sse error] ${e?.message || e}`);
+      setErr('Stream error; falling back to polling…');
+    },
+  });
 
   /* ---- Snapshot + Poll fallback (kept) ---- */
   useEffect(() => {
@@ -227,11 +242,6 @@ export default function ListLobby() {
     };
     const stopPoller = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
 
-    const attach = () => {
-      // (SSE handled by useRoomChannel now)
-      // Keep empty to preserve your former reconnect pattern
-    };
-
     (async () => {
       try {
         const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: 'no-store' });
@@ -243,19 +253,21 @@ export default function ListLobby() {
             setErr(`Failed to load list (${res.status}). Retrying…`);
             startPoller();
           }
-          attach();
           return;
         }
-        const doc = coerceList(await res.json()); if (!doc) { setErr('Invalid list data'); startPoller(); attach(); return; }
+        const doc = coerceList(await res.json());
+        if (!doc) {
+          setErr('Invalid list data');
+          startPoller();
+          return;
+        }
         lastVersion.current = doc.v ?? 0;
         setErr(null);
         setG(doc);
-        attach();
       } catch (e:any) {
         setErr('Network error loading list. Retrying…');
         debugLine(`[first fetch] ${e?.message || e}`);
         startPoller();
-        attach();
       }
     })();
 
@@ -272,8 +284,6 @@ export default function ListLobby() {
       gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, HEARTBEAT_MS);
     };
     gl.heartbeats[hbKey].t = window.setTimeout(sendHeartbeat, 500);
-
-    // visibility reconnect of legacy streams disabled (we rely on useRoomChannel)
 
     return () => {
       const s = gl.streams[id];
@@ -292,7 +302,7 @@ export default function ListLobby() {
           delete gl.heartbeats[hbKey];
         }
       }
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      stopPoller();
     };
   }, [id, me.id]);
 
@@ -319,7 +329,6 @@ export default function ListLobby() {
   const seated = seatedIndex >= 0;
   const nameOf = (pid?: string) => (pid ? players.find(p => p.id === pid)?.name || '??' : '—');
   const inQueue = (pid: string) => queue.includes(pid);
-  const sseEnabled = iHaveMod && typeof document !== "undefined" && document.visibilityState === "visible";
 
   /* ---- seating helper ---- */
   function autoSeat(next: ListGame) {
@@ -506,9 +515,9 @@ export default function ListLobby() {
                     name="listName"
                     autoComplete="organization"
                     defaultValue={g.name}
-                    onBlur={(e)=>iHaveMod && renameList(e.currentTarget.value)}
+                    onBlur={(e)=> (me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) && renameList(e.currentTarget.value)}
                     style={nameInput}
-                    disabled={busy || !iHaveMod}
+                    disabled={busy || !(me.id === g.hostId || (g.cohosts ?? []).includes(me.id))}
                   />
                 </h1>
                 <div style={{ opacity:.8, fontSize:14, display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
@@ -549,24 +558,41 @@ export default function ListLobby() {
             <section style={card}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                 <h3 style={{marginTop:0}}>Tables</h3>
-                {iHaveMod && <button style={btnGhostSm} onClick={()=>setShowTableControls(v=>!v)}>{showTableControls?'Hide table settings':'Table settings'}</button>}
+                {(me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) && (
+                  <button style={btnGhostSm} onClick={()=>setShowTableControls(v=>!v)}>
+                    {showTableControls?'Hide table settings':'Table settings'}
+                  </button>
+                )}
               </div>
 
-              {showTableControls && iHaveMod && (
+              {showTableControls && (
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))',gap:12,marginBottom:12}}>
                   {g.tables.map((t,i)=>(
                     <div key={i} style={{background:'#111',border:'1px solid #333',borderRadius:10,padding:10}}>
                       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
                         <div style={{fontWeight:600,opacity:.9}}>Table {i+1}</div>
-                        <select value={t.label} onChange={(e)=>scheduleCommit(d=>{ d.tables[i].label = e.currentTarget.value === '9 foot' ? '9 foot' : '8 foot'; })} style={select} disabled={busy || !iHaveMod}>
+                        <select
+                          value={t.label}
+                          onChange={(e)=>scheduleCommit(d=>{ d.tables[i].label = e.currentTarget.value === '9 foot' ? '9 foot' : '8 foot'; })}
+                          style={select}
+                          disabled={busy}
+                        >
                           <option value="9 foot">9-foot</option><option value="8 foot">8-foot</option>
                         </select>
                       </div>
                     </div>
                   ))}
                   <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                    <button style={btnGhostSm} onClick={()=>scheduleCommit(d=>{ if (d.tables.length<2) d.tables.push({label:d.tables[0]?.label==='9 foot'?'8 foot':'9 foot'}); })} disabled={busy||g.tables.length>=2 || !iHaveMod}>Add second table</button>
-                    <button style={btnGhostSm} onClick={()=>scheduleCommit(d=>{ if (d.tables.length>1) d.tables=d.tables.slice(0,1); })} disabled={busy||g.tables.length<=1 || !iHaveMod}>Use one table</button>
+                    <button
+                      style={btnGhostSm}
+                      onClick={()=>scheduleCommit(d=>{ if (d.tables.length<2) d.tables.push({label:d.tables[0]?.label==='9 foot'?'8 foot':'9 foot'}); })}
+                      disabled={busy||g.tables.length>=2}
+                    >Add second table</button>
+                    <button
+                      style={btnGhostSm}
+                      onClick={()=>scheduleCommit(d=>{ if (d.tables.length>1) d.tables=d.tables.slice(0,1); })}
+                      disabled={busy||g.tables.length<=1}
+                    >Use one table</button>
                   </div>
                 </div>
               )}
@@ -577,7 +603,7 @@ export default function ListLobby() {
                     const pid = t[side];
                     return (
                       <div
-                        draggable={!!pid && iHaveMod && supportsDnD}
+                        draggable={!!pid && (me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) && supportsDnD}
                         onDragStart={(e)=>pid && onDragStart(e,{type:'seat',table:i,side,pid})}
                         onDragOver={supportsDnD ? onDragOver : undefined}
                         onDrop={supportsDnD ? (e)=>handleDrop(e,{type:'seat',table:i,side,pid}) : undefined}
@@ -585,7 +611,7 @@ export default function ListLobby() {
                         title={supportsDnD ? 'Drag from queue or swap seats' : 'Use Queue controls'}
                       >
                         <span>{nameOf(pid)}</span>
-                        {pid && (iHaveMod || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
+                        {pid && ((me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
                       </div>
                     );
                   };
@@ -605,7 +631,7 @@ export default function ListLobby() {
             <section style={card}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
                 <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
-                {iHaveMod && queue.length >= 2 && (
+                {(me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) && queue.length >= 2 && (
                   <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">Skip first</button>
                 )}
               </div>
@@ -619,8 +645,8 @@ export default function ListLobby() {
                     const canEditSelf = pid===me.id;
                     return (
                       <li key={`${pid}-${idx}`}
-                          draggable={supportsDnD && iHaveMod}
-                          onDragStart={supportsDnD && iHaveMod ? (e)=>onDragStart(e,{type:'queue',index:idx,pid}) : undefined}
+                          draggable={supportsDnD && (me.id === g.hostId || (g.cohosts ?? []).includes(me.id))}
+                          onDragStart={supportsDnD && (me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) ? (e)=>onDragStart(e,{type:'queue',index:idx,pid}) : undefined}
                           onDragOver={supportsDnD ? onDragOver : undefined}
                           onDrop={supportsDnD ? (e)=>handleDrop(e,{type:'queue',index:idx,pid}) : undefined}
                           style={queueItem}>
@@ -628,7 +654,7 @@ export default function ListLobby() {
                           {idx+1}. {nameOf(pid)}
                         </span>
 
-                        {!supportsDnD && iHaveMod && (
+                        {!supportsDnD && (me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) && (
                           <div style={{display:'flex',gap:4,marginRight:6}}>
                             <button style={btnTiny} onClick={()=>moveUp(idx)} disabled={busy || idx===0} aria-label="Move up">▲</button>
                             <button style={btnTiny} onClick={()=>moveDown(idx)} disabled={busy || idx===queue.length-1} aria-label="Move down">▼</button>
@@ -636,7 +662,7 @@ export default function ListLobby() {
                         )}
 
                         <div style={{display:'flex',gap:6}}>
-                          {(iHaveMod || canEditSelf) ? (
+                          {(me.id === g.hostId || (g.cohosts ?? []).includes(me.id) || canEditSelf) ? (
                             <>
                               <button style={pref==='any'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'any');}} disabled={busy}>Any</button>
                               <button style={pref==='9 foot'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'9 foot');}} disabled={busy}>9-ft</button>
@@ -654,7 +680,7 @@ export default function ListLobby() {
             </section>
 
             {/* Host / Co-host controls */}
-            {iHaveMod ? (
+            {(me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) ? (
               <section style={card}>
                 <h3 style={{marginTop:0}}>Host controls</h3>
                 <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:12}}>
@@ -687,22 +713,22 @@ export default function ListLobby() {
                         <span>{p.name}{isCohost ? <em style={{opacity:.6,marginLeft:8}}>(Cohost)</em> : null}</span>
                         <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
                           {!inQueue(p.id)
-                            ? (iHaveMod ? <button style={btnMini} onClick={()=>enqueuePid(p.id)} disabled={busy}>Queue</button> : null)
-                            : (iHaveMod ? <button style={btnMini} onClick={()=>dequeuePid(p.id)} disabled={busy}>Dequeue</button> : null)}
-                          {(iHaveMod || canEditSelf) && (
+                            ? ((me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) ? <button style={btnMini} onClick={()=>enqueuePid(p.id)} disabled={busy}>Queue</button> : null)
+                            : ((me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) ? <button style={btnMini} onClick={()=>dequeuePid(p.id)} disabled={busy}>Dequeue</button> : null)}
+                          {(me.id === g.hostId || (g.cohosts ?? []).includes(me.id) || canEditSelf) && (
                             <div style={{display:'flex',gap:6}}>
                               <button style={pref==='any'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'any')} disabled={busy}>Any</button>
                               <button style={pref==='9 foot'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'9 foot')} disabled={busy}>9-ft</button>
                               <button style={pref==='8 foot'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'8 foot')} disabled={busy}>8-ft</button>
                             </div>
                           )}
-                          {iHaveMod && p.id !== g.hostId && (
+                          {(me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) && p.id !== g.hostId && (
                             <button style={btnMini} onClick={()=>toggleCohost(p.id)} disabled={busy}>
                               {isCohost ? 'Remove cohost' : 'Make cohost'}
                             </button>
                           )}
-                          {(iHaveMod || canEditSelf) && <button style={btnMini} onClick={()=>renamePlayer(p.id)} disabled={busy}>Rename</button>}
-                          {iHaveMod && <button style={btnGhost} onClick={()=>removePlayer(p.id)} disabled={busy}>Remove</button>}
+                          {(me.id === g.hostId || (g.cohosts ?? []).includes(me.id) || canEditSelf) && <button style={btnMini} onClick={()=>renamePlayer(p.id)} disabled={busy}>Rename</button>}
+                          {(me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) && <button style={btnGhost} onClick={()=>removePlayer(p.id)} disabled={busy}>Remove</button>}
                         </div>
                       </li>
                     );
