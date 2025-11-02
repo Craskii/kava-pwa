@@ -1,104 +1,122 @@
 // src/worker/room.ts
 export class ListRoom {
   state: DurableObjectState;
-  subs: Set<ReadableStreamDefaultController>;
+  sockets: Set<WebSocket>;
   snapshot: any;
-  lastHash: string | null;
 
-  constructor(state: DurableObjectState) {
+  // SSE subscribers (writers) + ping timers
+  sseWriters: Set<WritableStreamDefaultWriter>;
+  pings: Map<WritableStreamDefaultWriter, number>;
+
+  constructor(state: DurableObjectState, env: any) {
     this.state = state;
-    this.subs = new Set();
+    this.sockets = new Set();
     this.snapshot = null;
-    this.lastHash = null;
+    this.sseWriters = new Set();
+    this.pings = new Map();
   }
 
   async fetch(req: Request) {
     const url = new URL(req.url);
-    switch (true) {
-      case url.pathname === "/sse" && req.method === "GET":
-        return this.handleSSE(req);
-      case url.pathname === "/publish" && req.method === "POST":
-        return this.handlePublish(req);
-      case url.pathname === "/snapshot" && req.method === "GET":
-        return new Response(JSON.stringify(this.snapshot ?? {}), {
-          headers: { "content-type": "application/json", "cache-control": "no-store" },
-        });
-      default:
-        return new Response("not found", { status: 404 });
-    }
-  }
 
-  private handleSSE(req: Request) {
-    // Short-SSE/long-poll: close stream at ~30s to keep worker time bounded.
-    const enc = new TextEncoder();
-    let timer: any;
-    const stream = new ReadableStream({
-      start: (ctl) => {
-        this.subs.add(ctl);
+    // ---- SSE ----
+    if (url.pathname === '/sse' && req.method === 'GET') {
+      const { readable, writable } = new TransformStream();
+      const writer = writable.getWriter();
+      this.sseWriters.add(writer);
 
-        // Initial state (if any)
-        if (this.snapshot) {
-          ctl.enqueue(enc.encode(`data: ${JSON.stringify({ t: "state", data: this.snapshot })}\n\n`));
-        }
+      // send initial snapshot
+      await this.writeSSE(writer, this.snapshot ?? {});
 
-        // Heartbeat as comment (no event payload)
-        const hb = setInterval(() => {
-          try { ctl.enqueue(enc.encode(`:hb ${Date.now()}\n\n`)); } catch {}
-        }, 20000);
+      // heartbeat (keep connections alive)
+      const timer = setInterval(() => {
+        void this.writeRaw(writer, `: ping ${Date.now()}\n\n`);
+      }, 25000);
+      this.pings.set(writer, (timer as unknown as number));
 
-        // Hard cap (close after ~30s)
-        timer = setTimeout(() => {
-          try { ctl.close(); } catch {}
-          this.subs.delete(ctl);
-          clearInterval(hb);
-        }, 30000);
+      // cleanup when client disconnects
+      (writer.closed as Promise<void>).finally(() => {
+        clearInterval(this.pings.get(writer) as unknown as number);
+        this.pings.delete(writer);
+        this.sseWriters.delete(writer);
+      });
 
-        // Client abort
-        // @ts-ignore
-        req.signal?.addEventListener("abort", () => {
-          clearInterval(hb);
-          clearTimeout(timer);
-          this.subs.delete(ctl);
-          try { ctl.close(); } catch {}
-        });
-      },
-      cancel: () => {
-        clearTimeout(timer);
-      }
-    });
-
-    return new Response(stream, {
-      headers: {
-        "content-type": "text/event-stream",
-        "cache-control": "no-store",
-        "connection": "keep-alive",
-      },
-    });
-  }
-
-  private async handlePublish(req: Request) {
-    const payload = await req.json().catch(() => ({}));
-    const next = JSON.stringify(payload);
-    if (this.lastHash === next) {
-      // No-op publish (identical body).
-      return new Response(JSON.stringify({ ok: true, deduped: true }), {
-        headers: { "content-type": "application/json" },
+      return new Response(readable, {
+        status: 200,
+        headers: {
+          'content-type': 'text/event-stream',
+          'cache-control': 'no-store',
+          'connection': 'keep-alive',
+        },
       });
     }
-    this.lastHash = next;
-    this.snapshot = payload;
 
-    const enc = new TextEncoder();
-    const chunk = enc.encode(`data: ${JSON.stringify({ t: "state", data: this.snapshot })}\n\n`);
-    const dead: ReadableStreamDefaultController[] = [];
-    for (const sub of this.subs) {
-      try { sub.enqueue(chunk); } catch { dead.push(sub); }
+    // ---- Publish ----
+    if (url.pathname === '/publish' && req.method === 'POST') {
+      const payload = await req.json().catch(() => ({}));
+      this.snapshot = payload;
+      await this.broadcastSnapshot(payload);
+      // Also notify WS clients for compatibility
+      this.broadcast(JSON.stringify({ t: 'state', data: this.snapshot }));
+      return new Response(JSON.stringify({ ok: true }), { headers: { 'content-type': 'application/json' } });
     }
-    for (const d of dead) this.subs.delete(d);
 
-    return new Response(JSON.stringify({ ok: true }), {
-      headers: { "content-type": "application/json" },
-    });
+    // ---- Snapshot ----
+    if (url.pathname === '/snapshot') {
+      return new Response(JSON.stringify(this.snapshot ?? {}), {
+        headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
+      });
+    }
+
+    // ---- WebSocket (optional) ----
+    if (url.pathname === '/ws' && req.headers.get('upgrade') === 'websocket') {
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
+      this.acceptSocket(server);
+      return new Response(null, { status: 101, webSocket: client });
+    }
+
+    return new Response('not found', { status: 404 });
+  }
+
+  /* ===== WS support (unchanged) ===== */
+  acceptSocket(ws: WebSocket) {
+    ws.accept();
+    this.sockets.add(ws);
+    if (this.snapshot) {
+      try { ws.send(JSON.stringify({ t: 'state', data: this.snapshot })); } catch {}
+    }
+    const ping = () => { try { ws.send(JSON.stringify({ t: 'ping', ts: Date.now() })); } catch {} };
+    const pingTimer = setInterval(ping, 30000);
+    const close = () => {
+      clearInterval(pingTimer);
+      this.sockets.delete(ws);
+      try { ws.close(); } catch {}
+    };
+    ws.addEventListener('message', () => {});
+    ws.addEventListener('close', close);
+    ws.addEventListener('error', close);
+  }
+  broadcast(text: string) {
+    const dead: WebSocket[] = [];
+    for (const s of this.sockets) {
+      try { s.send(text); } catch { dead.push(s); }
+    }
+    for (const d of dead) this.sockets.delete(d);
+  }
+
+  /* ===== SSE helpers ===== */
+  async writeRaw(writer: WritableStreamDefaultWriter, s: string) {
+    try { await writer.write(new TextEncoder().encode(s)); } catch {}
+  }
+  async writeSSE(writer: WritableStreamDefaultWriter, obj: any) {
+    await this.writeRaw(writer, `data: ${JSON.stringify(obj)}\n\n`);
+  }
+  async broadcastSnapshot(obj: any) {
+    const text = `data: ${JSON.stringify(obj)}\n\n`;
+    const enc = new TextEncoder().encode(text);
+    await Promise.all([...this.sseWriters].map(async w => { try { await w.write(enc); } catch {} }));
   }
 }
+
 export class TournamentRoom extends ListRoom {}

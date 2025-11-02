@@ -1,17 +1,36 @@
-export const runtime = "edge";
-export const dynamic = "force-dynamic";
+// src/app/api/room/[kind]/[id]/sse/route.ts
+import type { NextRequest } from 'next/server';
 
-type K = "list" | "tournament";
-type Params = { params: { kind: K; id: string } };
+export const runtime = 'edge';
 
-export async function GET(req: Request, ctx: Params & { env: any }) {
-  const { kind, id } = ctx.params;
-  const binding = kind === "list" ? ctx.env.LIST_ROOM : ctx.env.TOURNAMENT_ROOM;
-  if (!binding?.idFromName) return new Response("DO binding missing", { status: 500 });
+export async function GET(req: NextRequest, { params }: { params: { kind: string; id: string } }) {
+  const kind = params.kind === 'tournament' ? 'tournament' : 'list';
+  const id = params.id;
 
-  const stub = binding.get(binding.idFromName(id));
-  // Pass the original Request straight to the DO. No body copying, no piping.
-  const doURL = new URL("https://do/sse");
-  const out = new Request(doURL, { method: "GET", headers: req.headers });
-  return stub.fetch(out);
+  // Bindings are exposed to Pages Functions via globalThis.env in open-next adapter.
+  // We proxy to DO path /sse.
+  // @ts-ignore
+  const env = (globalThis as any).env || (req as any).env || {};
+  const ns = kind === 'list' ? env.LIST_ROOM : env.TOURNAMENT_ROOM;
+  if (!ns || !ns.idFromName) {
+    return new Response('DO binding missing', { status: 500 });
+  }
+
+  const doId = ns.idFromName(id);
+  const url = new URL('https://do.example/sse');
+  const res = await ns.get(doId).fetch(url, {
+    headers: { 'accept': 'text/event-stream' },
+    method: 'GET',
+  });
+
+  // Just stream through as-is
+  return new Response(res.body, {
+    status: res.status,
+    headers: {
+      'content-type': 'text/event-stream',
+      'cache-control': 'no-store',
+      'connection': 'keep-alive',
+      'x-proxy': 'sse',
+    },
+  });
 }
