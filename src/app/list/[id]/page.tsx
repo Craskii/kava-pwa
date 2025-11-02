@@ -182,22 +182,16 @@ export default function ListLobby() {
 
   /* ---- attach SSE channel EARLY; no conditionals ---- */
   useRoomChannel('list', id, (msg) => {
-    try {
-      if (!msg) return;
-      if (msg.t === 'state' && msg.data) {
-        const doc = coerceList(msg.data);
-        if (!doc) return;
-        const incomingV = doc.v ?? 0;
-        if (incomingV <= (lastVersion.current || 0)) return;
-        lastVersion.current = incomingV;
-        setErr(null);
-        setG(doc);
-        if (seatChanged(doc)) bumpAlerts();
-      }
-    } catch (e:any) {
-      debugLine(`[SSE handler error] ${e?.message || e}`);
-    }
-  });
+    if (msg?.t !== 'state' || !msg.data) return;
+  const doc = coerceList(msg.data);
+  if (!doc) return;
+  const incomingV = doc.v ?? 0;
+  if (incomingV <= (lastVersion.current || 0)) return;
+  lastVersion.current = incomingV;
+  setErr(null);
+  setG(doc);
+  if (seatChanged(doc)) bumpAlerts();
+}, sseEnabled);
 
   /* ---- Snapshot + Poll fallback (kept) ---- */
   useEffect(() => {
@@ -325,6 +319,7 @@ export default function ListLobby() {
   const seated = seatedIndex >= 0;
   const nameOf = (pid?: string) => (pid ? players.find(p => p.id === pid)?.name || '??' : '—');
   const inQueue = (pid: string) => queue.includes(pid);
+  const sseEnabled = iHaveMod && typeof document !== "undefined" && document.visibilityState === "visible";
 
   /* ---- seating helper ---- */
   function autoSeat(next: ListGame) {

@@ -1,55 +1,85 @@
 import { useEffect, useRef } from "react";
 
 type Handler = (msg: any) => void;
-const isBrowser = () => typeof window !== "undefined";
 
-export function useRoomChannel(kind: "list" | "tournament", id: string, onMessage: Handler) {
+type ChannelKey = string;
+type GlobalConn = { es: EventSource | null; refs: number };
+type G = { conns: Record<ChannelKey, GlobalConn> };
+
+function globs(): G {
+  const any = globalThis as any;
+  if (!any.__room_globs) any.__room_globs = { conns: {} } as G;
+  return any.__room_globs as G;
+}
+
+/**
+ * useRoomChannel
+ * - Only opens ONE EventSource per (kind,id) across the tab.
+ * - If `enabled` is false, does nothing.
+ * - Auto closes on page hide; reopens on show.
+ */
+export function useRoomChannel(
+  kind: "list" | "tournament",
+  id: string,
+  onMessage: Handler,
+  enabled: boolean
+) {
   const cbRef = useRef(onMessage);
   cbRef.current = onMessage;
 
   useEffect(() => {
-    if (!isBrowser() || !id) return;
+    if (!enabled || !id) return;
+    const key = `${kind}:${id}`;
+    const g = globs();
 
-    let es: EventSource | null = null;
-    let stop = false;
-    let tries = 0;
-    const debug = new URLSearchParams(window.location.search).has("debug");
-    const log = (...a: any[]) => { if (debug) console.log("[room]", ...a); };
+    let vis = document.visibilityState;
+    let killed = false;
 
     const open = () => {
-      if (stop) return;
-      try {
-        es = new EventSource(`/api/room/${kind}/${encodeURIComponent(id)}/sse`);
-      } catch (e) {
-        log("failed to construct EventSource", e);
-        es = null;
-        return;
-      }
-      if (!es) return;
+      if (killed || document.visibilityState === "hidden") return;
+      const rec = (g.conns[key] ||= { es: null, refs: 0 });
+      if (rec.es) { rec.refs++; return; }
 
-      es.onopen = () => { tries = 0; log("SSE open"); };
+      const url = `/api/room/${kind}/${encodeURIComponent(id)}/sse`;
+      const es = new EventSource(url, { withCredentials: false });
+      rec.es = es;
+      rec.refs = 1;
+
       es.onmessage = (ev) => {
-        if (!ev?.data) return;
-        try {
-          const obj = JSON.parse(ev.data);
-          log("msg", obj);
-          cbRef.current?.(obj);
-        } catch (e) {
-          log("bad json", ev.data);
-        }
+        if (!ev.data) return;
+        try { cbRef.current?.(JSON.parse(ev.data)); } catch {}
       };
       es.onerror = () => {
-        log("SSE error -> retry");
-        try { es?.close(); } catch {}
-        es = null;
-        if (!stop) {
-          const backoff = Math.min(15000, 500 * Math.pow(2, tries++));
-          setTimeout(open, backoff);
-        }
+        try { es.close(); } catch {}
+        rec.es = null;
+        // backoff handled by server short-SSE via frequent reconnects
+        if (!killed) setTimeout(open, 600);
       };
     };
 
+    const close = () => {
+      const rec = globs().conns[key];
+      if (!rec) return;
+      rec.refs = Math.max(0, rec.refs - 1);
+      if (rec.refs === 0 && rec.es) {
+        try { rec.es.close(); } catch {}
+        rec.es = null;
+      }
+    };
+
+    const onVis = () => {
+      if (document.visibilityState === vis) return;
+      vis = document.visibilityState;
+      if (vis === "hidden") close(); else open();
+    };
+
+    document.addEventListener("visibilitychange", onVis);
     open();
-    return () => { stop = true; try { es?.close(); } catch {}; es = null; };
-  }, [kind, id]);
+
+    return () => {
+      killed = true;
+      document.removeEventListener("visibilitychange", onVis);
+      close();
+    };
+  }, [kind, id, enabled]);
 }
