@@ -65,21 +65,22 @@ export default function ListsPage() {
         <span style={{ padding:'6px 10px', borderRadius:999, background: paused ? 'rgba(239,68,68,.2)' : 'rgba(16,185,129,.2)', border:'1px solid rgba(255,255,255,.2)' }}>
           {paused ? 'Paused' : 'Live'}
         </span>
-        <button
-          onClick={() => setPaused(p => !p)}
-          style={{ padding:'8px 12px', borderRadius:10, border:'1px solid rgba(255,255,255,.25)', background:'transparent', color:'#fff', cursor:'pointer' }}
-        >
+        <button onClick={() => setPaused(p => !p)} style={{ padding:'8px 12px', borderRadius:10, border:'1px solid rgba(255,255,255,.25)', background:'transparent', color:'#fff', cursor:'pointer' }}>
           {paused ? 'Resume' : 'Pause'}
         </button>
-        <button
-          onClick={() => window.location.reload()}
-          style={{ padding:'8px 12px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', cursor:'pointer', fontWeight:700 }}
-        >
+        <button onClick={() => window.location.reload()} style={{ padding:'8px 12px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', cursor:'pointer', fontWeight:700 }}>
           Refresh
         </button>
       </div>
 
       <h1 style={{ margin:'14px 0' }}>My lists</h1>
+
+      {/* NEW: Local List quick entry */}
+      <section style={card}>
+        <h3 style={{ marginTop:0 }}>Local List (offline)</h3>
+        <p style={{ opacity:.8, marginTop:6 }}>Run a lag-free queue with zero network. Everything is saved to this device only.</p>
+        <div><a href="/local-list" style={btnSm}>Open Local List</a></div>
+      </section>
 
       <section style={card}>
         <h3 style={{ marginTop:0 }}>Hosting</h3>
@@ -121,5 +122,5 @@ export default function ListsPage() {
 
 const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginTop:14 };
 const row: React.CSSProperties = { display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 };
-const btnSm: React.CSSProperties = { padding:'6px 10px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
+const btnSm: React.CSSProperties = { padding:'6px 10px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer', textDecoration:'none', display:'inline-block' };
 const btnGhostSm: React.CSSProperties = { padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer' };
