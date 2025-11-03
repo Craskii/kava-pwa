@@ -1,10 +1,9 @@
-// Returns the last known state for a room from the in-memory hub.
-// Used by your poll fallback.
+// Route: /api/room/:kind/:id/snapshot  (GET)
 
 type RoomKey = `${string}:${string}`;
 type RoomState = { v: number; data: any };
 
-const g = (globalThis as any);
+const g = globalThis as any;
 if (!g.__ROOM_HUB__) {
   g.__ROOM_HUB__ = {
     conns: new Map<RoomKey, Set<WebSocket>>(),
@@ -16,17 +15,15 @@ const HUB: {
   state: Map<RoomKey, RoomState>;
 } = g.__ROOM_HUB__;
 
-function key(kind: string, id: string): RoomKey {
-  return `${kind}:${id}`;
-}
+const k = (kind: string, id: string): RoomKey => `${kind}:${id}`;
 
-export async function onRequest(context: any): Promise<Response> {
-  const { params } = context;
+export async function onRequestGet(ctx: any): Promise<Response> {
+  const { params } = ctx;
   const kind = String(params.kind || '');
   const id = decodeURIComponent(String(params.id || ''));
   if (!kind || !id) return new Response('Bad room', { status: 400 });
 
-  const snap = HUB.state.get(key(kind, id));
+  const snap = HUB.state.get(k(kind, id));
   if (!snap) return new Response('Not found', { status: 404 });
 
   return new Response(JSON.stringify({ v: snap.v ?? 0, ...snap.data }), {

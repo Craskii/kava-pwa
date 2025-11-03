@@ -1,27 +1,52 @@
-// Pages Function: POST publish to DO (fan-out)
-export const onRequest: PagesFunction = async ({ env, params, request }) => {
-  if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+// Route: /api/room/:kind/:id/publish  (POST)
+// Body: { v: number, data: any }  — stores in hub and broadcasts {t:'state', v, data}
 
-  const kind = String(params.kind);
-  const id = String(params.id);
+type RoomKey = `${string}:${string}`;
+type RoomState = { v: number; data: any };
 
-  const bindingName =
-    kind === 'tournament' ? 'TOURNAMENT_ROOM' : 'LIST_ROOM';
+const g = globalThis as any;
+if (!g.__ROOM_HUB__) {
+  g.__ROOM_HUB__ = {
+    conns: new Map<RoomKey, Set<WebSocket>>(),
+    state: new Map<RoomKey, RoomState>(),
+  };
+}
+const HUB: {
+  conns: Map<RoomKey, Set<WebSocket>>;
+  state: Map<RoomKey, RoomState>;
+} = g.__ROOM_HUB__;
 
-  const ns: DurableObjectNamespace = (env as any)[bindingName];
-  if (!ns) return new Response(`Missing DO binding: ${bindingName}`, { status: 500 });
+const k = (kind: string, id: string): RoomKey => `${kind}:${id}`;
 
-  const stub = ns.get(ns.idFromName(id));
+function broadcast(kind: string, id: string, payload: any) {
+  const key = k(kind, id);
+  const conns = HUB.conns.get(key);
+  if (!conns) return;
+  const str = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  for (const ws of conns) {
+    try { ws.send(str); } catch {}
+  }
+}
 
-  const url = new URL(request.url);
-  url.pathname = '/publish';
+export async function onRequestPost(ctx: any): Promise<Response> {
+  const { request, params } = ctx;
+  const kind = String(params.kind || '');
+  const id = decodeURIComponent(String(params.id || ''));
+  if (!kind || !id) return new Response('Bad room', { status: 400 });
 
-  // Pass the original body through
-  const forward = new Request(url.toString(), {
-    method: 'POST',
-    headers: request.headers,
-    body: await request.arrayBuffer(),
+  let body: any = null;
+  try { body = await request.json(); } catch {}
+  const v = Number(body?.v ?? 0) || 0;
+  const data = body?.data;
+
+  if (!data) return new Response('Missing data', { status: 400 });
+
+  const key = k(kind, id);
+  HUB.state.set(key, { v, data });
+  broadcast(kind, id, { t: 'state', v, data });
+
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: { 'content-type': 'application/json', 'cache-control': 'no-store' },
   });
-
-  return stub.fetch(forward);
-};
+}

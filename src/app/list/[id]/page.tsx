@@ -106,6 +106,8 @@ async function saveList(doc: ListGame) {
     const payload: any = { ...doc, schema: 'v2' };
     payload.coHosts = Array.isArray(doc.cohosts) ? [...doc.cohosts] : [];
     payload.cohosts = Array.isArray(doc.cohosts) ? [...doc.cohosts] : [];
+
+    // your existing save:
     await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
       method: 'POST',
       headers: {
@@ -116,8 +118,20 @@ async function saveList(doc: ListGame) {
       keepalive: true,
       cache: 'no-store',
     });
-  } catch (e:any) {
-    debugLine(`[saveList] ${e?.message || e}`);
+
+    // NEW: seed the room hub + broadcast to WS listeners
+    fetch(
+      `/api/room/list/${encodeURIComponent(doc.id)}/publish`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ v: Number(doc.v) || 0, data: doc }),
+        keepalive: true,
+      }
+    ).catch(() => {});
+  } catch (e: any) {
+    // optional: your debug logger
+    console.log('[saveList]', e?.message || e);
   }
 }
 

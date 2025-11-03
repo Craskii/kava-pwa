@@ -1,15 +1,11 @@
-// Cloudflare Pages Function (Module syntax)
-// WebSocket hub per room (process-local). Good enough to get you unblocked.
-
-export const config = {
-  // IMPORTANT: allow upgrade
-  // (Some CF environments infer this automatically; keeping here for clarity)
-};
+// Cloudflare Pages Function (module syntax) — WebSocket hub per room (process-local)
+// Route: /api/room/:kind/:id/ws  (GET, Upgrade: websocket)
 
 type RoomKey = `${string}:${string}`;
 type RoomState = { v: number; data: any };
 
-const g = (globalThis as any);
+// global hub
+const g = globalThis as any;
 if (!g.__ROOM_HUB__) {
   g.__ROOM_HUB__ = {
     conns: new Map<RoomKey, Set<WebSocket>>(),
@@ -21,25 +17,22 @@ const HUB: {
   state: Map<RoomKey, RoomState>;
 } = g.__ROOM_HUB__;
 
-function key(kind: string, id: string): RoomKey {
-  return `${kind}:${id}`;
-}
+const k = (kind: string, id: string): RoomKey => `${kind}:${id}`;
 
-function broadcast(kind: string, id: string, msg: any) {
-  const k = key(kind, id);
-  const set = HUB.conns.get(k);
-  if (!set) return;
-  const data = typeof msg === 'string' ? msg : JSON.stringify(msg);
-  for (const ws of set) {
-    try { ws.send(data); } catch {}
+function broadcast(kind: string, id: string, payload: any) {
+  const key = k(kind, id);
+  const conns = HUB.conns.get(key);
+  if (!conns) return;
+  const str = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  for (const ws of conns) {
+    try { ws.send(str); } catch {}
   }
 }
 
-export async function onRequest(context: any): Promise<Response> {
-  const { request, params } = context;
-  const url = new URL(request.url);
+// Use method-specific handler (Cloudflare Pages likes this for upgrades)
+export async function onRequestGet(ctx: any): Promise<Response> {
+  const { request, params } = ctx;
 
-  // Only handle websocket upgrade
   if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
     return new Response('Expected WebSocket upgrade', { status: 426 });
   }
@@ -51,48 +44,47 @@ export async function onRequest(context: any): Promise<Response> {
   const pair = new WebSocketPair();
   const [client, server] = Object.values(pair) as [WebSocket, WebSocket];
 
-  // Attach server side
   server.accept();
 
-  const k = key(kind, id);
-  if (!HUB.conns.has(k)) HUB.conns.set(k, new Set());
-  HUB.conns.get(k)!.add(server);
+  const key = k(kind, id);
+  if (!HUB.conns.has(key)) HUB.conns.set(key, new Set());
+  HUB.conns.get(key)!.add(server);
 
-  // On open: send current snapshot if any
-  const snap = HUB.state.get(k);
+  // Send current snapshot to the newcomer
+  const snap = HUB.state.get(key);
   if (snap) {
     server.send(JSON.stringify({ t: 'state', v: snap.v ?? 0, data: snap.data ?? null }));
   }
 
   server.addEventListener('message', (ev) => {
-    // Simple protocol:
-    // - {t:'ping'} => reply pong
-    // - {t:'publish', data: <doc>, v: <number> } => store + broadcast
     try {
-      const body = typeof ev.data === 'string' ? JSON.parse(ev.data) : {};
-      if (body?.t === 'ping') {
+      const msg = typeof ev.data === 'string' ? JSON.parse(ev.data) : {};
+      if (msg?.t === 'ping') {
         server.send(JSON.stringify({ t: 'pong', ts: Date.now() }));
         return;
       }
-      if (body?.t === 'publish' && body?.data) {
-        const v = Number(body?.v ?? 0) || 0;
-        HUB.state.set(k, { v, data: body.data });
-        broadcast(kind, id, { t: 'state', v, data: body.data });
+      // Optional: allow clients to publish via WS too
+      if (msg?.t === 'publish' && msg?.data) {
+        const v = Number(msg?.v ?? 0) || 0;
+        HUB.state.set(key, { v, data: msg.data });
+        broadcast(kind, id, { t: 'state', v, data: msg.data });
         return;
       }
     } catch {
-      // ignore bad frames
+      // ignore malformed frames
     }
   });
 
-  server.addEventListener('close', () => {
-    const set = HUB.conns.get(k);
+  const cleanup = () => {
+    const set = HUB.conns.get(key);
     if (set) {
       set.delete(server);
-      if (set.size === 0) HUB.conns.delete(k);
+      if (set.size === 0) HUB.conns.delete(key);
     }
-  });
+  };
+  server.addEventListener('close', cleanup);
+  server.addEventListener('error', cleanup);
 
-  // Return the upgraded socket
-  return new Response(null, { status: 101, webSocket: client });
+  // NOTE: For Pages Functions you can omit the 101; this is accepted:
+  return new Response(null, { webSocket: client });
 }

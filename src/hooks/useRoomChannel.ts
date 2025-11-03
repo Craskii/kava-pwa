@@ -1,4 +1,3 @@
-// src/hooks/useRoomChannel.ts
 'use client';
 
 import { useEffect, useRef } from 'react';
@@ -10,9 +9,6 @@ type Args = {
   onError?: (err: unknown) => void;
 };
 
-/**
- * WebSocket client with poll fallback.
- */
 export function useRoomChannel({ kind, id, onState, onError }: Args) {
   const lastV = useRef<number>(0);
   const wsRef = useRef<WebSocket | null>(null);
@@ -83,41 +79,23 @@ export function useRoomChannel({ kind, id, onState, onError }: Args) {
       `/api/room/${encodeURIComponent(kind)}/${encodeURIComponent(id)}/ws`;
 
     let ws: WebSocket;
-    try {
-      ws = new WebSocket(url);
-    } catch (e) {
-      err(e);
-      return;
-    }
+    try { ws = new WebSocket(url); } catch (e) { err(e); return; }
     wsRef.current = ws;
+    (window as any).__room_ws__ = ws; // handy if you want to publish from elsewhere
 
-    ws.onopen = () => {
-      // optional ping
-      safeSend(ws, { t: 'ping' });
-    };
+    ws.onopen = () => { safeSend(ws, { t: 'ping' }); };
     ws.onmessage = (e) => {
       if (stopped.current) return;
       try {
         const j = JSON.parse(e.data);
-        // hub sends {t:'state', v, data}
-        if (j?.t === 'state' && j?.data) {
-          cb({ v: j.v ?? 0, ...j.data });
-        }
-      } catch {
-        // ignore
-      }
+        if (j?.t === 'state' && j?.data) cb({ v: j.v ?? 0, ...j.data });
+      } catch {}
     };
-    ws.onerror = (ev) => {
-      err(ev);
-    };
+    ws.onerror = (ev) => { if (onError) onError(ev); };
     ws.onclose = () => {
-      // Will keep poll fallback running; try a lazy reconnect
-      setTimeout(() => {
-        if (!stopped.current) attachWS(kind, id, cb, err);
-      }, 4000);
+      setTimeout(() => { if (!stopped.current) attachWS(kind, id, cb, err); }, 4000);
     };
 
-    // reattach on visibility change
     const vis = () => {
       if (document.visibilityState === 'visible' && !stopped.current) {
         tryClose(wsRef.current);
