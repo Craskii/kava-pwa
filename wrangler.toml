@@ -1,6 +1,9 @@
 # wrangler.toml
 name = "kava-pwa"
 main = "dist/worker/index.js"
+compatibility_date = "2024-11-01"
+# optional if you use Node APIs in functions
+# compatibility_flags = ["nodejs_compat"]
 
 [[durable_objects.bindings]]
 name = "LIST_ROOM"

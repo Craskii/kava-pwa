@@ -1,24 +1,27 @@
-import { getRoomNamespace, requireId } from "../_shared";
+// Pages Function: POST publish to DO (fan-out)
+export const onRequest: PagesFunction = async ({ env, params, request }) => {
+  if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
 
-export const onRequestPost: PagesFunction = async (ctx) => {
-  const { env, params, request } = ctx;
-  const ns = getRoomNamespace(env, String(params.kind));
-  const id = requireId(params as any);
+  const kind = String(params.kind);
+  const id = String(params.id);
 
-  const objectId = ns.idFromName(id);
-  const stub = ns.get(objectId);
+  const bindingName =
+    kind === 'tournament' ? 'TOURNAMENT_ROOM' : 'LIST_ROOM';
 
-  const url = new URL("http://do/publish");
-  const body = await request.text(); // pass-through body
-  const res = await stub.fetch(url, {
-    method: "POST",
-    headers: { "content-type": request.headers.get("content-type") || "application/json" },
-    body,
+  const ns: DurableObjectNamespace = (env as any)[bindingName];
+  if (!ns) return new Response(`Missing DO binding: ${bindingName}`, { status: 500 });
+
+  const stub = ns.get(ns.idFromName(id));
+
+  const url = new URL(request.url);
+  url.pathname = '/publish';
+
+  // Pass the original body through
+  const forward = new Request(url.toString(), {
+    method: 'POST',
+    headers: request.headers,
+    body: await request.arrayBuffer(),
   });
 
-  return res;
+  return stub.fetch(forward);
 };
-
-// Let GET fail clearly
-export const onRequestGet: PagesFunction = async () =>
-  new Response("Use POST", { status: 405 });

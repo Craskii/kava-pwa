@@ -1,18 +1,19 @@
-import { getRoomNamespace, requireId } from "../_shared";
+// Pages Function: HTTP snapshot proxy to DO
+export const onRequest: PagesFunction = async ({ env, params, request }) => {
+  const kind = String(params.kind);
+  const id = String(params.id);
 
-export const onRequestGet: PagesFunction = async (ctx) => {
-  const { env, params } = ctx;
-  const ns = getRoomNamespace(env, String(params.kind));
-  const id = requireId(params as any);
+  const bindingName =
+    kind === 'tournament' ? 'TOURNAMENT_ROOM' : 'LIST_ROOM';
 
-  const objectId = ns.idFromName(id);
-  const stub = ns.get(objectId);
+  const ns: DurableObjectNamespace = (env as any)[bindingName];
+  if (!ns) return new Response(`Missing DO binding: ${bindingName}`, { status: 500 });
 
-  const url = new URL("http://do/snapshot");
-  const res = await stub.fetch(url, { method: "GET" });
+  const stub = ns.get(ns.idFromName(id));
 
-  // Always no-store so clients don't cache
-  const hdrs = new Headers(res.headers);
-  hdrs.set("cache-control", "no-store");
-  return new Response(res.body, { status: res.status, headers: hdrs });
+  const url = new URL(request.url);
+  url.pathname = '/snapshot';
+  const forward = new Request(url.toString(), { headers: request.headers });
+
+  return stub.fetch(forward);
 };

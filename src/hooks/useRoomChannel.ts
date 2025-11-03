@@ -11,31 +11,34 @@ type Args = {
 };
 
 /**
- * Lightweight SSE client with poll fallback.
- * No external imports to avoid circular deps.
+ * Real-time WebSocket channel with snapshot fallback.
+ * Reconnects automatically, minimal CPU cost.
  */
 export function useRoomChannel({ kind, id, onState, onError }: Args) {
   const lastV = useRef<number>(0);
-  const esRef = useRef<EventSource | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
   const pollRef = useRef<number | null>(null);
   const stopped = useRef(false);
+  const reconnectRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     if (!id || !kind) return;
     stopped.current = false;
     lastV.current = 0;
 
-    attachSSE(kind, id, onStateSafe, onErrorSafe);
+    connectWS(kind, id, onStateSafe, onErrorSafe);
     startPoll(kind, id, onStateSafe);
 
     return () => {
       stopped.current = true;
-      tryClose(esRef.current);
+      tryClose(wsRef.current);
       stopPoll();
+      if (reconnectRef.current) clearTimeout(reconnectRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, id]);
 
+  /** Handles state updates with version tracking */
   function onStateSafe(payload: any) {
     if (stopped.current) return;
     try {
@@ -50,19 +53,78 @@ export function useRoomChannel({ kind, id, onState, onError }: Args) {
 
   function onErrorSafe(err: unknown) {
     if (stopped.current) return;
+    console.warn('[RoomChannel] error', err);
     if (onError) onError(err);
   }
 
+  /** Establishes a WebSocket connection to the room DO */
+  function connectWS(kind: string, id: string, cb: (p: any) => void, err: (e: unknown) => void) {
+    tryClose(wsRef.current);
+
+    const url = `wss://${location.host}/api/room/${encodeURIComponent(kind)}/${encodeURIComponent(id)}/ws`;
+    let ws: WebSocket;
+
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      console.error('WS init error', e);
+      err(e);
+      scheduleReconnect(kind, id, cb, err);
+      return;
+    }
+
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log('[RoomChannel] ✅ Connected');
+    };
+
+    ws.onmessage = (event) => {
+      if (stopped.current) return;
+      try {
+        const j = JSON.parse(event.data);
+        cb(j?.t === 'state' ? j.data : j);
+      } catch {
+        // ignore non-JSON messages
+      }
+    };
+
+    ws.onerror = (e) => {
+      console.warn('[RoomChannel] socket error', e);
+      err(e);
+    };
+
+    ws.onclose = () => {
+      if (stopped.current) return;
+      console.warn('[RoomChannel] ❌ Disconnected');
+      scheduleReconnect(kind, id, cb, err);
+    };
+  }
+
+  /** Retry WS after short delay */
+  function scheduleReconnect(kind: string, id: string, cb: (p: any) => void, err: (e: unknown) => void) {
+    if (reconnectRef.current) clearTimeout(reconnectRef.current);
+    reconnectRef.current = setTimeout(() => {
+      if (!stopped.current) connectWS(kind, id, cb, err);
+    }, 4000);
+  }
+
+  /** Periodic HTTP snapshot fallback */
   function startPoll(kind: string, id: string, cb: (p: any) => void) {
     if (pollRef.current) return;
     pollRef.current = window.setInterval(async () => {
       try {
-        const res = await fetch(`/api/room/${encodeURIComponent(kind)}/${encodeURIComponent(id)}/snapshot?ts=${Date.now()}`, { cache: 'no-store' });
+        const res = await fetch(
+          `/api/room/${encodeURIComponent(kind)}/${encodeURIComponent(id)}/snapshot?ts=${Date.now()}`,
+          { cache: 'no-store' }
+        );
         if (!res.ok) return;
         const json = await res.json();
         cb(json);
-      } catch {}
-    }, 5000);
+      } catch (e) {
+        console.warn('[RoomChannel] poll error', e);
+      }
+    }, 10000); // every 10s (less frequent now)
   }
 
   function stopPoll() {
@@ -71,42 +133,10 @@ export function useRoomChannel({ kind, id, onState, onError }: Args) {
       pollRef.current = null;
     }
   }
-
-  function attachSSE(kind: string, id: string, cb: (p: any) => void, err: (e: unknown) => void) {
-    tryClose(esRef.current);
-    const es = new EventSource(`/api/room/${encodeURIComponent(kind)}/${encodeURIComponent(id)}/sse?ts=${Date.now()}`);
-    esRef.current = es;
-
-    es.onmessage = (e) => {
-      if (stopped.current) return;
-      try {
-        // our DO sends { t:'state', data:{...} } or just the raw doc
-        const j = JSON.parse(e.data);
-        cb(j?.t === 'state' ? j.data : j);
-      } catch {
-        // if not JSON, ignore
-      }
-    };
-    es.onerror = () => {
-      tryClose(esRef.current);
-      // keep poll running; we’ll retry SSE on focus
-      setTimeout(() => {
-        if (!stopped.current) attachSSE(kind, id, cb, err);
-      }, 4000);
-    };
-
-    // reattach on visibility change
-    const vis = () => {
-      if (document.visibilityState === 'visible' && !stopped.current) {
-        tryClose(esRef.current);
-        attachSSE(kind, id, cb, err);
-      }
-    };
-    document.addEventListener('visibilitychange', vis, { passive: true });
-    es.addEventListener('close', () => document.removeEventListener('visibilitychange', vis));
-  }
 }
 
-function tryClose(es: EventSource | null) {
-  try { es?.close(); } catch {}
+function tryClose(ws: WebSocket | null) {
+  try {
+    ws?.close();
+  } catch {}
 }
