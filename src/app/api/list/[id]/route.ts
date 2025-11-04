@@ -116,7 +116,7 @@ function coerceIn(doc: any): ListGame {
 function coerceOut(stored: any) {
   const x = coerceIn(stored);
   const queue = [...x.queue9, ...x.queue8];
-  // IMPORTANT: map server coHosts → client cohosts (lowercase) so co-hosts actually have powers
+  // IMPORTANT: map server coHosts → client cohosts (lowercase)
   return { ...x, queue, cohosts: (x.coHosts ?? []) };
 }
 
@@ -163,7 +163,7 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
 
 /* ---------- PUT/POST (auth: host OR co-host) ---------- */
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
-  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
+  const { env: rawEnv, request: cfReq } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
 
   let body: ListGame;
@@ -198,6 +198,21 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
 
   if (prev?.hostId && prev.hostId !== body.hostId) await removeFrom(env, LHOST(prev.hostId), id);
   if (body.hostId) await addTo(env, LHOST(body.hostId), id);
+
+  // ---------- NEW: publish to WS hub so snapshot+WS have fresh state ----------
+  try {
+    const origin = new URL(cfReq.url).origin; // same host (Pages)
+    // publish expects { v, data }, where data is the raw doc your clients consume
+    const outForClients = coerceOut(body);
+    await fetch(`${origin}/api/room/list/${encodeURIComponent(id)}/publish`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ v: nextV, data: outForClients }),
+    });
+  } catch (e) {
+    // best-effort: don't fail the write if publish hiccups
+  }
+  // ---------------------------------------------------------------------------
 
   return new NextResponse(null, { status: 204, headers: { "x-l-version": String(nextV), ETag: `"l-${nextV}"` } });
 }
