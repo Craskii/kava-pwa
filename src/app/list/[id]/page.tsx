@@ -1,20 +1,18 @@
 // src/app/list/[id]/page.tsx
+'use client';
 export const runtime = 'edge';
 
-import dynamic from 'next/dynamic';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useParams } from 'next/navigation';
+import BackButton from '../../../components/BackButton';
+import AlertsToggle from '../../../components/AlertsToggle';
+import { useQueueAlerts, bumpAlerts } from '@/hooks/useQueueAlerts';
+import { uid } from '@/lib/storage';
+import { useRoomChannel } from '@/hooks/useRoomChannel';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import DebugPanel, { debugLine } from '@/components/DebugPanel';
 
-// load only on the client (no SSR)
-const ListClient = dynamic(() => import('./ListClient'), { ssr: false });
-
-export default function Page() {
-  return <ListClient />;
-}
-
-// …keep ALL your types, helpers, and the whole component implementation…
-
-export default function ListLobby() {
-  // your existing component body unchanged
-}/* ============ Types ============ */
+/* ============ Types ============ */
 type TableLabel = '8 foot' | '9 foot';
 type Table = { a?: string; b?: string; label: TableLabel };
 type Player = { id: string; name: string };
@@ -109,7 +107,6 @@ async function saveList(doc: ListGame) {
     payload.coHosts = Array.isArray(doc.cohosts) ? [...doc.cohosts] : [];
     payload.cohosts = Array.isArray(doc.cohosts) ? [...doc.cohosts] : [];
 
-    // your existing save:
     await fetch(`/api/list/${encodeURIComponent(doc.id)}`, {
       method: 'POST',
       headers: {
@@ -121,7 +118,7 @@ async function saveList(doc: ListGame) {
       cache: 'no-store',
     });
 
-    // NEW: seed the room hub + broadcast to WS listeners
+    // Optional WS broadcast; harmless if 404
     fetch(
       `/api/room/list/${encodeURIComponent(doc.id)}/publish`,
       {
@@ -132,7 +129,6 @@ async function saveList(doc: ListGame) {
       }
     ).catch(() => {});
   } catch (e: any) {
-    // optional: your debug logger
     console.log('[saveList]', e?.message || e);
   }
 }
@@ -196,18 +192,14 @@ export default function ListLobby() {
     return false;
   };
 
-  // ---- define sseEnabled *before* using it anywhere ----
   const sseEnabled = typeof document !== 'undefined' && document.visibilityState === 'visible';
 
-  /* ---- attach SSE channel EARLY; no conditionals that reference later consts ---- */
-  // Use the object form to avoid positional signature mismatches.
   useRoomChannel({
     kind: 'list',
     id,
     enabled: sseEnabled,
     onState: (msg: any) => {
       if (!msg) return;
-      // our useRoomChannel sends either the raw state or {t:'state', data}
       const raw = msg?.t === 'state' ? msg.data : msg;
       const doc = coerceList(raw);
       if (!doc) return;
@@ -224,7 +216,7 @@ export default function ListLobby() {
     },
   });
 
-  /* ---- Snapshot + Poll fallback (kept) ---- */
+  /* Snapshot + Poll fallback */
   useEffect(() => {
     if (!id || id === 'create') {
       setG(null);
@@ -322,7 +314,7 @@ export default function ListLobby() {
     };
   }, [id, me.id]);
 
-  /* ---- Disable Android long-press ---- */
+  /* Disable Android long-press */
   useEffect(() => {
     const root = pageRootRef.current;
     if (!root) return;
@@ -340,13 +332,12 @@ export default function ListLobby() {
   const players = g?.players ?? [];
   const iAmHost = g ? (me.id === g.hostId) : false;
   const iAmCohost = g ? ((g.cohosts ?? []).includes(me.id)) : false;
-  const iHaveMod = iAmHost || iAmCohost;
   const seatedIndex = g ? g.tables.findIndex((t) => t.a === me.id || t.b === me.id) : -1;
   const seated = seatedIndex >= 0;
   const nameOf = (pid?: string) => (pid ? players.find(p => p.id === pid)?.name || '??' : '—');
   const inQueue = (pid: string) => queue.includes(pid);
 
-  /* ---- seating helper ---- */
+  /* seating helper */
   function autoSeat(next: ListGame) {
     const excluded = excludeSeatPidRef.current;
     const pmap = next.prefs || {};
@@ -397,7 +388,7 @@ export default function ListLobby() {
     excludeSeatPidRef.current = null;
   }
 
-  /* ---- commit batching ---- */
+  /* commit batching */
   function flushPending() {
     if (!pendingDraft.current) return;
     const toSave = pendingDraft.current;
@@ -443,7 +434,7 @@ export default function ListLobby() {
     }, 200);
   }
 
-  /* ---- actions ---- */
+  /* actions */
   const renameList = (nm: string) => { const v = nm.trim(); if (!v) return; scheduleCommit(d => { d.name = v; }); };
   const ensureMe = (d: ListGame) => { if (!d.players.some(p => p.id === me.id)) d.players.push(me); d.prefs ??= {}; if (!d.prefs[me.id]) d.prefs[me.id] = 'any'; };
   const joinQueue = () => scheduleCommit(d => { ensureMe(d); d.queue ??= []; if (!d.queue.includes(me.id)) d.queue.push(me.id); });
@@ -503,7 +494,7 @@ export default function ListLobby() {
     });
   };
 
-  /* ---- UI ---- */
+  /* UI */
   return (
     <ErrorBoundary>
       <main ref={pageRootRef} style={wrap}>
@@ -759,7 +750,7 @@ export default function ListLobby() {
     </ErrorBoundary>
   );
 
-  /* ---- DnD helpers need to be after JSX for type access ---- */
+  /* DnD helpers */
   type DragInfo =
     | { type: 'seat'; table: number; side: 'a'|'b'; pid?: string }
     | { type: 'queue'; index: number; pid: string };
@@ -805,7 +796,7 @@ const btnTinyActive: React.CSSProperties = { ...btnTiny, background:'#0ea5e9', b
 const pillBadge: React.CSSProperties = { padding:'6px 10px', borderRadius:999, background:'rgba(16,185,129,.2)', border:'1px solid rgba(16,185,129,.35)', fontSize:12 };
 const input: React.CSSProperties = { width:260, maxWidth:'90vw', padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff' } as any;
 const nameInput: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)' };
-const select: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:8, padding:'6px 8px' };
+const select: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:8, padding:'6px 8' as any };
 
 const bubbleName: React.CSSProperties = {
   flex: '1 1 auto',
