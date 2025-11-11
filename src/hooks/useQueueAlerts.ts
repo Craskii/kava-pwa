@@ -223,7 +223,7 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
     };
     window.addEventListener('storage', onStorage);
 
-    // Tournament: SSE
+    // Tournament: keep SSE
     let es: EventSource | null = null;
     if (tournamentId) {
       try {
@@ -233,16 +233,10 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
       } catch {}
     }
 
-    // List: fast poll + try SSE if present
+    // List: fast poll ONLY (remove SSE to avoid 404 on /api/list/:id/stream)
     let int: any = null;
     if (listId) {
       int = setInterval(manualCheck, 800);
-      try {
-        const esList = new EventSource(`/api/list/${encodeURIComponent(listId)}/stream`);
-        esList.onmessage = () => manualCheck();
-        esList.onerror = () => {};
-        es = esList;
-      } catch {}
     }
 
     return () => {
