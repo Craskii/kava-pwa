@@ -318,7 +318,6 @@ export default function LocalListPage() {
     const loser = pid ?? me.id;
     const playerName = nameOf(loser);
     
-    // Show message instead of auto-requeue
     setLostMessage(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
     setTimeout(() => setLostMessage(null), 8000);
     
@@ -327,7 +326,6 @@ export default function LocalListPage() {
       if (!t) return;
       if (t.a === loser) t.a = undefined;
       if (t.b === loser) t.b = undefined;
-      // DO NOT add back to queue - let them manually rejoin
       excludeSeatPidRef.current = loser;
     }, { t: Date.now(), who: me.id, type: 'lost', note: playerName });
   };
@@ -570,6 +568,7 @@ export default function LocalListPage() {
                   <div style={{display:'flex',gap:6}}>
                     {(iHaveMod || canEditSelf) ? (
                       <>
+                        <button style={pref==='any'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'any');}} disabled={busy}>Any</button>
                         <button style={pref==='9 foot'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'9 foot');}} disabled={busy}>9-ft</button>
                         <button style={pref==='8 foot'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'8 foot');}} disabled={busy}>8-ft</button>
                       </>
@@ -679,5 +678,4 @@ const queueItem: React.CSSProperties = {
   alignItems:'center',
   gap:10,
   justifyContent:'space-between'
-};={pref==='any'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'any');}} disabled={busy}>Any</button>
-                        <button style
+};
