@@ -4,7 +4,6 @@ export const runtime = "edge";
 import { NextResponse } from "next/server";
 import { getRequestContext } from "@cloudflare/next-on-pages";
 
-/* ---------- KV ---------- */
 type KVNamespace = {
   get(key: string): Promise<string | null>;
   put(key: string, value: string): Promise<void>;
@@ -12,9 +11,7 @@ type KVNamespace = {
 };
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-/* ---------- Types ---------- */
 type Player = { id: string; name: string };
-
 type TableLabel = "8 foot" | "9 foot";
 type Table = { a?: string; b?: string; label: TableLabel };
 type Pref = "8 foot" | "9 foot" | "any";
@@ -35,7 +32,6 @@ type Tournament = {
   cohosts?: string[];
 };
 
-/* ---------- Keys ---------- */
 const LKEY  = (id: string) => `l:${id}`;
 const LVER  = (id: string) => `lv:${id}`;
 const LHOST = (hostId: string) => `lidx:h:${hostId}`;
@@ -48,37 +44,41 @@ const TPLAY = (pid: string) => `tidx:p:${pid}`;
 
 const CODEKEY = (c: string) => `code:${c}`;
 
-/* ---------- utils ---------- */
 function uid() {
-  try { /* @ts-expect-error */ return crypto.randomUUID(); }
+  try { return crypto.randomUUID(); }
   catch { return "p_" + Math.random().toString(36).slice(2) + Date.now().toString(36); }
 }
+
 function normCode(x: unknown): string {
   const digits = String(x ?? "").replace(/\D+/g, "");
   return digits.slice(-5).padStart(5, "0");
 }
+
 async function readArr(env: Env, key: string): Promise<string[]> {
   const raw = (await env.KAVA_TOURNAMENTS.get(key)) || "[]";
   try { return JSON.parse(raw) as string[]; } catch { return []; }
 }
+
 async function writeArr(env: Env, key: string, arr: string[]) {
   await env.KAVA_TOURNAMENTS.put(key, JSON.stringify(arr));
 }
+
 async function addTo(env: Env, key: string, id: string) {
   const arr = await readArr(env, key);
   if (!arr.includes(id)) { arr.push(id); await writeArr(env, key, arr); }
 }
+
 async function getV(env: Env, vKey: string) {
   const raw = await env.KAVA_TOURNAMENTS.get(vKey);
   const n = raw ? Number(raw) : 0;
   return Number.isFinite(n) ? n : 0;
 }
+
 async function bumpV(env: Env, vKey: string) {
   const cur = await getV(env, vKey);
   await env.KAVA_TOURNAMENTS.put(vKey, String(cur + 1));
 }
 
-/* ---------- coercers ---------- */
 function coerceList(raw: any): ListGame | null {
   if (!raw) return null;
   try {
@@ -102,8 +102,6 @@ function coerceList(raw: any): ListGame | null {
     }
 
     const q = Array.isArray(raw.queue) ? raw.queue.map(String).filter(Boolean) : [];
-
-    // accept both cohosts/coHosts keys
     const cohosts: string[] =
       Array.isArray(raw.cohosts) ? raw.cohosts.map(String) :
       Array.isArray(raw.coHosts) ? raw.coHosts.map(String) : [];
@@ -117,6 +115,7 @@ function coerceList(raw: any): ListGame | null {
     };
   } catch { return null; }
 }
+
 function coerceTournament(raw:any): Tournament | null {
   if (!raw) return null;
   try {
@@ -137,28 +136,33 @@ function coerceTournament(raw:any): Tournament | null {
   } catch { return null; }
 }
 
-/* ---------- list seating ---------- */
 function reconcileSeatingList(x: ListGame) {
   const seated = new Set<string>();
   for (const t of x.tables) { if (t.a) seated.add(t.a); if (t.b) seated.add(t.b); }
   const q = x.queue ?? [];
   const prefs = x.prefs ?? {};
+  
   const take = (want: TableLabel): string | undefined => {
     for (let i=0;i<q.length;i++){
-      const pid = q[i]; if (!pid || seated.has(pid)) continue;
+      const pid = q[i]; 
+      if (!pid || seated.has(pid)) continue;
       const pf = (prefs[pid] ?? "any") as Pref;
-      if (pf==="any" || pf===want){ q.splice(i,1); return pid; }
+      if (pf==="any" || pf===want){ 
+        q.splice(i,1); 
+        return pid; 
+      }
     }
     return undefined;
   };
+  
   for (const t of x.tables) {
     if (!t.a) { const pid = take(t.label); if (pid) { t.a = pid; seated.add(pid); } }
     if (!t.b) { const pid = take(t.label); if (pid) { t.b = pid; seated.add(pid); } }
   }
+  
   x.queue = q;
 }
 
-/* ---------- resolve code → {kind,id} ---------- */
 async function resolveByCode(env: Env, code: string): Promise<{kind:"list"|"tournament"; id:string} | null> {
   const mapping = await env.KAVA_TOURNAMENTS.get(CODEKEY(code));
   if (mapping) {
@@ -168,7 +172,6 @@ async function resolveByCode(env: Env, code: string): Promise<{kind:"list"|"tour
       const kind = String(parsed?.kind ?? parsed?.type ?? "list");
       if (id) return { kind: kind === "tournament" ? "tournament" : "list", id };
     } catch {
-      // legacy: mapping == id
       const id = mapping;
       if (await env.KAVA_TOURNAMENTS.get(LKEY(id))) return { kind: "list", id };
       if (await env.KAVA_TOURNAMENTS.get(TKEY(id))) return { kind: "tournament", id };
@@ -177,14 +180,12 @@ async function resolveByCode(env: Env, code: string): Promise<{kind:"list"|"tour
   return null;
 }
 
-/* ---------- GET (health) ---------- */
 export async function GET() {
   return new NextResponse(JSON.stringify({ ok: true }), {
     headers: { "content-type": "application/json", "cache-control": "no-store" },
   });
 }
 
-/* ---------- POST (join by code) ---------- */
 export async function POST(req: Request) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
 
@@ -200,7 +201,6 @@ export async function POST(req: Request) {
   const target = await resolveByCode(env, code);
   if (!target) return NextResponse.json({ error:"Not found" },{ status:404 });
 
-  /* ----- LIST ----- */
   if (target.kind === "list") {
     const raw = await env.KAVA_TOURNAMENTS.get(LKEY(target.id));
     if (!raw) return NextResponse.json({ error:"Not found" },{ status:404 });
@@ -210,28 +210,36 @@ export async function POST(req: Request) {
     const callerIsHost = !!meId && meId === doc.hostId;
 
     if (!callerIsHost) {
-      // upsert player
       let me: Player | null =
         (meId && doc.players.find(p=>p.id===meId)) ||
         doc.players.find(p=>p.name.toLowerCase()===meName.toLowerCase()) || null;
 
-      if (!me) { me = { id: meId || uid(), name: meName }; doc.players.push(me); }
+      if (!me) { 
+        me = { id: meId || uid(), name: meName }; 
+        doc.players.push(me); 
+      }
       if (!doc.players.some(p=>p.id===me.id)) doc.players.push(me);
 
-      doc.prefs ??= {}; if (!doc.prefs[me.id]) doc.prefs[me.id] = "any";
-      doc.queue ??= []; if (!doc.queue.includes(me.id)) doc.queue.push(me.id);
+      doc.prefs ??= {}; 
+      if (!doc.prefs[me.id]) doc.prefs[me.id] = "any";
+      doc.queue ??= []; 
+      
+      // CRITICAL FIX: Only add if not already in queue AND not seated
+      const alreadyInQueue = doc.queue.includes(me.id);
+      const seated = doc.tables.some(t => t.a === me.id || t.b === me.id);
+      
+      if (!alreadyInQueue && !seated) {
+        doc.queue.push(me.id); // Add to END of queue, not beginning
+      }
 
       reconcileSeatingList(doc);
 
-      // save + version
       await env.KAVA_TOURNAMENTS.put(LKEY(doc.id), JSON.stringify(doc));
       await bumpV(env, LVER(doc.id));
 
-      // update player index so “My lists → Playing” shows instantly
       await addTo(env, LPLAY(me.id), doc.id);
     }
 
-    // make sure host index exists (helps “Hosting” list)
     await addTo(env, LHOST(doc.hostId), doc.id);
 
     return NextResponse.json({ ok:true, kind:"list", id:doc.id, href:`/list/${encodeURIComponent(doc.id)}` }, {
@@ -239,7 +247,6 @@ export async function POST(req: Request) {
     });
   }
 
-  /* ----- TOURNAMENT ----- */
   const trRaw = await env.KAVA_TOURNAMENTS.get(TKEY(target.id));
   if (!trRaw) return NextResponse.json({ error:"Not found" },{ status:404 });
   const t = coerceTournament(JSON.parse(trRaw));
@@ -262,7 +269,6 @@ export async function POST(req: Request) {
   if (!already) {
     const me: Player = { id: meId || uid(), name: meName };
     t.pending.push(me);
-    // update player index immediately → “My tournaments → Playing”
     await addTo(env, TPLAY(me.id), t.id);
   }
 

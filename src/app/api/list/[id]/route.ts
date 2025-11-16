@@ -27,7 +27,7 @@ type ListGame = {
   queue8: string[];
   queue9: string[];
   prefs?: Record<string, Pref>;
-  coHosts?: string[]; // stored with capital H on server
+  coHosts?: string[];
 };
 
 const LKEY = (id: string) => `l:${id}`;
@@ -86,7 +86,6 @@ function coerceIn(doc: any): ListGame {
     queue8 = (doc?.queue8 ?? []).map((x: any) => String(x)).filter(Boolean);
     queue9 = (doc?.queue9 ?? []).map((x: any) => String(x)).filter(Boolean);
   } else if (Array.isArray(doc?.queue)) {
-    // back-compat: split combined queue by current prefs
     for (const x of doc.queue as any[]) {
       const pid = String(x);
       const pref = prefs[pid] ?? "any";
@@ -116,7 +115,6 @@ function coerceIn(doc: any): ListGame {
 function coerceOut(stored: any) {
   const x = coerceIn(stored);
   const queue = [...x.queue9, ...x.queue8];
-  // IMPORTANT: map server coHosts → client cohosts (lowercase)
   return { ...x, queue, cohosts: (x.coHosts ?? []) };
 }
 
@@ -129,6 +127,7 @@ function dropFromQueues(x: ListGame, pid?: string) {
 function reconcileSeating(x: ListGame) {
   const seated = new Set<string>();
   for (const t of x.tables) { if (t.a) seated.add(t.a); if (t.b) seated.add(t.b); }
+  
   const nextFrom = (label: "8 foot" | "9 foot") => {
     const src = label === "9 foot" ? x.queue9 : x.queue8;
     while (src.length) {
@@ -137,13 +136,13 @@ function reconcileSeating(x: ListGame) {
     }
     return undefined;
   };
+  
   for (const t of x.tables) {
     if (!t.a) { const pid = nextFrom(t.label); if (pid) { t.a = pid; seated.add(pid); dropFromQueues(x, pid); } }
     if (!t.b) { const pid = nextFrom(t.label); if (pid) { t.b = pid; seated.add(pid); dropFromQueues(x, pid); } }
   }
 }
 
-/* ---------- GET ---------- */
 export async function GET(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
@@ -161,16 +160,13 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   return new NextResponse(JSON.stringify(out), { headers: { "content-type": "application/json", ETag: etag, "Cache-Control": "public, max-age=0, stale-while-revalidate=30", "x-l-version": String(v) } });
 }
 
-/* ---------- PUT/POST (auth: host OR co-host) ---------- */
 export async function PUT(req: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv, request: cfReq } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;
 
   let body: ListGame;
   try { body = coerceIn(await req.json()); } catch { return NextResponse.json({ error: "Bad JSON" }, { status: 400 }); }
-  if (body.id !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 });
-
-  const caller = (req.headers.get("x-user-id") || "").trim();
+  if (body.id !== id) return NextResponse.json({ error: "ID mismatch" }, { status: 400 }); const caller = (req.headers.get("x-user-id") || "").trim();
   const mods = new Set([body.hostId, ...(body.coHosts ?? [])]);
   if (!caller || !mods.has(caller)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -199,10 +195,8 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
   if (prev?.hostId && prev.hostId !== body.hostId) await removeFrom(env, LHOST(prev.hostId), id);
   if (body.hostId) await addTo(env, LHOST(body.hostId), id);
 
-  // ---------- NEW: publish to WS hub so snapshot+WS have fresh state ----------
   try {
-    const origin = new URL(cfReq.url).origin; // same host (Pages)
-    // publish expects { v, data }, where data is the raw doc your clients consume
+    const origin = new URL(cfReq.url).origin;
     const outForClients = coerceOut(body);
     await fetch(`${origin}/api/room/list/${encodeURIComponent(id)}/publish`, {
       method: "POST",
@@ -210,15 +204,13 @@ export async function PUT(req: Request, { params }: { params: { id: string } }) 
       body: JSON.stringify({ v: nextV, data: outForClients }),
     });
   } catch (e) {
-    // best-effort: don't fail the write if publish hiccups
+    // best-effort
   }
-  // ---------------------------------------------------------------------------
 
   return new NextResponse(null, { status: 204, headers: { "x-l-version": String(nextV), ETag: `"l-${nextV}"` } });
 }
 export async function POST(req: Request, ctx: { params: { id: string } }) { return PUT(req, ctx); }
 
-/* ---------- DELETE ---------- */
 export async function DELETE(_: Request, { params }: { params: { id: string } }) {
   const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
   const id = params.id;

@@ -1,6 +1,5 @@
 // src/app/local-list/page.tsx
 'use client';
-export const runtime = 'edge';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import BackButton from '@/components/BackButton';
@@ -32,6 +31,23 @@ type ListGame = {
 const LS_KEY = 'kava_local_list_v1';
 
 function loadLocal(): ListGame {
+  if (typeof window === 'undefined') {
+    return {
+      id: 'local',
+      name: 'Local List',
+      hostId: '',
+      createdAt: Date.now(),
+      tables: [{ label: '8 foot' }, { label: '9 foot' }],
+      players: [],
+      queue: [],
+      prefs: {},
+      cohosts: [],
+      audit: [],
+      v: 0,
+      schema: 'local-v1',
+    };
+  }
+
   try {
     const raw = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
     if (raw && raw.schema === 'local-v1') {
@@ -67,6 +83,7 @@ function loadLocal(): ListGame {
       };
     }
   } catch {}
+  
   return {
     id: 'local',
     name: 'Local List',
@@ -84,12 +101,14 @@ function loadLocal(): ListGame {
 }
 
 const saveLocal = (doc: ListGame) => {
+  if (typeof window === 'undefined') return;
   try { localStorage.setItem(LS_KEY, JSON.stringify(doc)); } catch {}
 };
 
 /* ============ Component ============ */
 export default function LocalListPage() {
   const me = useMemo<Player>(() => {
+    if (typeof window === 'undefined') return { id: '', name: 'Player' };
     try {
       const saved = JSON.parse(localStorage.getItem('kava_me') || 'null');
       if (saved?.id) return saved;
@@ -98,11 +117,19 @@ export default function LocalListPage() {
     localStorage.setItem('kava_me', JSON.stringify(fresh));
     return fresh;
   }, []);
-  useEffect(() => { localStorage.setItem('kava_me', JSON.stringify(me)); }, [me]);
+  
+  useEffect(() => { 
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('kava_me', JSON.stringify(me)); 
+    }
+  }, [me]);
 
   const [g, setG] = useState<ListGame>(() => {
     const doc = loadLocal();
-    if (!doc.hostId) { doc.hostId = me.id; saveLocal(doc); }
+    if (!doc.hostId && me.id) { 
+      doc.hostId = me.id; 
+      saveLocal(doc); 
+    }
     return doc;
   });
 
@@ -111,10 +138,13 @@ export default function LocalListPage() {
   const [showTableControls, setShowTableControls] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [supportsDnD, setSupportsDnD] = useState<boolean>(false);
+  const [lostMessage, setLostMessage] = useState<string | null>(null);
   const pageRootRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => { setSupportsDnD(!('ontouchstart' in window)); }, []);
+  
+  useEffect(() => { 
+    setSupportsDnD(!('ontouchstart' in window)); 
+  }, []);
 
-  // persist on each change (debounced)
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   const persist = (doc: ListGame) => {
     if (debounce.current) clearTimeout(debounce.current);
@@ -130,7 +160,6 @@ export default function LocalListPage() {
   const nameOf = (pid?: string) => (pid ? players.find(p => p.id === pid)?.name || '??' : '—');
   const inQueue = (pid: string) => queue.includes(pid);
 
-  /* ---- Disable Android long-press ---- */
   useEffect(() => {
     const root = pageRootRef.current;
     if (!root) return;
@@ -143,8 +172,8 @@ export default function LocalListPage() {
     return () => { root.removeEventListener('contextmenu', prevent); };
   }, []);
 
-  /* ---- seating helper ---- */
   const excludeSeatPidRef = useRef<string | null>(null);
+  
   function autoSeat(next: ListGame) {
     const excluded = excludeSeatPidRef.current;
     const pmap = next.prefs || {};
@@ -153,11 +182,9 @@ export default function LocalListPage() {
       for (let i = 0; i < next.queue.length; i++) {
         const pid = next.queue[i];
         if (!pid) { next.queue.splice(i, 1); i--; continue; }
+        if (excluded && pid === excluded) continue;
         const pref = (pmap[pid] ?? 'any') as Pref;
-        if (pid !== excluded && (pref === 'any' || pref === want)) {
-          next.queue.splice(i, 1);
-          return pid;
-        }
+        if (pref === 'any' || pref === want) { next.queue.splice(i, 1); return pid; }
       }
       return undefined;
     };
@@ -173,10 +200,7 @@ export default function LocalListPage() {
       for (let i = 0; i < candidates.length; i++) {
         const pid = candidates[i];
         const pref = (pmap[pid] ?? 'any') as Pref;
-        if (pid !== excluded && (pref === 'any' || pref === want)) {
-          candidates.splice(i, 1);
-          return pid;
-        }
+        if (pid !== excluded && (pref === 'any' || pref === want)) { candidates.splice(i, 1); return pid; }
       }
       return undefined;
     };
@@ -189,7 +213,6 @@ export default function LocalListPage() {
     excludeSeatPidRef.current = null;
   }
 
-  /* ---- reducer-like mutator ---- */
   function update(mut: (d: ListGame) => void, audit?: AuditEntry) {
     setBusy(true);
     setG(prev => {
@@ -204,17 +227,25 @@ export default function LocalListPage() {
     setTimeout(() => setBusy(false), 80);
   }
 
-  /* ---- actions ---- */
   const renameList = (nm: string) => {
     const v = nm.trim(); if (!v) return;
     update(d => { d.name = v; }, { t: Date.now(), who: me.id, type: 'rename', note: v });
   };
+  
   const ensureMe = (d: ListGame) => {
     if (!d.players.some(p => p.id === me.id)) d.players.push(me);
     if (!d.prefs[me.id]) d.prefs[me.id] = 'any';
   };
-  const joinQueue = () => update(d => { ensureMe(d); if (!d.queue.includes(me.id)) d.queue.push(me.id); }, { t: Date.now(), who: me.id, type: 'join-queue' });
-  const leaveQueue = () => update(d => { d.queue = d.queue.filter(x => x !== me.id); }, { t: Date.now(), who: me.id, type: 'leave-queue' });
+  
+  const joinQueue = () => update(d => { 
+    ensureMe(d); 
+    if (!d.queue.includes(me.id)) d.queue.push(me.id); 
+  }, { t: Date.now(), who: me.id, type: 'join-queue' });
+  
+  const leaveQueue = () => update(d => { 
+    d.queue = d.queue.filter(x => x !== me.id); 
+  }, { t: Date.now(), who: me.id, type: 'leave-queue' });
+  
   const addPlayer = () => {
     const v = nameField.trim(); if (!v) return;
     const p: Player = { id: uid(), name: v };
@@ -225,12 +256,14 @@ export default function LocalListPage() {
       if (!d.queue.includes(p.id)) d.queue.push(p.id);
     }, { t: Date.now(), who: me.id, type: 'add-player', note: v });
   };
+  
   const removePlayer = (pid: string) => update(d => {
     d.players = d.players.filter(p => p.id !== pid);
     d.queue = d.queue.filter(x => x !== pid);
     delete d.prefs[pid];
     d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b }));
   }, { t: Date.now(), who: me.id, type: 'remove-player', note: nameOf(pid) });
+  
   const renamePlayer = (pid: string) => {
     const cur = players.find(p => p.id === pid)?.name || '';
     const nm = prompt('Rename player', cur);
@@ -238,9 +271,18 @@ export default function LocalListPage() {
     const v = nm.trim(); if (!v) return;
     update(d => { const p = d.players.find(pp => pp.id === pid); if (p) p.name = v; }, { t: Date.now(), who: me.id, type: 'rename-player', note: v });
   };
-  const setPrefFor = (pid: string, pref: Pref) => update(d => { d.prefs[pid] = pref; }, { t: Date.now(), who: me.id, type: 'set-pref', note: `${nameOf(pid)} → ${pref}` });
-  const enqueuePid = (pid: string) => update(d => { if (!d.queue.includes(pid)) d.queue.push(pid); }, { t: Date.now(), who: me.id, type: 'queue', note: nameOf(pid) });
-  const dequeuePid = (pid: string) => update(d => { d.queue = d.queue.filter(x => x !== pid); }, { t: Date.now(), who: me.id, type: 'dequeue', note: nameOf(pid) });
+  
+  const setPrefFor = (pid: string, pref: Pref) => update(d => { 
+    d.prefs[pid] = pref; 
+  }, { t: Date.now(), who: me.id, type: 'set-pref', note: `${nameOf(pid)} → ${pref}` });
+  
+  const enqueuePid = (pid: string) => update(d => { 
+    if (!d.queue.includes(pid)) d.queue.push(pid); 
+  }, { t: Date.now(), who: me.id, type: 'queue', note: nameOf(pid) });
+  
+  const dequeuePid = (pid: string) => update(d => { 
+    d.queue = d.queue.filter(x => x !== pid); 
+  }, { t: Date.now(), who: me.id, type: 'dequeue', note: nameOf(pid) });
 
   const leaveList = () => update(d => {
     d.players = d.players.filter(p => p.id !== me.id);
@@ -258,28 +300,38 @@ export default function LocalListPage() {
     if (index <= 0 || index >= d.queue.length) return;
     const a = d.queue[index - 1]; d.queue[index - 1] = d.queue[index]; d.queue[index] = a;
   });
+  
   const moveDown = (index: number) => update(d => {
     if (index < 0 || index >= d.queue.length - 1) return;
     const a = d.queue[index + 1]; d.queue[index + 1] = d.queue[index]; d.queue[index] = a;
   });
+  
   const skipFirst = () => update(d => {
-    if (d.queue.length >= 2) { const first = d.queue.shift()!, second = d.queue.shift()!; d.queue.unshift(first, second); }
+    if (d.queue.length >= 2) { 
+      const first = d.queue.shift()!; 
+      const second = d.queue.shift()!; 
+      d.queue.unshift(first, second); 
+    }
   }, { t: Date.now(), who: me.id, type: 'skip-first' });
 
   const iLost = (pid?: string) => {
     const loser = pid ?? me.id;
+    const playerName = nameOf(loser);
+    
+    // Show message instead of auto-requeue
+    setLostMessage(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
+    setTimeout(() => setLostMessage(null), 8000);
+    
     update(d => {
       const t = d.tables.find(tt => tt.a === loser || tt.b === loser);
       if (!t) return;
       if (t.a === loser) t.a = undefined;
       if (t.b === loser) t.b = undefined;
-      d.queue = d.queue.filter(x => x !== loser);
-      d.queue.push(loser);
+      // DO NOT add back to queue - let them manually rejoin
       excludeSeatPidRef.current = loser;
-    }, { t: Date.now(), who: me.id, type: 'lost', note: nameOf(loser) });
+    }, { t: Date.now(), who: me.id, type: 'lost', note: playerName });
   };
 
-  /* ---- DnD ---- */
   type DragInfo =
     | { type: 'seat'; table: number; side: 'a'|'b'; pid?: string }
     | { type: 'queue'; index: number; pid: string };
@@ -289,7 +341,9 @@ export default function LocalListPage() {
     try { e.dataTransfer.setData('application/json', JSON.stringify(info)); } catch {}
     e.dataTransfer.effectAllowed = 'move';
   };
+  
   const onDragOver = (e: React.DragEvent) => { if (!iHaveMod) return; e.preventDefault(); };
+  
   const parseInfo = (ev: React.DragEvent): DragInfo | null => {
     try {
       const raw = ev.dataTransfer.getData('application/json');
@@ -297,26 +351,37 @@ export default function LocalListPage() {
       return JSON.parse(raw);
     } catch { return null; }
   };
+  
   const handleDrop = (ev: React.DragEvent, target: DragInfo) => {
-    if (!iHaveMod) return; ev.preventDefault();
-    const src = parseInfo(ev); if (!src) return;
+    if (!iHaveMod) return; 
+    ev.preventDefault();
+    const src = parseInfo(ev); 
+    if (!src) return;
+    
     update(d => {
       const moveWithin = (arr: string[], from: number, to: number) => {
-        const a = [...arr]; const [p] = a.splice(from, 1);
-        a.splice(Math.max(0, Math.min(a.length, to)), 0, p); return a;
+        const a = [...arr]; 
+        const [p] = a.splice(from, 1);
+        a.splice(Math.max(0, Math.min(a.length, to)), 0, p); 
+        return a;
       };
+      
       const removeEverywhere = (pid: string) => {
         d.queue = d.queue.filter(x => x !== pid);
         d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b }));
       };
+      
       const placeSeat = (ti: number, side: 'a'|'b', pid?: string) => {
-        if (!pid) return; removeEverywhere(pid); d.tables[ti][side] = pid;
+        if (!pid) return; 
+        removeEverywhere(pid); 
+        d.tables[ti][side] = pid;
       };
 
       if (target.type === 'seat') {
         if (src.type === 'seat') {
           const sp = d.tables[src.table][src.side], tp = d.tables[target.table][target.side];
-          d.tables[src.table][src.side] = tp; d.tables[target.table][target.side] = sp;
+          d.tables[src.table][src.side] = tp; 
+          d.tables[target.table][target.side] = sp;
         } else if (src.type === 'queue') {
           d.queue = d.queue.filter(x => x !== src.pid);
           placeSeat(target.table, target.side, src.pid);
@@ -332,15 +397,14 @@ export default function LocalListPage() {
     });
   };
 
-  /* ---- UI ---- */
   const seatedIndex = g.tables.findIndex((t) => t.a === me.id || t.b === me.id);
   const seated = seatedIndex >= 0;
 
-  // Safe onChange helpers (never read .value from null)
   const onNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e?.target?.value ?? '';
     setNameField(v);
   };
+  
   const onTableLabelChange = (tableIdx: number) =>
     (e: React.ChangeEvent<HTMLSelectElement>) => {
       const v = (e?.target?.value ?? '8 foot') as TableLabel;
@@ -357,6 +421,12 @@ export default function LocalListPage() {
           <button style={btnGhostSm} onClick={()=>{ localStorage.removeItem(LS_KEY); setG(loadLocal()); }}>Reset</button>
         </div>
       </div>
+
+      {lostMessage && (
+        <div style={messageBox}>
+          ℹ️ {lostMessage}
+        </div>
+      )}
 
       <header style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'center',marginTop:6}}>
         <div>
@@ -403,7 +473,6 @@ export default function LocalListPage() {
         </section>
       )}
 
-      {/* Tables */}
       <section style={card}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <h3 style={{marginTop:0}}>Tables</h3>
@@ -465,7 +534,6 @@ export default function LocalListPage() {
         </div>
       </section>
 
-      {/* Queue */}
       <section style={card}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
           <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
@@ -502,7 +570,6 @@ export default function LocalListPage() {
                   <div style={{display:'flex',gap:6}}>
                     {(iHaveMod || canEditSelf) ? (
                       <>
-                        <button style={pref==='any'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'any');}} disabled={busy}>Any</button>
                         <button style={pref==='9 foot'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'9 foot');}} disabled={busy}>9-ft</button>
                         <button style={pref==='8 foot'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'8 foot');}} disabled={busy}>8-ft</button>
                       </>
@@ -517,7 +584,6 @@ export default function LocalListPage() {
         )}
       </section>
 
-      {/* Host / Co-host controls */}
       {iHaveMod && (
         <section style={card}>
           <h3 style={{marginTop:0}}>Host controls</h3>
@@ -537,7 +603,6 @@ export default function LocalListPage() {
         </section>
       )}
 
-      {/* Players */}
       <section style={card}>
         <h3 style={{marginTop:0}}>List (Players) — {players.length}</h3>
         {players.length===0 ? <div style={{opacity:.7}}>No players yet.</div> : (
@@ -578,7 +643,6 @@ export default function LocalListPage() {
   );
 }
 
-/* ============ Styles ============ */
 const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui', WebkitTouchCallout:'none' };
 const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginBottom:14 };
 const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
@@ -588,10 +652,18 @@ const btnMini: React.CSSProperties = { padding:'6px 10px', borderRadius:8, borde
 const btnTiny: React.CSSProperties = { padding:'4px 8px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontSize:12, lineHeight:1 };
 const btnTinyActive: React.CSSProperties = { ...btnTiny, background:'#0ea5e9', border:'none' };
 const pillBadge: React.CSSProperties = { padding:'6px 10px', borderRadius:999, background:'rgba(16,185,129,.2)', border:'1px solid rgba(16,185,129,.35)', fontSize:12 };
-const input: React.CSSProperties = { width:260, maxWidth:'90vw', padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff' } as any;
+const input: React.CSSProperties = { width:260, maxWidth:'90vw', padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff' };
 const nameInput: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)' };
 const select: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:8, padding:'6px 8px' };
-
+const messageBox: React.CSSProperties = { 
+  background:'rgba(14,165,233,0.15)', 
+  border:'1px solid rgba(14,165,233,0.35)', 
+  borderRadius:12, 
+  padding:'12px 14px', 
+  marginTop:8,
+  fontSize:14,
+  fontWeight:600
+};
 const bubbleName: React.CSSProperties = {
   flex: '1 1 auto',
   padding: '6px 10px',
@@ -607,4 +679,5 @@ const queueItem: React.CSSProperties = {
   alignItems:'center',
   gap:10,
   justifyContent:'space-between'
-};
+};={pref==='any'?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,'any');}} disabled={busy}>Any</button>
+                        <button style
