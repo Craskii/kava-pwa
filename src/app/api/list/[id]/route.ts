@@ -36,11 +36,14 @@ const LPLAYER = (playerId: string) => `lidx:p:${playerId}`;
 const LHOST   = (hostId: string)   => `lidx:h:${hostId}`;
 
 async function getV(env: Env, id: string): Promise<number> {
-  const raw = await env.KAVA_TOURNAMENTS.get(LVER(id));
-  const n = raw ? Number(raw) : 0;
-  return Number.isFinite(n) ? n : 0;
-}
-async function setV(env: Env, id: string, v: number) {
+  try {  // ✅ Added try-catch
+    const raw = await env.KAVA_TOURNAMENTS.get(LVER(id));
+    const n = raw ? Number(raw) : 0;
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;  // ✅ Safe fallback
+  }
+}async function setV(env: Env, id: string, v: number) {
   await env.KAVA_TOURNAMENTS.put(LVER(id), String(v));
 }
 async function readArr(env: Env, key: string): Promise<string[]> {
@@ -144,20 +147,34 @@ function reconcileSeating(x: ListGame) {
 }
 
 export async function GET(req: Request, { params }: { params: { id: string } }) {
-  const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
-  const id = params.id;
+  try {  // ✅ Added try-catch
+    const { env: rawEnv } = getRequestContext(); const env = rawEnv as unknown as Env;
+    const id = params.id;
 
-  const v = await getV(env, id);
-  const etag = `"l-${v}"`;
-  const inm = req.headers.get("if-none-match");
-  if (inm && inm === etag) {
-    return new NextResponse(null, { status: 304, headers: { ETag: etag, "Cache-Control": "public, max-age=0, stale-while-revalidate=30", "x-l-version": String(v) } });
+    // ✅ Check KV binding exists
+    if (!env?.KAVA_TOURNAMENTS) {
+      return NextResponse.json({ error: "KV binding missing" }, { status: 500 });
+    }
+
+    const v = await getV(env, id);
+    const etag = `"l-${v}"`;
+    const inm = req.headers.get("if-none-match");
+    if (inm && inm === etag) {
+      return new NextResponse(null, { status: 304, headers: { ETag: etag, "Cache-Control": "public, max-age=0, stale-while-revalidate=30", "x-l-version": String(v) } });
+    }
+
+    const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
+    if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    
+    const out = coerceOut(JSON.parse(raw));
+    return new NextResponse(JSON.stringify(out), { headers: { "content-type": "application/json", ETag: etag, "Cache-Control": "public, max-age=0, stale-while-revalidate=30", "x-l-version": String(v) } });
+  } catch (error: any) {  // ✅ Catch all errors
+    console.error('[GET list error]', error);
+    return NextResponse.json({ 
+      error: "Internal server error", 
+      detail: error?.message || String(error) 
+    }, { status: 500 });
   }
-
-  const raw = await env.KAVA_TOURNAMENTS.get(LKEY(id));
-  if (!raw) return NextResponse.json({ error: "Not found" }, { status: 404 });
-  const out = coerceOut(JSON.parse(raw));
-  return new NextResponse(JSON.stringify(out), { headers: { "content-type": "application/json", ETag: etag, "Cache-Control": "public, max-age=0, stale-while-revalidate=30", "x-l-version": String(v) } });
 }
 
 export async function PUT(req: Request, { params }: { params: { id: string } }) {

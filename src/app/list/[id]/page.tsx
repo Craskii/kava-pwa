@@ -450,12 +450,20 @@ export default function Page() {
   const enqueuePid = (pid: string) => scheduleCommit(d => { d.queue ??= []; if (!d.queue.includes(pid)) d.queue.push(pid); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = (d.queue ?? []).filter(x => x !== pid); });
 
-  const leaveList = () => scheduleCommit(d => {
+  const leaveList = () => {
+  // ✅ Confirm before leaving
+  if (!confirm("Are you sure you want to leave this list?")) return;
+  
+  scheduleCommit(d => {
     d.players = d.players.filter(p => p.id !== me.id);
     d.queue = (d.queue ?? []).filter(x => x !== me.id);
     d.tables = d.tables.map(t => ({ ...t, a: t.a === me.id ? undefined : t.a, b: t.b === me.id ? undefined : t.b }));
     if (d.prefs) delete d.prefs[me.id];
   });
+  
+  // ✅ Navigate away after commit
+  setTimeout(() => { window.location.href = '/lists'; }, 500);
+};
 
   const toggleCohost = (pid: string) => {
     scheduleCommit(d => {
@@ -486,17 +494,23 @@ export default function Page() {
   });
 
   const iLost = (pid?: string) => {
-    const loser = pid ?? me.id;
-    scheduleCommit(d => {
-      const t = d.tables.find(tt => tt.a === loser || tt.b === loser);
-      if (!t) return;
-      if (t.a === loser) t.a = undefined;
-      if (t.b === loser) t.b = undefined;
-      d.queue = (d.queue ?? []).filter(x => x !== loser);
-      d.queue!.push(loser);
-      excludeSeatPidRef.current = loser;
-    });
-  };
+  const loser = pid ?? me.id;
+  const playerName = nameOf(loser);
+  
+  // ✅ Show popup alert (blocks UI until user clicks OK)
+  alert(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
+  
+  scheduleCommit(d => {
+    const t = d.tables.find(tt => tt.a === loser || tt.b === loser);
+    if (!t) return;
+    if (t.a === loser) t.a = undefined;
+    if (t.b === loser) t.b = undefined;
+    // ✅ CRITICAL: Remove from queue so they DON'T auto-seat
+    d.queue = (d.queue ?? []).filter(x => x !== loser);
+    // ✅ Do NOT add to queue - they must manually rejoin
+    excludeSeatPidRef.current = loser;
+  });
+};
 
   /* UI */
   return (

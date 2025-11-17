@@ -314,6 +314,7 @@ export default function LocalListPage() {
     }
   }, { t: Date.now(), who: me.id, type: 'skip-first' });
 
+  // ✅ FIXED: iLost now removes player completely - no auto re-queue
   const iLost = (pid?: string) => {
     const loser = pid ?? me.id;
     const playerName = nameOf(loser);
@@ -326,6 +327,8 @@ export default function LocalListPage() {
       if (!t) return;
       if (t.a === loser) t.a = undefined;
       if (t.b === loser) t.b = undefined;
+      // CRITICAL FIX: Remove from queue, do NOT re-add
+      d.queue = d.queue.filter(x => x !== loser);
       excludeSeatPidRef.current = loser;
     }, { t: Date.now(), who: me.id, type: 'lost', note: playerName });
   };
