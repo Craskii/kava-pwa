@@ -560,7 +560,7 @@ export default function Lobby() {
     const team = teamsForDisplay.find((tm) => tm.id === teamId);
     return !!team?.memberIds.includes(playerId);
   };
-  const groupStage = useMemo(() => {
+  const groupStage = (() => {
     if (settings.format !== 'groups') return null;
     const groups = t.groupStage?.groups?.length ? t.groupStage.groups : buildGroups(teamsForDisplay, settings);
     const records: Record<string, GroupRecord> = { ...(t.groupStage?.records || {}) };
@@ -568,11 +568,10 @@ export default function Lobby() {
       if (!records[id]) records[id] = { points: 0, wins: 0, losses: 0, played: 0 };
     });
     return { groups, records };
-  }, [settings.format, settings.groups?.advancement, t.groupStage, teamsForDisplay]);
-  const rankedGroups = useMemo(() => {
-    if (!groupStage) return [] as string[][];
-    return groupStage.groups.map((g) => rankGroupMembers(g, groupStage.records, teamsForDisplay, settings.groups?.advancement || 'points'));
-  }, [groupStage, teamsForDisplay, settings.groups?.advancement]);
+  })();
+  const rankedGroups = groupStage
+    ? groupStage.groups.map((g) => rankGroupMembers(g, groupStage.records, teamsForDisplay, settings.groups?.advancement || 'points'))
+    : ([] as string[][]);
   function adjustGroupRecord(teamId: string, key: keyof GroupRecord, delta: number) {
     update((x) => {
       const nextSettings = normalizeSettings(x.settings);
