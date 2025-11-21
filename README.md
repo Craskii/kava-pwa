@@ -28,6 +28,15 @@ git checkout work
 git pull
 ```
 
+## Resolving merge conflicts on `src/app/t/[id]/page.tsx`
+
+If you see a prompt about unresolved conflicts (for example in Android Studio, VS Code, or GitHub Desktop) while merging the tournament work into another branch:
+
+1. Continue the merge so the file opens with the conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`). Avoid force-merging without reviewing the differences.
+2. In `src/app/t/[id]/page.tsx`, keep the parts that preserve host-gated drag-and-drop, tournament format settings (format, team size, groups), and the late-join seating helpers. Remove the conflict markers before saving.
+3. Run `npm run lint` to confirm the file is syntactically valid.
+4. Stage the resolution and finish the merge (`git merge --continue`), then push the branch.
+
 ## Deploying to Cloudflare Pages
 
 1. Build the project locally to confirm it compiles:
