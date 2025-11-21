@@ -469,9 +469,11 @@ export default function Lobby() {
   const iAmCoHost = !!me && coHosts.includes(me.id);
   const canHost = iAmHost || iAmCoHost;
 
-  async function update(mut: (x: Tournament) => void | Promise<void>) {
-    if (busy) return;
-    setBusy(true);
+  async function update(mut: (x: Tournament) => void | Promise<void>, opts?: { blockUI?: boolean }) {
+    const blockUI = opts?.blockUI ?? true;
+    if (busy && blockUI) return;
+    if (blockUI) setBusy(true);
+
     const base: Tournament = {
       ...t,
       players: [...t.players],
@@ -483,12 +485,18 @@ export default function Lobby() {
       groupStage: t.groupStage ? { groups: t.groupStage.groups.map(g => [...g]), records: { ...(t.groupStage.records || {}) } } : undefined,
       v: t.v, // carry version through
     };
+
     const first = structuredClone(base);
-    try {
-      await mut(first);
-      reconcileTeams(first);
-      const saved = await saveTournamentRemote(first);
+    const apply = async (draft: Tournament) => {
+      await mut(draft);
+      reconcileTeams(draft);
+      setT(draft); // optimistic so buttons feel instant
+      const saved = await saveTournamentRemote(draft);
       setT(saved); pollRef.current?.bump(); bumpAlerts();
+    };
+
+    try {
+      await apply(first);
     } catch {
       try {
         const latest = await getTournamentRemote(t.id);
@@ -504,14 +512,11 @@ export default function Lobby() {
           groupStage: latest.groupStage ? { groups: latest.groupStage.groups.map(g => [...g]), records: { ...(latest.groupStage.records || {}) } } : undefined,
           v: latest.v,
         };
-        await mut(second);
-        reconcileTeams(second);
-        const saved = await saveTournamentRemote(second);
-        setT(saved); pollRef.current?.bump(); bumpAlerts();
+        await apply(second);
       } catch {
         alert('Could not save changes.');
       }
-    } finally { setBusy(false); }
+    } finally { if (blockUI) setBusy(false); }
   }
 
   async function leaveTournament() {
@@ -559,7 +564,7 @@ export default function Lobby() {
       m.winner = winnerId;
       if (winnerId) buildNextRoundFromSync(x, roundIdx);
       (x as any).lastPingAt = undefined; (x as any).lastPingR = undefined; (x as any).lastPingM = undefined;
-    });
+    }, { blockUI: false });
   }
 
   // ---- Pure local helpers (no remote save inside) ----
@@ -751,7 +756,7 @@ export default function Lobby() {
       }
       stage.records[teamId].points = (stage.records[teamId].wins || 0) * 3;
       rebuildBracketFromGroups(x, nextSettings);
-    });
+    }, { blockUI: false });
   }
   function setGroupMatchScore(matchId: string, aScore: number | null, bScore: number | null) {
     update((x) => {
@@ -765,7 +770,7 @@ export default function Lobby() {
       const computed = computeGroupRecords(stage.groups, stage.matches, x.teams || []);
       stage.records = mergeManualRecords(computed, stage.records);
       rebuildBracketFromGroups(x, nextSettings);
-    });
+    }, { blockUI: false });
   }
   const formatLabel = (() => {
     switch (settings.format) {
@@ -780,6 +785,12 @@ export default function Lobby() {
   const finalWinnerId = lastRound?.[0]?.winner;
   const iAmChampion = t.status === 'completed' && finalWinnerId && myTeams.includes(finalWinnerId);
   const lock = { opacity: busy ? .6 : 1, pointerEvents: busy ? 'none' as const : 'auto' };
+  const roundName = (idx: number, total: number) => {
+    if (total === 1 || idx === total - 1) return 'Final';
+    if (idx === total - 2) return 'Semifinal';
+    if (idx === total - 3) return 'Quarterfinal';
+    return `Round ${idx + 1}`;
+  };
   const allowGroupDrag = canHost && t.status !== 'completed' && settings.format === 'groups';
   type GroupDragPayload = { type: 'group-seat'; teamId: string; from: number };
 
@@ -1191,18 +1202,18 @@ export default function Lobby() {
                                     value={aScore}
                                     onChange={(e) => setGroupMatchScore(m.id, e.target.value === '' ? null : Number(e.target.value), Number.isFinite(m.scoreB) ? Number(m.scoreB) : null)}
                                     style={{ ...input, padding:'4px 6px' }}
-                                    disabled={!canHost || busy}
+                                    disabled={!canHost}
                                   />
                                 </div>
                                 <div style={{ display:'grid', gap:6, justifyItems:'center' }}>
                                   <span style={{ opacity:.7, fontSize:12 }}>vs</span>
-                                  {canHost && (
-                                    <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:'center' }}>
-                                      <button style={btnMini} onClick={() => setGroupMatchScore(m.id, (Number.isFinite(m.scoreA) ? Number(m.scoreA) : 0) + 1, Number.isFinite(m.scoreB) ? Number(m.scoreB) : 0)} disabled={busy}>A +1</button>
-                                      <button style={btnMini} onClick={() => setGroupMatchScore(m.id, Number.isFinite(m.scoreA) ? Number(m.scoreA) : 0, (Number.isFinite(m.scoreB) ? Number(m.scoreB) : 0) + 1)} disabled={busy}>B +1</button>
-                                      <button style={btnMini} onClick={() => setGroupMatchScore(m.id, 0, 0)} disabled={busy}>Clear</button>
-                                    </div>
-                                  )}
+                                    {canHost && (
+                                      <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:'center' }}>
+                                        <button style={btnMini} onClick={() => setGroupMatchScore(m.id, (Number.isFinite(m.scoreA) ? Number(m.scoreA) : 0) + 1, Number.isFinite(m.scoreB) ? Number(m.scoreB) : 0)} disabled={!canHost}>A +1</button>
+                                        <button style={btnMini} onClick={() => setGroupMatchScore(m.id, Number.isFinite(m.scoreA) ? Number(m.scoreA) : 0, (Number.isFinite(m.scoreB) ? Number(m.scoreB) : 0) + 1)} disabled={!canHost}>B +1</button>
+                                        <button style={btnMini} onClick={() => setGroupMatchScore(m.id, 0, 0)} disabled={!canHost}>Clear</button>
+                                      </div>
+                                    )}
                                   {m.winner && <span style={{ fontSize:11, opacity:.75 }}>Winner: {teamName(m.winner)}</span>}
                                 </div>
                                 <div style={{ display:'grid', gap:4 }}>
@@ -1213,7 +1224,7 @@ export default function Lobby() {
                                     value={bScore}
                                     onChange={(e) => setGroupMatchScore(m.id, Number.isFinite(m.scoreA) ? Number(m.scoreA) : null, e.target.value === '' ? null : Number(e.target.value))}
                                     style={{ ...input, padding:'4px 6px' }}
-                                    disabled={!canHost || busy}
+                                    disabled={!canHost}
                                   />
                                 </div>
                               </div>
@@ -1273,13 +1284,13 @@ export default function Lobby() {
                                       <span style={statPill}>L {rec.losses}</span>
                                       <span style={statPill}>GD {gd}</span>
                                     </div>
-                                    {canHost && (
-                                      <div style={{ display:'flex', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>
-                                        <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'points', 1)} disabled={busy}>+1 pt</button>
-                                        <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'wins', 1)} disabled={busy}>+1 win</button>
-                                        <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'losses', 1)} disabled={busy}>+1 loss</button>
-                                      </div>
-                                    )}
+                                      {canHost && (
+                                        <div style={{ display:'flex', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>
+                                          <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'points', 1)} disabled={!canHost}>+1 pt</button>
+                                          <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'wins', 1)} disabled={!canHost}>+1 win</button>
+                                          <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'losses', 1)} disabled={!canHost}>+1 loss</button>
+                                        </div>
+                                      )}
                                   </div>
                                 </li>
                               );
@@ -1299,13 +1310,33 @@ export default function Lobby() {
                   </div>
                 ) : t.rounds.map((round, rIdx) => (
                   <div key={rIdx} style={{ display: 'grid', gap: 8 }}>
-                    <div style={{ opacity: .8, fontSize: 13 }}>Round {rIdx + 1}</div>
-                    {round.map((m, i) => {
-                      const aName = teamName(m.a) || (m.a ? '??' : 'BYE');
-                      const bName = teamName(m.b) || (m.b ? '??' : 'BYE');
-                      const w = m.winner;
-                      const iPlay = me && (teamHasPlayer(m.a, me?.id) || teamHasPlayer(m.b, me?.id));
-                      const canReport = !canHost && iPlay && !w && t.status === 'active';
+                    <div style={{ opacity: .8, fontSize: 13 }}>{roundName(rIdx, t.rounds.length)}</div>
+                  {round.map((m, i) => {
+                    const aName = teamName(m.a) || (m.a ? '??' : 'BYE');
+                    const bName = teamName(m.b) || (m.b ? '??' : 'BYE');
+                    const w = m.winner;
+                    const iPlay = me && (teamHasPlayer(m.a, me?.id) || teamHasPlayer(m.b, me?.id));
+                    const canReport = !canHost && iPlay && !w && t.status === 'active';
+                    const matchShellB: React.CSSProperties = {
+                      background: 'linear-gradient(135deg, #0f172a, #0b1223)',
+                      borderRadius: 12,
+                      padding: '12px',
+                      display: 'grid',
+                      gap: 8,
+                      border: w ? '1px solid rgba(34,197,94,0.55)' : '1px solid rgba(255,255,255,0.08)',
+                      boxShadow: w ? '0 10px 20px rgba(34,197,94,0.25)' : '0 10px 18px rgba(0,0,0,0.25)',
+                    };
+                    const advanceNoteB = rIdx === t.rounds.length - 1 ? 'Winner takes the title' : 'Winner advances to the next round';
+                      const matchShellA: React.CSSProperties = {
+                        background: 'linear-gradient(135deg, #0f172a, #0b1223)',
+                        borderRadius: 12,
+                        padding: '12px',
+                        display: 'grid',
+                        gap: 8,
+                        border: w ? '1px solid rgba(34,197,94,0.55)' : '1px solid rgba(255,255,255,0.08)',
+                        boxShadow: w ? '0 10px 20px rgba(34,197,94,0.25)' : '0 10px 18px rgba(0,0,0,0.25)',
+                      };
+                      const advanceNoteA = rIdx === t.rounds.length - 1 ? 'Winner takes the title' : 'Winner advances to the next round';
 
                       type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; teamId?: string };
                       const allowDrag = canHost && t.status !== 'completed';
@@ -1387,7 +1418,7 @@ export default function Lobby() {
                       return (
                         <div
                           key={i}
-                          style={{ background: '#111', borderRadius: 10, padding: '10px 12px', display: 'grid', gap: 8 }}
+                          style={matchShellA}
                           onDragOver={onDragOver}
                           onDrop={(ev) => onDropIntoMatch(ev, rIdx, i)}
                         >
@@ -1397,24 +1428,22 @@ export default function Lobby() {
                             {pill(m.b, rIdx, i, 'b')}
                           </div>
 
-                          {canHost && t.status !== 'completed' && (
-                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems:'center' }}>
-                              <button style={w === m.a ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.a)} disabled={busy}>A wins</button>
-                              <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)} disabled={busy}>B wins</button>
-                              <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)} disabled={busy}>Clear</button>
+                            {canHost && t.status !== 'completed' && (
+                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems:'center' }}>
+                                <button style={w === m.a ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.a)}>A wins</button>
+                                <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)}>B wins</button>
+                                <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)}>Clear</button>
 
                               <button
                                 style={btnPing}
-                                onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
-                                disabled={busy}
-                                title={`Ping ${aName}`}
-                              >Ping A 🔔</button>
+                                  onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; }, { blockUI: false })}
+                                  title={`Ping ${aName}`}
+                                >Ping A 🔔</button>
                               <button
                                 style={btnPing}
-                                onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
-                                disabled={busy}
-                                title={`Ping ${bName}`}
-                              >Ping B 🔔</button>
+                                  onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; }, { blockUI: false })}
+                                  title={`Ping ${bName}`}
+                                >Ping B 🔔</button>
 
                               {w && <span style={{ fontSize: 12, opacity: .8 }}>Winner: {teamName(w)}</span>}
                             </div>
@@ -1431,6 +1460,7 @@ export default function Lobby() {
                               Winner: {teamName(w)}
                             </div>
                           )}
+                          <div style={{ fontSize:12, opacity:.65 }}>{advanceNoteA}</div>
                         </div>
                       );
                     })}
@@ -1441,7 +1471,7 @@ export default function Lobby() {
               <div style={{ display: 'grid', gridTemplateColumns: `repeat(${t.rounds.length}, minmax(260px, 1fr))`, gap: 12, overflowX: 'auto' }}>
                 {t.rounds.map((round, rIdx) => (
                   <div key={rIdx} style={{ display: 'grid', gap: 8 }}>
-                    <div style={{ opacity: .8, fontSize: 13 }}>Round {rIdx + 1}</div>
+                    <div style={{ opacity: .8, fontSize: 13 }}>{roundName(rIdx, t.rounds.length)}</div>
                     {round.map((m, i) => {
                       const aName = teamName(m.a) || (m.a ? '??' : 'BYE');
                       const bName = teamName(m.b) || (m.b ? '??' : 'BYE');
@@ -1527,36 +1557,34 @@ export default function Lobby() {
                       }
 
                       return (
-                        <div
-                          key={i}
-                          style={{ background: '#111', borderRadius: 10, padding: '10px 12px', display: 'grid', gap: 8 }}
-                          onDragOver={onDragOver}
-                          onDrop={(ev) => onDropIntoMatch(ev, rIdx, i)}
-                        >
+                      <div
+                        key={i}
+                        style={matchShellB}
+                        onDragOver={onDragOver}
+                        onDrop={(ev) => onDropIntoMatch(ev, rIdx, i)}
+                      >
                           <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
                             {pill(m.a, rIdx, i, 'a')}
                             <span style={{ opacity:.7 }}>vs</span>
                             {pill(m.b, rIdx, i, 'b')}
                           </div>
 
-                          {canHost && t.status !== 'completed' && (
-                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems:'center' }}>
-                              <button style={w === m.a ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.a)} disabled={busy}>A wins</button>
-                              <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)} disabled={busy}>B wins</button>
-                              <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)} disabled={busy}>Clear</button>
+                            {canHost && t.status !== 'completed' && (
+                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems:'center' }}>
+                                <button style={w === m.a ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.a)}>A wins</button>
+                                <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)}>B wins</button>
+                                <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)}>Clear</button>
 
                               <button
                                 style={btnPing}
-                                onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
-                                disabled={busy}
-                                title={`Ping ${aName}`}
-                              >Ping A 🔔</button>
+                                  onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; }, { blockUI: false })}
+                                  title={`Ping ${aName}`}
+                                >Ping A 🔔</button>
                               <button
                                 style={btnPing}
-                                onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
-                                disabled={busy}
-                                title={`Ping ${bName}`}
-                              >Ping B 🔔</button>
+                                  onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; }, { blockUI: false })}
+                                  title={`Ping ${bName}`}
+                                >Ping B 🔔</button>
 
                               {w && <span style={{ fontSize: 12, opacity: .8 }}>Winner: {teamName(w)}</span>}
                             </div>
@@ -1568,14 +1596,15 @@ export default function Lobby() {
                               <button style={btnMini} onClick={() => report(rIdx, i, 'loss')} disabled={busy}>I lost</button>
                             </div>
                           )}
-                          {!canHost && w && (
-                            <div style={{ fontSize: 12, opacity: .8 }}>
-                              Winner: {teamName(w)}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                        {!canHost && w && (
+                          <div style={{ fontSize: 12, opacity: .8 }}>
+                            Winner: {teamName(w)}
+                          </div>
+                        )}
+                        <div style={{ fontSize:12, opacity:.65 }}>{advanceNoteB}</div>
+                      </div>
+                    );
+                  })}
                   </div>
                 ))}
               </div>
