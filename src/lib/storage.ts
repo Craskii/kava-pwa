@@ -9,7 +9,13 @@ export type TournamentSettings = {
   format: TournamentFormat;
   teamSize: number;
   bracketStyle: "single_elim";
-  groups?: { count: number; size: number };
+  groups?: {
+    count: number;
+    size: number;
+    matchType?: "singles" | "doubles";
+    advancement?: "points" | "wins";
+    losersNext?: boolean;
+  };
 };
 export type Team = { id: string; name: string; memberIds: string[] };
 export type Match = {

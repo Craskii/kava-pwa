@@ -51,7 +51,13 @@ type TournamentSettings = {
   format: TournamentFormat;
   teamSize: number;
   bracketStyle: "single_elim";
-  groups?: { count: number; size: number };
+  groups?: {
+    count: number;
+    size: number;
+    matchType?: "singles" | "doubles";
+    advancement?: "points" | "wins";
+    losersNext?: boolean;
+  };
 };
 type Team = { id: string; name: string; memberIds: string[] };
 type Match = { a?: string; b?: string; winner?: string; reports?: Record<string,"win"|"loss"> };
@@ -81,11 +87,21 @@ function coerceTournament(raw: any): Tournament | null {
         })) : [])
       : [];
     const status = (raw.status==="setup"||raw.status==="active"||raw.status==="completed") ? raw.status : "setup";
+    const matchType = raw.settings?.groups?.matchType ||
+      (raw.settings?.format === "doubles" ? "doubles" : "singles");
     const settings: TournamentSettings = {
       format: (raw.settings?.format as TournamentFormat) || "single_elim",
-      teamSize: Number(raw.settings?.teamSize ?? (raw.settings?.format === "doubles" ? 2 : 1)),
+      teamSize: Number(raw.settings?.teamSize ?? (matchType === "doubles" ? 2 : 1)),
       bracketStyle: (raw.settings?.bracketStyle as TournamentSettings["bracketStyle"]) || "single_elim",
-      groups: raw.settings?.groups,
+      groups: raw.settings?.format === "groups"
+        ? {
+            count: Number(raw.settings?.groups?.count ?? 4),
+            size: Number(raw.settings?.groups?.size ?? 4),
+            matchType,
+            advancement: raw.settings?.groups?.advancement === "wins" ? "wins" : "points",
+            losersNext: !!raw.settings?.groups?.losersNext,
+          }
+        : undefined,
     };
     const teams: Team[] = Array.isArray(raw.teams)
       ? raw.teams.map((tm:any) => ({

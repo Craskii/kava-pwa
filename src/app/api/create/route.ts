@@ -21,7 +21,13 @@ type TournamentSettings = {
   format: TournamentFormat;
   teamSize: number;
   bracketStyle: "single_elim";
-  groups?: { count: number; size: number };
+  groups?: {
+    count: number;
+    size: number;
+    matchType?: "singles" | "doubles";
+    advancement?: "points" | "wins";
+    losersNext?: boolean;
+  };
 };
 type Team = { id: string; name: string; memberIds: string[] };
 type Match = { a?: string; b?: string; winner?: string; reports?: Record<string, Report> };
@@ -98,11 +104,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, id, code, hostId, type: "list" });
   }
 
+  const matchType = incomingSettings?.groups?.matchType ||
+    (incomingSettings?.format === "doubles" ? "doubles" : "singles");
   const settings: TournamentSettings = {
     format: incomingSettings?.format || "single_elim",
-    teamSize: incomingSettings?.teamSize || (incomingSettings?.format === "doubles" ? 2 : 1),
+    teamSize: incomingSettings?.teamSize || (matchType === "doubles" ? 2 : 1),
     bracketStyle: incomingSettings?.bracketStyle || "single_elim",
-    groups: incomingSettings?.groups,
+    groups: incomingSettings?.format === "groups"
+      ? {
+          count: incomingSettings?.groups?.count || 4,
+          size: incomingSettings?.groups?.size || 4,
+          matchType,
+          advancement: incomingSettings?.groups?.advancement || "points",
+          losersNext: !!incomingSettings?.groups?.losersNext,
+        }
+      : undefined,
   };
 
   const tournament: Tournament = {

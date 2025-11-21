@@ -29,11 +29,21 @@ function shuffle<T>(arr: T[]): T[] {
   return a;
 }
 function normalizeSettings(s?: TournamentSettings): TournamentSettings {
+  const format = s?.format || 'single_elim';
+  const matchType = s?.groups?.matchType || (format === 'doubles' ? 'doubles' : 'singles');
   return {
-    format: s?.format || 'single_elim',
-    teamSize: s?.teamSize ? Math.max(1, s.teamSize) : (s?.format === 'doubles' ? 2 : 1),
+    format,
+    teamSize: s?.teamSize ? Math.max(1, s.teamSize) : (matchType === 'doubles' ? 2 : 1),
     bracketStyle: s?.bracketStyle || 'single_elim',
-    groups: s?.groups,
+    groups: format === 'groups'
+      ? {
+          count: s?.groups?.count || 4,
+          size: s?.groups?.size || 4,
+          matchType,
+          advancement: s?.groups?.advancement === 'wins' ? 'wins' : 'points',
+          losersNext: !!s?.groups?.losersNext,
+        }
+      : undefined,
   };
 }
 function normalizeMatch(m: Match, valid?: Set<string>): Match | null {
@@ -71,7 +81,11 @@ function mergeTeams(players: { id: string; name: string }[], settings: Tournamen
 function seedLocal(t: Tournament): Tournament {
   const settings = normalizeSettings(t.settings);
   const teams = mergeTeams(t.players, settings, t.teams);
-  const ids = shuffle(teams.map((tm) => tm.id));
+  const seededGroups = settings.format === 'groups' ? buildGroups(teams, settings) : undefined;
+  const ids =
+    settings.format === 'groups'
+      ? (seededGroups?.flat() || [])
+      : shuffle(teams.map((tm) => tm.id));
   const first: Match[] = [];
   for (let i = 0; i < ids.length; i += 2) {
     const a = ids[i], b = ids[i + 1];
@@ -83,7 +97,7 @@ function seedLocal(t: Tournament): Tournament {
     teams,
     rounds: [first],
     status: 'active',
-    groupStage: settings.format === 'groups' ? { groups: buildGroups(teams, settings) } : undefined,
+    groupStage: seededGroups ? { groups: seededGroups } : undefined,
   };
   buildNextRoundFromSync(seeded, 0);
   return seeded;
@@ -91,8 +105,12 @@ function seedLocal(t: Tournament): Tournament {
 function buildGroups(teams: Team[], settings: TournamentSettings): string[][] {
   const count = settings.groups?.count || Math.max(2, Math.min(6, Math.ceil(teams.length / 4)));
   const groups: string[][] = Array.from({ length: count }, () => []);
-  teams.forEach((tm, idx) => {
-    groups[idx % count].push(tm.id);
+  teams.forEach((tm) => {
+    const target = groups.reduce(
+      (best, g, idx) => (g.length < best[0] ? [g.length, idx] : best),
+      [Number.MAX_SAFE_INTEGER, 0] as [number, number]
+    );
+    groups[target[1]].push(tm.id);
   });
   return groups;
 }
@@ -128,6 +146,12 @@ function reconcileTeams(t: Tournament) {
   t.settings = settings;
   t.teams = mergeTeams(t.players, settings, t.teams);
   const valid = new Set((t.teams || []).map((tm) => tm.id));
+  if (settings.format === 'groups') {
+    const safeGroups = t.groupStage?.groups?.map(g => g.filter(id => valid.has(id)));
+    t.groupStage = { groups: safeGroups && safeGroups.length ? safeGroups : buildGroups(t.teams || [], settings) };
+  } else {
+    t.groupStage = undefined;
+  }
   t.rounds = (t.rounds || []).map((round) =>
     round
       .map((m) => normalizeMatch(m, valid))
@@ -443,6 +467,7 @@ export default function Lobby() {
     const names = team.memberIds.map((pid) => t.players.find((p) => p.id === pid)?.name || '??');
     return team.name || names.join(' / ');
   };
+  const groupLabel = (idx: number) => `Group ${String.fromCharCode(65 + idx)}`;
   const teamHasPlayer = (teamId?: string, playerId?: string) => {
     if (!teamId || !playerId) return false;
     const team = teamsForDisplay.find((tm) => tm.id === teamId);
@@ -599,7 +624,13 @@ export default function Lobby() {
                     const fmt = e.target.value as TournamentSettings['format'];
                     update(x => {
                       if (x.status !== 'setup') return;
-                      const nextSettings = normalizeSettings({ ...x.settings, format: fmt, teamSize: fmt === 'doubles' ? 2 : 1 });
+                      const base = normalizeSettings({ ...x.settings, format: fmt });
+                      const teamSize = fmt === 'groups'
+                        ? (base.groups?.matchType === 'doubles' ? 2 : 1)
+                        : fmt === 'doubles'
+                          ? 2
+                          : 1;
+                      const nextSettings = normalizeSettings({ ...x.settings, format: fmt, teamSize });
                       x.settings = nextSettings;
                       x.teams = mergeTeams(x.players, nextSettings, x.teams);
                       x.rounds = [];
@@ -618,6 +649,84 @@ export default function Lobby() {
               <div style={{ fontSize:12, opacity:.7 }}>
                 Team size: {settings.teamSize} • Bracket: {settings.bracketStyle.replace('_',' ')}
               </div>
+              {settings.format === 'groups' && (
+                <div style={{ display:'grid', gap:10, padding:10, borderRadius:10, background:'rgba(14,165,233,0.08)', border:'1px solid rgba(14,165,233,0.2)' }}>
+                  <div style={{ fontWeight:700 }}>Group Pools options</div>
+                  <div style={{ display:'grid', gap:6 }}>
+                    <span style={{ fontSize:13, opacity:.85 }}>Match type</span>
+                    <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                      {(['singles','doubles'] as const).map(mt => (
+                        <button
+                          key={mt}
+                          style={settings.groups?.matchType === mt ? btnActive : btnMini}
+                          disabled={busy || t.status !== 'setup'}
+                          onClick={() => update(x => {
+                            if (x.status !== 'setup') return;
+                            const current = normalizeSettings(x.settings);
+                            const nextSettings = normalizeSettings({
+                              ...x.settings,
+                              format: 'groups',
+                              teamSize: mt === 'doubles' ? 2 : 1,
+                              groups: { ...(current.groups || {}), matchType: mt },
+                            });
+                            x.settings = nextSettings;
+                            x.teams = mergeTeams(x.players, nextSettings, x.teams);
+                            x.rounds = [];
+                            x.groupStage = { groups: buildGroups(x.teams || [], nextSettings) };
+                          })}
+                        >
+                          {mt === 'singles' ? 'Singles (1v1)' : 'Doubles (2v2)'}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ display:'grid', gap:6 }}>
+                    <span style={{ fontSize:13, opacity:.85 }}>Advancement</span>
+                    <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
+                      {([
+                        { key:'points', label:'Points + wins' },
+                        { key:'wins', label:'Winners only' },
+                      ] as const).map(opt => (
+                        <button
+                          key={opt.key}
+                          style={settings.groups?.advancement === opt.key ? btnActive : btnMini}
+                          disabled={busy || t.status !== 'setup'}
+                          onClick={() => update(x => {
+                            if (x.status !== 'setup') return;
+                            const current = normalizeSettings(x.settings);
+                            const nextSettings = normalizeSettings({
+                              ...x.settings,
+                              format: 'groups',
+                              groups: { ...(current.groups || {}), advancement: opt.key },
+                            });
+                            x.settings = nextSettings;
+                          })}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                    <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:13, opacity:.9 }}>
+                      <input
+                        type="checkbox"
+                        checked={!!settings.groups?.losersNext}
+                        disabled={busy || t.status !== 'setup'}
+                        onChange={(e) => update(x => {
+                          if (x.status !== 'setup') return;
+                          const current = normalizeSettings(x.settings);
+                          const nextSettings = normalizeSettings({
+                            ...x.settings,
+                            format: 'groups',
+                            groups: { ...(current.groups || {}), losersNext: e.target.checked },
+                          });
+                          x.settings = nextSettings;
+                        })}
+                      />
+                      Offer losers’ consolation round
+                    </label>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div style={{ marginTop: 8 }}>
@@ -643,18 +752,33 @@ export default function Lobby() {
 
         {settings.format === 'groups' && t.groupStage?.groups && (
           <section style={card}>
-            <h3 style={{ marginTop: 0 }}>Groups / Pools</h3>
-            <div style={{ display:'grid', gap:10, gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', gap:8, alignItems:'center' }}>
+              <div>
+                <h3 style={{ margin:'0 0 4px' }}>Groups / Pools</h3>
+                <div style={{ opacity:.75, fontSize:13 }}>
+                  {settings.groups?.matchType === 'doubles' ? 'Doubles (2v2)' : 'Singles (1v1)'} •
+                  {' '}{settings.groups?.advancement === 'wins' ? 'Winners advance' : 'Points + wins advance'}
+                  {settings.groups?.losersNext ? ' • Consolation enabled' : ''}
+                </div>
+              </div>
+              <span style={{ fontSize:12, opacity:.7 }}>Groups stay ordered (A, B, C…) and feed the bracket.</span>
+            </div>
+
+            <div style={{ display:'grid', gap:10, gridTemplateColumns:'repeat(auto-fit, minmax(240px, 1fr))', marginTop:10 }}>
               {t.groupStage.groups.map((group, idx) => (
-                <div key={idx} style={{ background:'#0f172a', borderRadius:10, padding:10, border:'1px solid rgba(255,255,255,0.1)' }}>
-                  <div style={{ fontWeight:700, marginBottom:6 }}>Group {String.fromCharCode(65 + idx)}</div>
+                <div key={idx} style={{ background:'linear-gradient(135deg, #111827, #0b1020)', borderRadius:14, padding:12, border:'1px solid rgba(56,189,248,0.15)', boxShadow:'0 10px 25px rgba(0,0,0,0.25)' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
+                    <div style={{ fontWeight:800, letterSpacing:0.5 }}>{groupLabel(idx)}</div>
+                    <span style={{ fontSize:12, opacity:.75 }}>{group.length} team{group.length === 1 ? '' : 's'}</span>
+                  </div>
                   {group.length === 0 ? (
-                    <div style={{ opacity:.7, fontSize:13 }}>No teams yet.</div>
+                    <div style={{ opacity:.65, fontSize:13 }}>No teams yet.</div>
                   ) : (
                     <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:6 }}>
-                      {group.map(teamId => (
-                        <li key={teamId} style={{ padding:'6px 8px', borderRadius:8, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)' }}>
-                          {teamName(teamId)}
+                      {group.map((teamId, i) => (
+                        <li key={teamId} style={{ padding:'8px 10px', borderRadius:10, background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                          <span>{teamName(teamId)}</span>
+                          <span style={{ fontSize:11, opacity:.7 }}>#{i + 1}</span>
                         </li>
                       ))}
                     </ul>
