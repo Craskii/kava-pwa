@@ -59,8 +59,24 @@ type TournamentSettings = {
     losersNext?: boolean;
   };
 };
-type GroupRecord = { points: number; wins: number; losses: number; played: number };
+type GroupRecord = {
+  points: number;
+  wins: number;
+  losses: number;
+  played: number;
+  gamesWon: number;
+  gamesLost: number;
+};
 type Team = { id: string; name: string; memberIds: string[] };
+type GroupMatch = {
+  id: string;
+  group: number;
+  a?: string;
+  b?: string;
+  scoreA?: number;
+  scoreB?: number;
+  winner?: string;
+};
 type Match = { a?: string; b?: string; winner?: string; reports?: Record<string,"win"|"loss"> };
 type Tournament = {
   id: string; name: string; code?: string; hostId: string;
@@ -71,7 +87,7 @@ type Tournament = {
   v?: number; // header echo
   teams?: Team[];
   settings?: TournamentSettings;
-  groupStage?: { groups: string[][]; records?: Record<string, GroupRecord> };
+  groupStage?: { groups: string[][]; records?: Record<string, GroupRecord>; matches?: GroupMatch[] };
 };
 
 function coerceTournament(raw: any): Tournament | null {
@@ -132,7 +148,20 @@ function coerceTournament(raw: any): Tournament | null {
                   wins: Number((v as GroupRecord)?.wins ?? 0),
                   losses: Number((v as GroupRecord)?.losses ?? 0),
                   played: Number((v as GroupRecord)?.played ?? 0),
+                  gamesWon: Number((v as GroupRecord)?.gamesWon ?? 0),
+                  gamesLost: Number((v as GroupRecord)?.gamesLost ?? 0),
                 }]))
+              : undefined,
+            matches: Array.isArray(raw.groupStage.matches)
+              ? raw.groupStage.matches.map((m: any) => ({
+                  id: String(m?.id ?? crypto.randomUUID()),
+                  group: Number(m?.group ?? 0),
+                  a: m?.a ? String(m.a) : undefined,
+                  b: m?.b ? String(m.b) : undefined,
+                  scoreA: Number.isFinite(Number(m?.scoreA)) ? Number(m.scoreA) : undefined,
+                  scoreB: Number.isFinite(Number(m?.scoreB)) ? Number(m.scoreB) : undefined,
+                  winner: m?.winner ? String(m.winner) : undefined,
+                }))
               : undefined,
           }
         : undefined,

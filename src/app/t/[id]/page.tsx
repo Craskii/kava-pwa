@@ -17,6 +17,7 @@ import {
   TournamentSettings,
   Team,
   GroupRecord,
+  GroupMatch,
 } from '@/lib/storage';
 import { startAdaptivePoll } from '@/lib/poll';
 
@@ -83,12 +84,18 @@ function seedLocal(t: Tournament): Tournament {
   const settings = normalizeSettings(t.settings);
   const teams = mergeTeams(t.players, settings, t.teams);
   const seededGroups = settings.format === 'groups' ? buildGroups(teams, settings) : undefined;
-  const seededRecords = seededGroups
-    ? Object.fromEntries(seededGroups.flat().map((id) => [id, { points: 0, wins: 0, losses: 0, played: 0 }])) as Record<string, GroupRecord>
+  const seededMatches = seededGroups ? createGroupMatches(seededGroups, []) : undefined;
+  const seededRecords = seededGroups && seededMatches
+    ? computeGroupRecords(seededGroups, seededMatches, teams)
     : undefined;
   const ids =
     settings.format === 'groups'
-      ? buildSeedsFromGroups(seededGroups || [], seededRecords || {}, teams, settings.groups?.advancement || 'points')
+      ? buildSeedsFromGroups(
+          seededGroups || [],
+          seededRecords || {},
+          teams,
+          settings.groups?.advancement || 'points'
+        )
       : shuffle(teams.map((tm) => tm.id));
   const first: Match[] = [];
   for (let i = 0; i < ids.length; i += 2) {
@@ -101,14 +108,17 @@ function seedLocal(t: Tournament): Tournament {
     teams,
     rounds: [first],
     status: 'active',
-    groupStage: seededGroups ? { groups: seededGroups, records: seededRecords } : undefined,
+    groupStage: seededGroups
+      ? { groups: seededGroups, records: seededRecords, matches: seededMatches }
+      : undefined,
   };
   buildNextRoundFromSync(seeded, 0);
   return seeded;
 }
 function buildGroups(teams: Team[], settings: TournamentSettings): string[][] {
-  const count = settings.groups?.count || Math.max(2, Math.min(6, Math.ceil(teams.length / 4)));
-  const groups: string[][] = Array.from({ length: count }, () => []);
+  const size = settings.groups?.size || 4;
+  const desiredCount = settings.groups?.count || Math.max(1, Math.ceil(Math.max(teams.length, 1) / size));
+  const groups: string[][] = Array.from({ length: desiredCount || 1 }, () => []);
   teams.forEach((tm) => {
     const target = groups.reduce(
       (best, g, idx) => (g.length < best[0] ? [g.length, idx] : best),
@@ -118,14 +128,77 @@ function buildGroups(teams: Team[], settings: TournamentSettings): string[][] {
   });
   return groups;
 }
+function createGroupMatches(groups: string[][], prev?: GroupMatch[]): GroupMatch[] {
+  const prevByKey = new Map<string, GroupMatch>();
+  const makeKey = (gIdx: number, a?: string, b?: string) => `${gIdx}:${[a, b].filter(Boolean).sort().join('|')}`;
+  (prev || []).forEach((m) => {
+    if (!m.a || !m.b) return;
+    prevByKey.set(makeKey(m.group, m.a, m.b), m);
+  });
+
+  const matches: GroupMatch[] = [];
+  groups.forEach((group, gIdx) => {
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const a = group[i];
+        const b = group[j];
+        const existing = prevByKey.get(makeKey(gIdx, a, b));
+        matches.push({
+          id: existing?.id || `gm-${uid()}`,
+          group: gIdx,
+          a,
+          b,
+          scoreA: existing?.scoreA,
+          scoreB: existing?.scoreB,
+          winner: existing?.winner,
+        });
+      }
+    }
+  });
+  return matches;
+}
+function computeGroupRecords(groups: string[][], matches: GroupMatch[], teams: Team[]): Record<string, GroupRecord> {
+  const recs: Record<string, GroupRecord> = {};
+  const ensure = (id?: string) => {
+    if (!id) return;
+    recs[id] ??= { points: 0, wins: 0, losses: 0, played: 0, gamesWon: 0, gamesLost: 0 };
+  };
+  groups.forEach((g) => g.forEach((id) => ensure(id)));
+
+  matches.forEach((m) => {
+    if (!m.a || !m.b) return;
+    ensure(m.a); ensure(m.b);
+    const aScore = Number.isFinite(m.scoreA) ? Number(m.scoreA) : null;
+    const bScore = Number.isFinite(m.scoreB) ? Number(m.scoreB) : null;
+    if (aScore === null || bScore === null) return;
+
+    recs[m.a].gamesWon += aScore;
+    recs[m.a].gamesLost += bScore;
+    recs[m.b].gamesWon += bScore;
+    recs[m.b].gamesLost += aScore;
+    recs[m.a].played += 1;
+    recs[m.b].played += 1;
+
+    if (aScore > bScore) {
+      recs[m.a].wins += 1; recs[m.b].losses += 1; m.winner = m.a;
+    } else if (bScore > aScore) {
+      recs[m.b].wins += 1; recs[m.a].losses += 1; m.winner = m.b;
+    } else {
+      m.winner = undefined;
+    }
+  });
+  Object.values(recs).forEach((r) => { r.points = r.wins * 3; });
+  return recs;
+}
 function ensureGroupStage(t: Tournament, settings: TournamentSettings) {
   if (settings.format !== 'groups') { t.groupStage = undefined; return undefined; }
   const baseGroups = t.groupStage?.groups?.length ? t.groupStage.groups : buildGroups(t.teams || [], settings);
-  const records: Record<string, GroupRecord> = { ...(t.groupStage?.records || {}) };
-  baseGroups.flat().forEach((id) => {
-    if (!records[id]) records[id] = { points: 0, wins: 0, losses: 0, played: 0 };
-  });
-  t.groupStage = { groups: baseGroups, records };
+  const matches = createGroupMatches(
+    baseGroups,
+    (t.groupStage?.matches || []).filter((m) => baseGroups[m.group] && baseGroups[m.group].includes(m.a || '') && baseGroups[m.group].includes(m.b || ''))
+  );
+  const records = computeGroupRecords(baseGroups, matches, t.teams || []);
+  t.groupStage = { groups: baseGroups, records, matches };
   return t.groupStage;
 }
 function rankGroupMembers(
@@ -136,13 +209,17 @@ function rankGroupMembers(
 ) {
   const nm = (id?: string) => teams.find((tm) => tm.id === id)?.name || '';
   return [...groupIds].sort((a, b) => {
-    const ra = records[a] || { points: 0, wins: 0, losses: 0, played: 0 };
-    const rb = records[b] || { points: 0, wins: 0, losses: 0, played: 0 };
+    const ra = records[a] || { points: 0, wins: 0, losses: 0, played: 0, gamesWon: 0, gamesLost: 0 };
+    const rb = records[b] || { points: 0, wins: 0, losses: 0, played: 0, gamesWon: 0, gamesLost: 0 };
+    const diffA = (ra.gamesWon || 0) - (ra.gamesLost || 0);
+    const diffB = (rb.gamesWon || 0) - (rb.gamesLost || 0);
     if (advancement === 'wins') {
       if (ra.wins !== rb.wins) return rb.wins - ra.wins;
     } else if (ra.points !== rb.points) {
       return rb.points - ra.points;
     }
+    if (diffA !== diffB) return diffB - diffA;
+    if ((ra.gamesWon || 0) !== (rb.gamesWon || 0)) return (rb.gamesWon || 0) - (ra.gamesWon || 0);
     if (ra.wins !== rb.wins) return rb.wins - ra.wins;
     if (ra.losses !== rb.losses) return ra.losses - rb.losses;
     return nm(a).localeCompare(nm(b));
@@ -156,6 +233,12 @@ function buildSeedsFromGroups(
 ) {
   const ranked = groups.map((g) => rankGroupMembers(g, records, teams, advancement));
   const seeds: string[] = [];
+
+  if (advancement === 'wins') {
+    ranked.forEach((g) => { if (g[0]) seeds.push(g[0]); });
+    return seeds.filter(Boolean);
+  }
+
   for (let i = 0; i < ranked.length; i += 2) {
     const gA = ranked[i];
     const gB = ranked[i + 1];
@@ -221,11 +304,10 @@ function reconcileTeams(t: Tournament) {
   const valid = new Set((t.teams || []).map((tm) => tm.id));
   if (settings.format === 'groups') {
     const safeGroups = t.groupStage?.groups?.map(g => g.filter(id => valid.has(id)));
-    t.groupStage = {
-      groups: safeGroups && safeGroups.length ? safeGroups : buildGroups(t.teams || [], settings),
-      records: { ...(t.groupStage?.records || {}) },
-    };
-    ensureGroupStage(t, settings);
+    const groups = safeGroups && safeGroups.length ? safeGroups : buildGroups(t.teams || [], settings);
+    const matches = createGroupMatches(groups, (t.groupStage?.matches || []).filter((m) => valid.has(m.a || '') && valid.has(m.b || '')));
+    const records = computeGroupRecords(groups, matches, t.teams || []);
+    t.groupStage = { groups, matches, records };
   } else {
     t.groupStage = undefined;
   }
@@ -472,7 +554,7 @@ export default function Lobby() {
   function declineLocal(x: Tournament, playerId: string) {
     x.pending = x.pending.filter(p => p.id !== playerId);
   }
-  function addLateLocal(x: Tournament, p: {id:string; name:string}) {
+  function addLateLocal(x: Tournament, p: {id:string; name:string}, groupIndex?: number) {
     if (!x.players.find(pp => pp.id === p.id)) x.players.push(p);
 
     const settings = normalizeSettings(x.settings);
@@ -482,19 +564,20 @@ export default function Lobby() {
     if (x.status === 'active') {
       const teamId = (x.teams || []).find((tm) => tm.memberIds.includes(p.id))?.id;
       if (settings.format === 'groups' && x.groupStage?.groups) {
-        ensureGroupStage(x, settings);
-        const target = x.groupStage.groups.reduce((best, g, idx) =>
-          g.length < best[0] ? [g.length, idx] : best,
-        [Number.MAX_SAFE_INTEGER, 0] as [number, number]);
-        x.groupStage.groups[target[1]].push(teamId || p.id);
-        if (teamId || p.id) {
-          const key = teamId || p.id;
-          x.groupStage.records ??= {};
-          x.groupStage.records[key] ??= { points: 0, wins: 0, losses: 0, played: 0 };
+        const stage = ensureGroupStage(x, settings);
+        const targetIdx = Number.isFinite(groupIndex)
+          ? Math.max(0, Math.min(stage?.groups.length ? stage.groups.length - 1 : 0, Number(groupIndex)))
+          : stage?.groups.reduce((best, g, idx) => g.length < best[0] ? [g.length, idx] : best, [Number.MAX_SAFE_INTEGER, 0] as [number, number])[1] || 0;
+        stage?.groups[targetIdx] ??= [];
+        if (teamId || p.id) stage?.groups[targetIdx].push(teamId || p.id);
+        if (stage) {
+          stage.matches = createGroupMatches(stage.groups, stage.matches);
+          stage.records = computeGroupRecords(stage.groups, stage.matches || [], x.teams || []);
         }
         rebuildBracketFromGroups(x, settings);
+      } else {
+        seatTeamIntoFirstRound(x, teamId);
       }
-      seatTeamIntoFirstRound(x, teamId);
     }
   }
   function submitReportLocal(
@@ -539,10 +622,20 @@ export default function Lobby() {
   }
 
   function addPlayerPrompt() {
-    const nm = prompt('Player name?');
+    const nm = prompt('Player or team name?');
     if (!nm) return;
     const p = { id: uid(), name: (nm.trim() || 'Player') };
-    update(x => addLateLocal(x, p));
+    const settingsNow = normalizeSettings(t.settings);
+    let targetGroup: number | undefined = undefined;
+    if (settingsNow.format === 'groups') {
+      const choice = prompt('Add to which group? (A, B, C…) Leave blank to auto-balance.');
+      if (choice && choice.trim()) {
+        const letter = choice.trim().toUpperCase();
+        const idx = letter.charCodeAt(0) - 65;
+        if (Number.isFinite(idx) && idx >= 0) targetGroup = idx;
+      }
+    }
+    update(x => addLateLocal(x, p, targetGroup));
   }
 
   const settings = normalizeSettings(t.settings);
@@ -563,24 +656,45 @@ export default function Lobby() {
   const groupStage = (() => {
     if (settings.format !== 'groups') return null;
     const groups = t.groupStage?.groups?.length ? t.groupStage.groups : buildGroups(teamsForDisplay, settings);
-    const records: Record<string, GroupRecord> = { ...(t.groupStage?.records || {}) };
-    groups.flat().forEach((id) => {
-      if (!records[id]) records[id] = { points: 0, wins: 0, losses: 0, played: 0 };
-    });
-    return { groups, records };
+    const matches = createGroupMatches(groups, t.groupStage?.matches || []);
+    const records = computeGroupRecords(groups, matches, teamsForDisplay);
+    return { groups, records, matches };
   })();
   const rankedGroups = groupStage
     ? groupStage.groups.map((g) => rankGroupMembers(g, groupStage.records, teamsForDisplay, settings.groups?.advancement || 'points'))
     : ([] as string[][]);
+  const seedLabels = new Map<string, string>();
+  if (settings.format === 'groups') {
+    rankedGroups.forEach((g, idx) => {
+      g.forEach((teamId, pos) => {
+        seedLabels.set(teamId, `${String.fromCharCode(65 + idx)}${pos + 1}`);
+      });
+    });
+  }
   function adjustGroupRecord(teamId: string, key: keyof GroupRecord, delta: number) {
     update((x) => {
       const nextSettings = normalizeSettings(x.settings);
       const stage = ensureGroupStage(x, nextSettings);
       if (!stage?.records?.[teamId]) return;
       stage.records[teamId][key] = Math.max(0, (stage.records[teamId][key] || 0) + delta);
+      stage.records[teamId].gamesWon ??= 0; stage.records[teamId].gamesLost ??= 0;
       if (key === 'wins' || key === 'losses') {
         stage.records[teamId].played = Math.max(stage.records[teamId].played, (stage.records[teamId].wins || 0) + (stage.records[teamId].losses || 0));
       }
+      stage.records[teamId].points = (stage.records[teamId].wins || 0) * 3;
+      rebuildBracketFromGroups(x, nextSettings);
+    });
+  }
+  function setGroupMatchScore(matchId: string, aScore: number | null, bScore: number | null) {
+    update((x) => {
+      const nextSettings = normalizeSettings(x.settings);
+      const stage = ensureGroupStage(x, nextSettings);
+      if (!stage?.matches) return;
+      const match = stage.matches.find((m) => m.id === matchId);
+      if (!match) return;
+      match.scoreA = aScore === null ? undefined : Math.max(0, aScore);
+      match.scoreB = bScore === null ? undefined : Math.max(0, bScore);
+      stage.records = computeGroupRecords(stage.groups, stage.matches, x.teams || []);
       rebuildBracketFromGroups(x, nextSettings);
     });
   }
@@ -872,32 +986,130 @@ export default function Lobby() {
                   {settings.groups?.losersNext ? ' • Consolation enabled' : ''}
                 </div>
               </div>
-              <span style={{ fontSize:12, opacity:.7 }}>Groups stay ordered (A, B, C…) and feed the bracket.</span>
-            </div>
-
-            <div style={{ display:'grid', gap:10, gridTemplateColumns:'repeat(auto-fit, minmax(240px, 1fr))', marginTop:10 }}>
-              {t.groupStage.groups.map((group, idx) => (
-                <div key={idx} style={{ background:'linear-gradient(135deg, #111827, #0b1020)', borderRadius:14, padding:12, border:'1px solid rgba(56,189,248,0.15)', boxShadow:'0 10px 25px rgba(0,0,0,0.25)' }}>
-                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:8 }}>
-                    <div style={{ fontWeight:800, letterSpacing:0.5 }}>{groupLabel(idx)}</div>
-                    <span style={{ fontSize:12, opacity:.75 }}>{group.length} team{group.length === 1 ? '' : 's'}</span>
-                  </div>
-                  {group.length === 0 ? (
-                    <div style={{ opacity:.65, fontSize:13 }}>No teams yet.</div>
-                  ) : (
-                    <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:6 }}>
-                      {group.map((teamId, i) => (
-                        <li key={teamId} style={{ padding:'8px 10px', borderRadius:10, background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-                          <span>{teamName(teamId)}</span>
-                          <span style={{ fontSize:11, opacity:.7 }}>#{i + 1}</span>
-                        </li>
-                      ))}
-                    </ul>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                <span style={{ fontSize:12, opacity:.7 }}>Groups stay ordered (A, B, C…) and feed the bracket.</span>
+                <button
+                  style={btnGhost}
+                  onClick={() => alert(
+                    'Group Pools: players are placed into groups (default 4 per group). Each team plays everyone else in their group once. Wins are worth 3 points; losses are 0. Standings use points, game difference, then games won. Top seeds advance (A1 vs B2, B1 vs A2, etc.). You can add late arrivals into a specific group and rebuild the bracket from standings at any time.'
                   )}
-                </div>
-              ))}
+                >How Group Pools work</button>
+              </div>
             </div>
-            <div style={{ opacity:.7, fontSize:12, marginTop:8 }}>Late arrivals are added to the smallest group and also appear in the elimination bracket.</div>
+            <div style={{ display:'grid', gap:10, gridTemplateColumns:'repeat(auto-fit, minmax(340px, 1fr))', marginTop:10 }}>
+              {t.groupStage.groups.map((group, idx) => {
+                const ordered = rankedGroups[idx] || group;
+                const matchesForGroup = (groupStage?.matches || []).filter((m) => m.group === idx);
+                return (
+                  <div key={idx} style={{ background:'linear-gradient(135deg, #111827, #0b1020)', borderRadius:14, padding:12, border:'1px solid rgba(56,189,248,0.15)', boxShadow:'0 10px 25px rgba(0,0,0,0.25)', display:'grid', gap:10 }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:8 }}>
+                      <div>
+                        <div style={{ fontWeight:800, letterSpacing:0.5 }}>{groupLabel(idx)}</div>
+                        <div style={{ fontSize:12, opacity:.7 }}>{group.length} team{group.length === 1 ? '' : 's'} • Round robin</div>
+                      </div>
+                      <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
+                        <span style={{ fontSize:12, opacity:.7 }}>{settings.groups?.advancement === 'wins' ? 'Winners advance' : 'Points advance'}</span>
+                        {canHost && (
+                          <button
+                            style={btnMini}
+                            onClick={() => {
+                              const nm = prompt(`Add a player/team directly to ${groupLabel(idx)}?`);
+                              if (!nm) return;
+                              const p = { id: uid(), name: nm.trim() || 'Player' };
+                              update((x) => addLateLocal(x, p, idx));
+                            }}
+                            disabled={busy}
+                          >Add to {groupLabel(idx)}</button>
+                        )}
+                      </div>
+                    </div>
+
+                    {ordered.length === 0 ? (
+                      <div style={{ opacity:.65, fontSize:13 }}>No teams yet.</div>
+                    ) : (
+                      <div style={{ display:'grid', gap:6 }}>
+                        <div style={{ display:'grid', gridTemplateColumns:'1fr repeat(5, auto)', gap:6, fontSize:12, opacity:.7 }}>
+                          <span>Team</span><span>Pts</span><span>W</span><span>L</span><span>GD</span><span>GW</span>
+                        </div>
+                        {ordered.map((teamId, rankIdx) => {
+                          const rec = groupStage?.records?.[teamId] || { points:0, wins:0, losses:0, played:0, gamesWon:0, gamesLost:0 };
+                          const gd = (rec.gamesWon || 0) - (rec.gamesLost || 0);
+                          const label = `${groupLabel(idx).split(' ')[1]}${rankIdx + 1}`;
+                          return (
+                            <div key={teamId} style={{ display:'grid', gridTemplateColumns:'1fr repeat(5, auto)', gap:6, alignItems:'center', padding:'6px 8px', borderRadius:10, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)' }}>
+                              <div style={{ display:'flex', gap:6, alignItems:'center', minWidth:0 }}>
+                                <span style={{ fontSize:11, opacity:.6 }}>{label}</span>
+                                <span style={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{teamName(teamId)}</span>
+                              </div>
+                              <span>{rec.points}</span>
+                              <span>{rec.wins}</span>
+                              <span>{rec.losses}</span>
+                              <span>{gd}</span>
+                              <span>{rec.gamesWon}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    <div style={{ display:'grid', gap:6 }}>
+                      <div style={{ fontWeight:700, fontSize:13 }}>Group matches</div>
+                      {matchesForGroup.length === 0 ? (
+                        <div style={{ opacity:.65, fontSize:13 }}>Matches will appear once at least two teams are in this group.</div>
+                      ) : (
+                        <div style={{ display:'grid', gap:6 }}>
+                          {matchesForGroup.map((m, i) => {
+                            const aScore = Number.isFinite(m.scoreA) ? Number(m.scoreA) : '';
+                            const bScore = Number.isFinite(m.scoreB) ? Number(m.scoreB) : '';
+                            const aName = teamName(m.a);
+                            const bName = teamName(m.b);
+                            return (
+                              <div key={m.id} style={{ display:'grid', gridTemplateColumns:'1fr auto 1fr', gap:6, alignItems:'center', padding:'8px 10px', borderRadius:10, background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)' }}>
+                                <div style={{ display:'grid', gap:4 }}>
+                                  <span style={{ fontWeight:600 }}>{aName}</span>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    value={aScore}
+                                    onChange={(e) => setGroupMatchScore(m.id, e.target.value === '' ? null : Number(e.target.value), Number.isFinite(m.scoreB) ? Number(m.scoreB) : null)}
+                                    style={{ ...input, padding:'4px 6px' }}
+                                    disabled={!canHost || busy}
+                                  />
+                                </div>
+                                <div style={{ display:'grid', gap:6, justifyItems:'center' }}>
+                                  <span style={{ opacity:.7, fontSize:12 }}>vs</span>
+                                  {canHost && (
+                                    <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:'center' }}>
+                                      <button style={btnMini} onClick={() => setGroupMatchScore(m.id, (Number.isFinite(m.scoreA) ? Number(m.scoreA) : 0) + 1, Number.isFinite(m.scoreB) ? Number(m.scoreB) : 0)} disabled={busy}>A +1</button>
+                                      <button style={btnMini} onClick={() => setGroupMatchScore(m.id, Number.isFinite(m.scoreA) ? Number(m.scoreA) : 0, (Number.isFinite(m.scoreB) ? Number(m.scoreB) : 0) + 1)} disabled={busy}>B +1</button>
+                                      <button style={btnMini} onClick={() => setGroupMatchScore(m.id, 0, 0)} disabled={busy}>Clear</button>
+                                    </div>
+                                  )}
+                                  {m.winner && <span style={{ fontSize:11, opacity:.75 }}>Winner: {teamName(m.winner)}</span>}
+                                </div>
+                                <div style={{ display:'grid', gap:4 }}>
+                                  <span style={{ fontWeight:600, textAlign:'right' }}>{bName}</span>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    value={bScore}
+                                    onChange={(e) => setGroupMatchScore(m.id, Number.isFinite(m.scoreA) ? Number(m.scoreA) : null, e.target.value === '' ? null : Number(e.target.value))}
+                                    style={{ ...input, padding:'4px 6px' }}
+                                    disabled={!canHost || busy}
+                                  />
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <div style={{ opacity:.65, fontSize:12 }}>Each team plays every other team once. Enter games won for each side (e.g., 3-1).</div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ opacity:.7, fontSize:12, marginTop:8 }}>Late arrivals can be slotted into any group; their remaining matches will appear above and flow into the elimination bracket when rebuilt.</div>
           </section>
         )}
 
@@ -928,7 +1140,8 @@ export default function Lobby() {
                         ) : (
                           <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
                             {group.map((teamId, rankIdx) => {
-                              const rec = groupStage.records[teamId] || { points:0, wins:0, losses:0, played:0 };
+                              const rec = groupStage.records[teamId] || { points:0, wins:0, losses:0, played:0, gamesWon:0, gamesLost:0 };
+                              const gd = (rec.gamesWon || 0) - (rec.gamesLost || 0);
                               return (
                                 <li key={teamId} style={{ background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:'8px 10px', display:'grid', gap:6 }}>
                                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6 }}>
@@ -938,8 +1151,9 @@ export default function Lobby() {
                                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6 }}>
                                     <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
                                       <span style={statPill}>Pts {rec.points}</span>
-                                      <span style={statPill}>Wins {rec.wins}</span>
-                                      <span style={statPill}>Losses {rec.losses}</span>
+                                      <span style={statPill}>W {rec.wins}</span>
+                                      <span style={statPill}>L {rec.losses}</span>
+                                      <span style={statPill}>GD {gd}</span>
                                     </div>
                                     {canHost && (
                                       <div style={{ display:'flex', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>
@@ -1029,6 +1243,8 @@ export default function Lobby() {
                       }
                       function pill(teamId?: string, round?: number, match?: number, side?: 'a' | 'b') {
                         const name = teamName(teamId);
+                        const label = seedLabels.get(teamId || '');
+                        const display = label ? `${name} (${label})` : name;
                         const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, teamId };
                         return (
                           <span
@@ -1039,7 +1255,7 @@ export default function Lobby() {
                             style={{ ...pillStyle, opacity: teamId ? 1 : .6, cursor: allowDrag ? 'grab' : 'default' }}
                             title={allowDrag ? 'Drag to move this team' : undefined}
                           >
-                            {name}
+                            {display}
                           </span>
                         );
                       }
@@ -1169,6 +1385,8 @@ export default function Lobby() {
                       }
                       function pill(teamId?: string, round?: number, match?: number, side?: 'a' | 'b') {
                         const name = teamName(teamId);
+                        const label = seedLabels.get(teamId || '');
+                        const display = label ? `${name} (${label})` : name;
                         const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, teamId };
                         return (
                           <span
@@ -1179,7 +1397,7 @@ export default function Lobby() {
                             style={{ ...pillStyle, opacity: teamId ? 1 : .6, cursor: allowDrag ? 'grab' : 'default' }}
                             title={allowDrag ? 'Drag to move this team' : undefined}
                           >
-                            {name}
+                            {display}
                           </span>
                         );
                       }

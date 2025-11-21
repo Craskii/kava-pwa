@@ -18,7 +18,23 @@ export type TournamentSettings = {
   };
 };
 export type Team = { id: string; name: string; memberIds: string[] };
-export type GroupRecord = { points: number; wins: number; losses: number; played: number };
+export type GroupRecord = {
+  points: number;
+  wins: number;
+  losses: number;
+  played: number;
+  gamesWon: number;
+  gamesLost: number;
+};
+export type GroupMatch = {
+  id: string;
+  group: number;
+  a?: string;
+  b?: string;
+  scoreA?: number;
+  scoreB?: number;
+  winner?: string;
+};
 export type Match = {
   a?: string; // teamId
   b?: string; // teamId
@@ -40,7 +56,7 @@ export type Tournament = {
   coHosts?: string[]; // <-- NEW: can ping & manage players/seeding
   teams?: Team[];
   settings?: TournamentSettings;
-  groupStage?: { groups: string[][]; records?: Record<string, GroupRecord> };
+  groupStage?: { groups: string[][]; records?: Record<string, GroupRecord>; matches?: GroupMatch[] };
 };
 
 /* ===== Lists ===== */
