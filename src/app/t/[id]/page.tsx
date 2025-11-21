@@ -474,6 +474,8 @@ export default function Lobby() {
     if (busy && blockUI) return;
     if (blockUI) setBusy(true);
 
+    const cloneRecords = (records?: Record<string, GroupRecord>) =>
+      Object.fromEntries(Object.entries(records || {}).map(([k, v]) => [k, { ...v }]));
     const base: Tournament = {
       ...t,
       players: [...t.players],
@@ -482,7 +484,13 @@ export default function Lobby() {
       coHosts: [...coHosts],
       teams: [...(t.teams || [])].map(tm => ({ ...tm, memberIds: [...tm.memberIds] })),
       settings: normalizeSettings(t.settings),
-      groupStage: t.groupStage ? { groups: t.groupStage.groups.map(g => [...g]), records: { ...(t.groupStage.records || {}) } } : undefined,
+      groupStage: t.groupStage
+        ? {
+            groups: t.groupStage.groups.map(g => [...g]),
+            records: cloneRecords(t.groupStage.records),
+            matches: (t.groupStage.matches || []).map((m) => ({ ...m })),
+          }
+        : undefined,
       v: t.v, // carry version through
     };
 
@@ -1152,8 +1160,18 @@ export default function Lobby() {
                       <div style={{ opacity:.65, fontSize:13 }}>No teams yet.</div>
                     ) : (
                       <div style={{ display:'grid', gap:6 }}>
-                        <div style={{ display:'grid', gridTemplateColumns:'1fr repeat(5, auto)', gap:6, fontSize:12, opacity:.7 }}>
-                          <span>Team</span><span>Pts</span><span>W</span><span>L</span><span>GD</span><span>GW</span>
+                        <div
+                          style={{
+                            display:'grid',
+                            gridTemplateColumns:`1fr repeat(${settings.groups?.advancement === 'wins' ? 4 : 5}, auto)`,
+                            gap:6,
+                            fontSize:12,
+                            opacity:.7
+                          }}
+                        >
+                          <span>Team</span>
+                          {settings.groups?.advancement !== 'wins' && <span>Pts</span>}
+                          <span>W</span><span>L</span><span>GD</span><span>GW</span>
                         </div>
                         {ordered.map((teamId, rankIdx) => {
                           const rec = groupStage?.records?.[teamId] || { points:0, wins:0, losses:0, played:0, gamesWon:0, gamesLost:0 };
@@ -1164,13 +1182,23 @@ export default function Lobby() {
                               key={teamId}
                               draggable={allowGroupDrag}
                               onDragStart={(ev) => onGroupDragStart(ev, { type:'group-seat', teamId, from: idx })}
-                              style={{ display:'grid', gridTemplateColumns:'1fr repeat(5, auto)', gap:6, alignItems:'center', padding:'6px 8px', borderRadius:10, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', cursor: allowGroupDrag ? 'grab' : 'default' }}
+                              style={{
+                                display:'grid',
+                                gridTemplateColumns:`1fr repeat(${settings.groups?.advancement === 'wins' ? 4 : 5}, auto)`,
+                                gap:6,
+                                alignItems:'center',
+                                padding:'6px 8px',
+                                borderRadius:10,
+                                background:'rgba(255,255,255,0.04)',
+                                border:'1px solid rgba(255,255,255,0.08)',
+                                cursor: allowGroupDrag ? 'grab' : 'default'
+                              }}
                             >
                               <div style={{ display:'flex', gap:6, alignItems:'center', minWidth:0 }}>
                                 <span style={{ fontSize:11, opacity:.6 }}>{label}</span>
                                 <span style={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{teamName(teamId)}</span>
                               </div>
-                              <span>{rec.points}</span>
+                              {settings.groups?.advancement !== 'wins' && <span>{rec.points}</span>}
                               <span>{rec.wins}</span>
                               <span>{rec.losses}</span>
                               <span>{gd}</span>
@@ -1264,39 +1292,41 @@ export default function Lobby() {
                           <div style={{ fontWeight:900, letterSpacing:0.5 }}>{groupLabel(idx)}</div>
                           <span style={{ fontSize:12, opacity:.7 }}>{settings.groups?.advancement === 'wins' ? 'Wins advance' : 'Points advance'}</span>
                         </div>
-                        {group.length === 0 ? (
-                          <div style={{ opacity:.7, fontSize:12 }}>No teams yet.</div>
-                        ) : (
-                          <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
-                            {group.map((teamId, rankIdx) => {
-                              const rec = groupStage.records[teamId] || { points:0, wins:0, losses:0, played:0, gamesWon:0, gamesLost:0 };
-                              const gd = (rec.gamesWon || 0) - (rec.gamesLost || 0);
-                              return (
-                                <li key={teamId} style={{ background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:'8px 10px', display:'grid', gap:6 }}>
-                                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6 }}>
-                                    <div style={{ fontWeight:700 }}>{teamName(teamId)}</div>
-                                    <span style={{ fontSize:11, opacity:.65 }}>#{rankIdx + 1}</span>
-                                  </div>
-                                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6 }}>
-                                    <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-                                      <span style={statPill}>Pts {rec.points}</span>
-                                      <span style={statPill}>W {rec.wins}</span>
-                                      <span style={statPill}>L {rec.losses}</span>
-                                      <span style={statPill}>GD {gd}</span>
+                          {group.length === 0 ? (
+                            <div style={{ opacity:.7, fontSize:12 }}>No teams yet.</div>
+                          ) : (
+                            <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
+                              {group.map((teamId, rankIdx) => {
+                                const rec = groupStage.records[teamId] || { points:0, wins:0, losses:0, played:0, gamesWon:0, gamesLost:0 };
+                                const gd = (rec.gamesWon || 0) - (rec.gamesLost || 0);
+                                return (
+                                  <li key={teamId} style={{ background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:'8px 10px', display:'grid', gap:6 }}>
+                                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6 }}>
+                                      <div style={{ fontWeight:700 }}>{teamName(teamId)}</div>
+                                      <span style={{ fontSize:11, opacity:.65 }}>#{rankIdx + 1}</span>
                                     </div>
-                                      {canHost && (
-                                        <div style={{ display:'flex', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>
-                                          <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'points', 1)} disabled={!canHost}>+1 pt</button>
-                                          <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'wins', 1)} disabled={!canHost}>+1 win</button>
-                                          <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'losses', 1)} disabled={!canHost}>+1 loss</button>
-                                        </div>
-                                      )}
-                                  </div>
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        )}
+                                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6 }}>
+                                      <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                                        {settings.groups?.advancement !== 'wins' && <span style={statPill}>Pts {rec.points}</span>}
+                                        <span style={statPill}>W {rec.wins}</span>
+                                        <span style={statPill}>L {rec.losses}</span>
+                                        <span style={statPill}>GD {gd}</span>
+                                      </div>
+                                        {canHost && (
+                                          <div style={{ display:'flex', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>
+                                            {settings.groups?.advancement !== 'wins' && (
+                                              <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'points', 1)} disabled={!canHost}>+1 pt</button>
+                                            )}
+                                            <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'wins', 1)} disabled={!canHost}>+1 win</button>
+                                            <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'losses', 1)} disabled={!canHost}>+1 loss</button>
+                                          </div>
+                                        )}
+                                    </div>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
                       </div>
                     ))}
                   </div>
