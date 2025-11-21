@@ -568,13 +568,13 @@ export default function Lobby() {
         const targetIdx = Number.isFinite(groupIndex)
           ? Math.max(0, Math.min(stage?.groups.length ? stage.groups.length - 1 : 0, Number(groupIndex)))
           : stage?.groups.reduce((best, g, idx) => g.length < best[0] ? [g.length, idx] : best, [Number.MAX_SAFE_INTEGER, 0] as [number, number])[1] || 0;
-        stage?.groups[targetIdx] ??= [];
-        if (teamId || p.id) stage?.groups[targetIdx].push(teamId || p.id);
         if (stage) {
+          stage.groups[targetIdx] = stage.groups[targetIdx] || [];
+          if (teamId || p.id) stage.groups[targetIdx].push(teamId || p.id);
           stage.matches = createGroupMatches(stage.groups, stage.matches);
           stage.records = computeGroupRecords(stage.groups, stage.matches || [], x.teams || []);
+          rebuildBracketFromGroups(x, settings);
         }
-        rebuildBracketFromGroups(x, settings);
       } else {
         seatTeamIntoFirstRound(x, teamId);
       }
