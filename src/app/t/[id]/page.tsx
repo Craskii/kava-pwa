@@ -83,43 +83,42 @@ function mergeTeams(players: { id: string; name: string }[], settings: Tournamen
 function seedLocal(t: Tournament): Tournament {
   const settings = normalizeSettings(t.settings);
   const teams = mergeTeams(t.players, settings, t.teams);
-  const seededGroups = settings.format === 'groups' ? buildGroups(teams, settings) : undefined;
+  const seededGroups = settings.format === 'groups' ? buildGroups(teams, settings, { randomize: true }) : undefined;
   const seededMatches = seededGroups ? createGroupMatches(seededGroups, []) : undefined;
   const seededRecords = seededGroups && seededMatches
     ? computeGroupRecords(seededGroups, seededMatches, teams)
     : undefined;
-  const ids =
-    settings.format === 'groups'
-      ? buildSeedsFromGroups(
-          seededGroups || [],
-          seededRecords || {},
-          teams,
-          settings.groups?.advancement || 'points'
-        )
-      : shuffle(teams.map((tm) => tm.id));
+
+  if (settings.format === 'groups') {
+    return {
+      ...t,
+      teams,
+      rounds: [],
+      status: 'active',
+      groupStage: seededGroups
+        ? { groups: seededGroups, records: seededRecords, matches: seededMatches }
+        : undefined,
+    };
+  }
+
+  const ids = shuffle(teams.map((tm) => tm.id));
   const first: Match[] = [];
   for (let i = 0; i < ids.length; i += 2) {
     const a = ids[i], b = ids[i + 1];
     const nm = normalizeMatch({ a, b, reports: {} });
     if (nm) first.push(nm);
   }
-  const seeded: Tournament = {
-    ...t,
-    teams,
-    rounds: [first],
-    status: 'active',
-    groupStage: seededGroups
-      ? { groups: seededGroups, records: seededRecords, matches: seededMatches }
-      : undefined,
-  };
+  const seeded: Tournament = { ...t, teams, rounds: [first], status: 'active' };
   buildNextRoundFromSync(seeded, 0);
   return seeded;
 }
-function buildGroups(teams: Team[], settings: TournamentSettings): string[][] {
+function buildGroups(teams: Team[], settings: TournamentSettings, opts?: { randomize?: boolean }): string[][] {
   const size = settings.groups?.size || 4;
   const desiredCount = settings.groups?.count || Math.max(1, Math.ceil(Math.max(teams.length, 1) / size));
   const groups: string[][] = Array.from({ length: desiredCount || 1 }, () => []);
-  teams.forEach((tm) => {
+  const pool = opts?.randomize ? shuffle(teams) : teams;
+
+  pool.forEach((tm) => {
     const target = groups.reduce(
       (best, g, idx) => (g.length < best[0] ? [g.length, idx] : best),
       [Number.MAX_SAFE_INTEGER, 0] as [number, number]
@@ -190,6 +189,28 @@ function computeGroupRecords(groups: string[][], matches: GroupMatch[], teams: T
   Object.values(recs).forEach((r) => { r.points = r.wins * 3; });
   return recs;
 }
+function mergeManualRecords(
+  computed: Record<string, GroupRecord>,
+  manual?: Record<string, GroupRecord>
+): Record<string, GroupRecord> {
+  if (!manual) return computed;
+  const merged: Record<string, GroupRecord> = { ...computed };
+  Object.entries(manual).forEach(([id, rec]) => {
+    merged[id] = merged[id] ? { ...merged[id], ...rec } : { ...rec };
+  });
+  return merged;
+}
+function groupStageComplete(stage?: { matches?: GroupMatch[] }) {
+  if (!stage?.matches?.length) return false;
+  return stage.matches.every(
+    (m) =>
+      !!m.a &&
+      !!m.b &&
+      Number.isFinite(m.scoreA) &&
+      Number.isFinite(m.scoreB) &&
+      !!m.winner
+  );
+}
 function ensureGroupStage(t: Tournament, settings: TournamentSettings) {
   if (settings.format !== 'groups') { t.groupStage = undefined; return undefined; }
   const baseGroups = t.groupStage?.groups?.length ? t.groupStage.groups : buildGroups(t.teams || [], settings);
@@ -197,7 +218,8 @@ function ensureGroupStage(t: Tournament, settings: TournamentSettings) {
     baseGroups,
     (t.groupStage?.matches || []).filter((m) => baseGroups[m.group] && baseGroups[m.group].includes(m.a || '') && baseGroups[m.group].includes(m.b || ''))
   );
-  const records = computeGroupRecords(baseGroups, matches, t.teams || []);
+  const computed = computeGroupRecords(baseGroups, matches, t.teams || []);
+  const records = mergeManualRecords(computed, t.groupStage?.records);
   t.groupStage = { groups: baseGroups, records, matches };
   return t.groupStage;
 }
@@ -258,6 +280,11 @@ function buildSeedsFromGroups(
 function rebuildBracketFromGroups(t: Tournament, settings: TournamentSettings) {
   const stage = ensureGroupStage(t, settings);
   if (!stage) return;
+  if (!groupStageComplete(stage)) {
+    t.rounds = [];
+    t.status = t.status === 'completed' ? 'completed' : 'active';
+    return;
+  }
   const seeds = buildSeedsFromGroups(stage.groups, stage.records || {}, t.teams || [], settings.groups?.advancement || 'points');
   if (!seeds.length) return;
   const first: Match[] = [];
@@ -306,7 +333,8 @@ function reconcileTeams(t: Tournament) {
     const safeGroups = t.groupStage?.groups?.map(g => g.filter(id => valid.has(id)));
     const groups = safeGroups && safeGroups.length ? safeGroups : buildGroups(t.teams || [], settings);
     const matches = createGroupMatches(groups, (t.groupStage?.matches || []).filter((m) => valid.has(m.a || '') && valid.has(m.b || '')));
-    const records = computeGroupRecords(groups, matches, t.teams || []);
+    const computed = computeGroupRecords(groups, matches, t.teams || []);
+    const records = mergeManualRecords(computed, t.groupStage?.records);
     t.groupStage = { groups, matches, records };
   } else {
     t.groupStage = undefined;
@@ -567,12 +595,19 @@ export default function Lobby() {
         const stage = ensureGroupStage(x, settings);
         const targetIdx = Number.isFinite(groupIndex)
           ? Math.max(0, Math.min(stage?.groups.length ? stage.groups.length - 1 : 0, Number(groupIndex)))
-          : stage?.groups.reduce((best, g, idx) => g.length < best[0] ? [g.length, idx] : best, [Number.MAX_SAFE_INTEGER, 0] as [number, number])[1] || 0;
+          : (() => {
+              const sizes = stage?.groups.map((g, idx) => [g.length, idx] as [number, number]) || [];
+              const min = sizes.reduce((m, [len]) => Math.min(m, len), Number.MAX_SAFE_INTEGER);
+              const smallest = sizes.filter(([len]) => len === min).map(([, idx]) => idx);
+              if (!smallest.length) return 0;
+              return smallest[Math.floor(Math.random() * smallest.length)] ?? 0;
+            })();
         if (stage) {
           stage.groups[targetIdx] = stage.groups[targetIdx] || [];
           if (teamId || p.id) stage.groups[targetIdx].push(teamId || p.id);
           stage.matches = createGroupMatches(stage.groups, stage.matches);
-          stage.records = computeGroupRecords(stage.groups, stage.matches || [], x.teams || []);
+          const computed = computeGroupRecords(stage.groups, stage.matches || [], x.teams || []);
+          stage.records = mergeManualRecords(computed, stage.records);
           rebuildBracketFromGroups(x, settings);
         }
       } else {
@@ -637,6 +672,38 @@ export default function Lobby() {
     }
     update(x => addLateLocal(x, p, targetGroup));
   }
+  function moveTeamBetweenGroups(teamId: string, fromGroup: number, toGroup: number) {
+    update((x) => {
+      const settings = normalizeSettings(x.settings);
+      if (settings.format !== 'groups') return;
+      const stage = ensureGroupStage(x, settings);
+      if (!stage?.groups?.[fromGroup] || !stage.groups[toGroup]) return;
+      if (fromGroup === toGroup) return;
+      const from = stage.groups[fromGroup];
+      const idx = from.indexOf(teamId);
+      if (idx < 0) return;
+      from.splice(idx, 1);
+      if (!stage.groups[toGroup].includes(teamId)) stage.groups[toGroup].push(teamId);
+      stage.matches = createGroupMatches(stage.groups, stage.matches);
+      const computed = computeGroupRecords(stage.groups, stage.matches, x.teams || []);
+      stage.records = mergeManualRecords(computed, stage.records);
+      rebuildBracketFromGroups(x, settings);
+    });
+  }
+  function randomizeGroupsFromPlayers() {
+    update((x) => {
+      const settings = normalizeSettings(x.settings);
+      if (settings.format !== 'groups') return;
+      x.settings = settings;
+      x.teams = mergeTeams(x.players, settings, x.teams);
+      const groups = buildGroups(x.teams || [], settings, { randomize: true });
+      const matches = createGroupMatches(groups, []);
+      const computed = computeGroupRecords(groups, matches, x.teams || []);
+      x.groupStage = { groups, matches, records: mergeManualRecords(computed, x.groupStage?.records) };
+      x.rounds = [];
+      if (x.status === 'completed') x.status = 'active';
+    });
+  }
 
   const settings = normalizeSettings(t.settings);
   const teamsForDisplay = t.teams?.length ? t.teams : mergeTeams(t.players, settings, t.teams);
@@ -657,7 +724,8 @@ export default function Lobby() {
     if (settings.format !== 'groups') return null;
     const groups = t.groupStage?.groups?.length ? t.groupStage.groups : buildGroups(teamsForDisplay, settings);
     const matches = createGroupMatches(groups, t.groupStage?.matches || []);
-    const records = computeGroupRecords(groups, matches, teamsForDisplay);
+    const computed = computeGroupRecords(groups, matches, teamsForDisplay);
+    const records = mergeManualRecords(computed, t.groupStage?.records);
     return { groups, records, matches };
   })();
   const rankedGroups = groupStage
@@ -694,7 +762,8 @@ export default function Lobby() {
       if (!match) return;
       match.scoreA = aScore === null ? undefined : Math.max(0, aScore);
       match.scoreB = bScore === null ? undefined : Math.max(0, bScore);
-      stage.records = computeGroupRecords(stage.groups, stage.matches, x.teams || []);
+      const computed = computeGroupRecords(stage.groups, stage.matches, x.teams || []);
+      stage.records = mergeManualRecords(computed, stage.records);
       rebuildBracketFromGroups(x, nextSettings);
     });
   }
@@ -711,6 +780,8 @@ export default function Lobby() {
   const finalWinnerId = lastRound?.[0]?.winner;
   const iAmChampion = t.status === 'completed' && finalWinnerId && myTeams.includes(finalWinnerId);
   const lock = { opacity: busy ? .6 : 1, pointerEvents: busy ? 'none' as const : 'auto' };
+  const allowGroupDrag = canHost && t.status !== 'completed' && settings.format === 'groups';
+  type GroupDragPayload = { type: 'group-seat'; teamId: string; from: number };
 
   const playersScrollable = t.players.length > 5;
   const playersBox: React.CSSProperties = playersScrollable ? { maxHeight: 260, overflowY: 'auto', paddingRight: 4 } : {};
@@ -954,6 +1025,21 @@ export default function Lobby() {
               )}
             </div>
 
+            {settings.format === 'groups' && (
+              <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'center', marginTop:6 }}>
+                <button
+                  style={{ ...btnGhost, ...lock }}
+                  disabled={busy || t.status === 'completed'}
+                  onClick={randomizeGroupsFromPlayers}
+                >
+                  Shuffle & build groups from players
+                </button>
+                <span style={{ fontSize:12, opacity:.7 }}>
+                  Randomizes everyone into balanced groups; drag teams between groups to fine-tune before play.
+                </span>
+              </div>
+            )}
+
             <div style={{ marginTop: 8 }}>
               <h4 style={{ margin: '6px 0' }}>Pending approvals ({t.pending?.length || 0})</h4>
               {(t.pending?.length || 0) === 0 ? (
@@ -1000,8 +1086,35 @@ export default function Lobby() {
               {t.groupStage.groups.map((group, idx) => {
                 const ordered = rankedGroups[idx] || group;
                 const matchesForGroup = (groupStage?.matches || []).filter((m) => m.group === idx);
+                const onGroupDragStart = (ev: React.DragEvent, payload: GroupDragPayload) => {
+                  if (!allowGroupDrag) return;
+                  ev.dataTransfer.setData('application/json', JSON.stringify(payload));
+                  ev.dataTransfer.effectAllowed = 'move';
+                };
+                const parseGroupDrag = (ev: React.DragEvent): GroupDragPayload | null => {
+                  const raw = ev.dataTransfer.getData('application/json');
+                  if (!raw) return null;
+                  try {
+                    const parsed = JSON.parse(raw);
+                    if (parsed?.type === 'group-seat') return parsed as GroupDragPayload;
+                  } catch { return null; }
+                  return null;
+                };
+                const onGroupDrop = (ev: React.DragEvent, toGroup: number) => {
+                  if (!allowGroupDrag) return;
+                  ev.preventDefault();
+                  const parsed = parseGroupDrag(ev);
+                  if (!parsed) return;
+                  moveTeamBetweenGroups(parsed.teamId, parsed.from, toGroup);
+                };
+                const onGroupDragOver = (ev: React.DragEvent) => { if (allowGroupDrag) ev.preventDefault(); };
                 return (
-                  <div key={idx} style={{ background:'linear-gradient(135deg, #111827, #0b1020)', borderRadius:14, padding:12, border:'1px solid rgba(56,189,248,0.15)', boxShadow:'0 10px 25px rgba(0,0,0,0.25)', display:'grid', gap:10 }}>
+                  <div
+                    key={idx}
+                    style={{ background:'linear-gradient(135deg, #111827, #0b1020)', borderRadius:14, padding:12, border:'1px solid rgba(56,189,248,0.15)', boxShadow:'0 10px 25px rgba(0,0,0,0.25)', display:'grid', gap:10 }}
+                    onDragOver={onGroupDragOver}
+                    onDrop={(ev) => onGroupDrop(ev, idx)}
+                  >
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:8 }}>
                       <div>
                         <div style={{ fontWeight:800, letterSpacing:0.5 }}>{groupLabel(idx)}</div>
@@ -1036,7 +1149,12 @@ export default function Lobby() {
                           const gd = (rec.gamesWon || 0) - (rec.gamesLost || 0);
                           const label = `${groupLabel(idx).split(' ')[1]}${rankIdx + 1}`;
                           return (
-                            <div key={teamId} style={{ display:'grid', gridTemplateColumns:'1fr repeat(5, auto)', gap:6, alignItems:'center', padding:'6px 8px', borderRadius:10, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)' }}>
+                            <div
+                              key={teamId}
+                              draggable={allowGroupDrag}
+                              onDragStart={(ev) => onGroupDragStart(ev, { type:'group-seat', teamId, from: idx })}
+                              style={{ display:'grid', gridTemplateColumns:'1fr repeat(5, auto)', gap:6, alignItems:'center', padding:'6px 8px', borderRadius:10, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)', cursor: allowGroupDrag ? 'grab' : 'default' }}
+                            >
                               <div style={{ display:'flex', gap:6, alignItems:'center', minWidth:0 }}>
                                 <span style={{ fontSize:11, opacity:.6 }}>{label}</span>
                                 <span style={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{teamName(teamId)}</span>
@@ -1114,7 +1232,7 @@ export default function Lobby() {
         )}
 
         {/* Bracket */}
-        {t.rounds.length > 0 && (
+        {(t.rounds.length > 0 || settings.format === 'groups') && (
           <div style={card}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
               <h3 style={{ marginTop: 0, marginBottom: 6 }}>Bracket</h3>
@@ -1125,7 +1243,7 @@ export default function Lobby() {
               )}
             </div>
             {settings.format === 'groups' && groupStage ? (
-              <div style={{ display:'grid', gridTemplateColumns: `minmax(320px, 1fr) repeat(${t.rounds.length}, minmax(260px, 1fr))`, gap:12, overflowX:'auto' }}>
+              <div style={{ display:'grid', gridTemplateColumns: `minmax(320px, 1fr) repeat(${Math.max(t.rounds.length, 1)}, minmax(260px, 1fr))`, gap:12, overflowX:'auto' }}>
                 <div style={{ display:'grid', gap:10 }}>
                   <div style={{ opacity:.8, fontSize:13 }}>Group Stage</div>
                   <div style={{ display:'grid', gap:10 }}>
@@ -1172,8 +1290,14 @@ export default function Lobby() {
                     ))}
                   </div>
                 </div>
-
-                {t.rounds.map((round, rIdx) => (
+                {t.rounds.length === 0 ? (
+                  <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:12 }}>
+                    <div style={{ fontWeight:700, marginBottom:6 }}>Waiting for group results</div>
+                    <div style={{ fontSize:12, opacity:.75 }}>
+                      Enter scores for every group match. Once all matches have a winner, the knockout bracket will seed automatically (A1 vs B2, B1 vs A2, etc.).
+                    </div>
+                  </div>
+                ) : t.rounds.map((round, rIdx) => (
                   <div key={rIdx} style={{ display: 'grid', gap: 8 }}>
                     <div style={{ opacity: .8, fontSize: 13 }}>Round {rIdx + 1}</div>
                     {round.map((m, i) => {
