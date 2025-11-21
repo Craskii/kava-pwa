@@ -349,7 +349,7 @@ export default function Page() {
       return undefined;
     };
 
-    const fillFromPlayersIfNoQueue = (next.queue ?? []).length === 0;
+    const fillFromPlayersIfNoQueue = false; // Require queue membership to auto-seat
     const seatedSet = new Set<string>();
     for (const t of next.tables) { if (t.a) seatedSet.add(t.a); if (t.b) seatedSet.add(t.b); }
 
@@ -494,23 +494,27 @@ export default function Page() {
   });
 
   const iLost = (pid?: string) => {
-  const loser = pid ?? me.id;
-  const playerName = nameOf(loser);
-  
-  // ✅ Show popup alert (blocks UI until user clicks OK)
-  alert(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
-  
-  scheduleCommit(d => {
-    const t = d.tables.find(tt => tt.a === loser || tt.b === loser);
-    if (!t) return;
-    if (t.a === loser) t.a = undefined;
-    if (t.b === loser) t.b = undefined;
-    // ✅ CRITICAL: Remove from queue so they DON'T auto-seat
-    d.queue = (d.queue ?? []).filter(x => x !== loser);
-    // ✅ Do NOT add to queue - they must manually rejoin
-    excludeSeatPidRef.current = loser;
-  });
-};
+    const loser = pid ?? me.id;
+    const playerName = nameOf(loser);
+
+    if (!confirm(`${playerName}, are you sure you lost?`)) return;
+    const shouldQueue = confirm('Put yourself back in the queue?');
+
+    if (!shouldQueue) {
+      alert(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
+    }
+
+    scheduleCommit(d => {
+      d.queue ??= [];
+      const t = d.tables.find(tt => tt.a === loser || tt.b === loser);
+      if (!t) return;
+      if (t.a === loser) t.a = undefined;
+      if (t.b === loser) t.b = undefined;
+      d.queue = (d.queue ?? []).filter(x => x !== loser);
+      if (shouldQueue && !d.queue.includes(loser)) d.queue!.push(loser);
+      excludeSeatPidRef.current = loser;
+    });
+  };
 
   /* UI */
   return (
