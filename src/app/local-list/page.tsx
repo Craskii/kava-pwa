@@ -189,7 +189,7 @@ export default function LocalListPage() {
       return undefined;
     };
 
-    const fillFromPlayersIfNoQueue = next.queue.length === 0;
+    const fillFromPlayersIfNoQueue = false; // Require queue membership to auto-seat
     const seatedSet = new Set<string>();
     for (const t of next.tables) { if (t.a) seatedSet.add(t.a); if (t.b) seatedSet.add(t.b); }
     const candidates = fillFromPlayersIfNoQueue
@@ -318,17 +318,22 @@ export default function LocalListPage() {
   const iLost = (pid?: string) => {
     const loser = pid ?? me.id;
     const playerName = nameOf(loser);
-    
-    setLostMessage(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
-    setTimeout(() => setLostMessage(null), 8000);
-    
+
+    if (!confirm(`${playerName}, are you sure you lost?`)) return;
+    const shouldQueue = confirm('Put yourself back in the queue?');
+
+    if (!shouldQueue) {
+      setLostMessage(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
+      setTimeout(() => setLostMessage(null), 8000);
+    }
+
     update(d => {
       const t = d.tables.find(tt => tt.a === loser || tt.b === loser);
       if (!t) return;
       if (t.a === loser) t.a = undefined;
       if (t.b === loser) t.b = undefined;
-      // CRITICAL FIX: Remove from queue, do NOT re-add
       d.queue = d.queue.filter(x => x !== loser);
+      if (shouldQueue && !d.queue.includes(loser)) d.queue.push(loser);
       excludeSeatPidRef.current = loser;
     }, { t: Date.now(), who: me.id, type: 'lost', note: playerName });
   };
