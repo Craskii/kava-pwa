@@ -524,7 +524,7 @@ export default function Lobby() {
                       let src: DragInfo;
                       try { src = JSON.parse(raw); } catch { return; }
                       if (src.type !== 'seat' || target.type !== 'seat') return;
-                      if (t.status !== 'active' || src.round !== 0 || target.round !== 0) return;
+                      if (t.status === 'completed' || src.round !== 0 || target.round !== 0) return;
 
                       update(x => {
                         const mSrc = x.rounds?.[0]?.[src.match];
@@ -545,7 +545,7 @@ export default function Lobby() {
                     }
                     function pill(pid?: string, round?: number, match?: number, side?: 'a' | 'b') {
                       const name = pid ? (t.players.find(p => p.id === pid)?.name || '??') : '—';
-                      const draggable = canHost && t.status === 'active' && round === 0;
+                      const draggable = canHost && t.status !== 'completed' && round === 0;
                       const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, pid };
                       return (
                         <span
