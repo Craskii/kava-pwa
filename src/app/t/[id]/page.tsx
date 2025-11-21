@@ -14,6 +14,8 @@ import {
   uid,
   Match,
   getTournamentRemote,
+  TournamentSettings,
+  Team,
 } from '@/lib/storage';
 import { startAdaptivePoll } from '@/lib/poll';
 
@@ -26,43 +28,126 @@ function shuffle<T>(arr: T[]): T[] {
   }
   return a;
 }
-function normalizeMatch(m: Match): Match | null {
-  const a = m.a, b = m.b;
+function normalizeSettings(s?: TournamentSettings): TournamentSettings {
+  return {
+    format: s?.format || 'single_elim',
+    teamSize: s?.teamSize ? Math.max(1, s.teamSize) : (s?.format === 'doubles' ? 2 : 1),
+    bracketStyle: s?.bracketStyle || 'single_elim',
+    groups: s?.groups,
+  };
+}
+function normalizeMatch(m: Match, valid?: Set<string>): Match | null {
+  const a = m.a && valid?.has(m.a) === false ? undefined : m.a;
+  const b = m.b && valid?.has(m.b) === false ? undefined : m.b;
+  const winner = m.winner && valid?.has(m.winner) === false ? undefined : m.winner;
   if (!a && !b) return null;
-  if (a && !b) return { ...m, winner: a, reports: m.reports ?? {} };
-  if (!a && b) return { ...m, winner: b, reports: m.reports ?? {} };
-  return { ...m, reports: m.reports ?? {} };
+  if (a && !b) return { ...m, a, b, winner: a, reports: m.reports ?? {} };
+  if (!a && b) return { ...m, a, b, winner: b, reports: m.reports ?? {} };
+  return { ...m, a, b, winner, reports: m.reports ?? {} };
+}
+function mergeTeams(players: { id: string; name: string }[], settings: TournamentSettings, prev?: Team[]): Team[] {
+  const teamSize = Math.max(1, settings.teamSize || 1);
+  const prevByKey = new Map<string, Team>();
+  (prev || []).forEach((tm) => {
+    const key = [...tm.memberIds].sort().join('|');
+    prevByKey.set(key, tm);
+  });
+
+  const teams: Team[] = [];
+  for (let i = 0; i < players.length; i += teamSize) {
+    const slice = players.slice(i, i + teamSize);
+    const memberIds = slice.map((p) => p.id);
+    const key = [...memberIds].sort().join('|');
+    const existing = prevByKey.get(key);
+    const name = slice.map((p) => p.name).join(' / ') || 'Team';
+    teams.push(
+      existing
+        ? { ...existing, memberIds, name: existing.name || name }
+        : { id: memberIds.length === 1 ? memberIds[0] : `team-${uid()}`, name, memberIds }
+    );
+  }
+  return teams;
 }
 function seedLocal(t: Tournament): Tournament {
-  const ids = shuffle(t.players.map(p => p.id));
+  const settings = normalizeSettings(t.settings);
+  const teams = mergeTeams(t.players, settings, t.teams);
+  const ids = shuffle(teams.map((tm) => tm.id));
   const first: Match[] = [];
   for (let i = 0; i < ids.length; i += 2) {
     const a = ids[i], b = ids[i + 1];
     const nm = normalizeMatch({ a, b, reports: {} });
     if (nm) first.push(nm);
   }
-  const seeded: Tournament = { ...t, rounds: [first], status: 'active' };
+  const seeded: Tournament = {
+    ...t,
+    teams,
+    rounds: [first],
+    status: 'active',
+    groupStage: settings.format === 'groups' ? { groups: buildGroups(teams, settings) } : undefined,
+  };
   buildNextRoundFromSync(seeded, 0);
   return seeded;
 }
+function buildGroups(teams: Team[], settings: TournamentSettings): string[][] {
+  const count = settings.groups?.count || Math.max(2, Math.min(6, Math.ceil(teams.length / 4)));
+  const groups: string[][] = Array.from({ length: count }, () => []);
+  teams.forEach((tm, idx) => {
+    groups[idx % count].push(tm.id);
+  });
+  return groups;
+}
+function clearRoundsFrom(t: Tournament, roundIndex: number) {
+  for (let r = roundIndex; r < t.rounds.length; r++) {
+    t.rounds[r] = (t.rounds[r] || []).map((m) => ({ ...m, winner: undefined, reports: {} }));
+  }
+  if (roundIndex < t.rounds.length - 1) t.rounds = t.rounds.slice(0, roundIndex + 1);
+  if (t.status === 'completed') t.status = 'active';
+}
 function buildNextRoundFromSync(t: Tournament, roundIndex: number) {
+  const valid = new Set((t.teams || []).map((tm) => tm.id));
   const cur = t.rounds[roundIndex] || [];
   const normalized: Match[] = [];
-  for (const m of cur) { const nm = normalizeMatch(m); if (nm) normalized.push(nm); }
+  for (const m of cur) { const nm = normalizeMatch(m, valid); if (nm) normalized.push(nm); }
   t.rounds[roundIndex] = normalized;
 
   const winners = normalized.map(m => m.winner).filter(Boolean) as string[];
-  if (normalized.some(m => !m.winner)) return;
+  if (normalized.some(m => !m.winner)) { t.rounds = t.rounds.slice(0, roundIndex + 1); return; }
 
   if (winners.length <= 1) { if (winners.length === 1) t.status = 'completed'; return; }
   const next: Match[] = [];
   for (let i = 0; i < winners.length; i += 2) {
     const a = winners[i], b = winners[i + 1];
-    const nm = normalizeMatch({ a, b, reports: {} });
+    const nm = normalizeMatch({ a, b, reports: {} }, valid);
     if (nm) next.push(nm);
   }
   if (t.rounds[roundIndex + 1]) t.rounds[roundIndex + 1] = next; else t.rounds.push(next);
   if (next.every(m => !!m.winner)) buildNextRoundFromSync(t, roundIndex + 1);
+}
+function reconcileTeams(t: Tournament) {
+  const settings = normalizeSettings(t.settings);
+  t.settings = settings;
+  t.teams = mergeTeams(t.players, settings, t.teams);
+  const valid = new Set((t.teams || []).map((tm) => tm.id));
+  t.rounds = (t.rounds || []).map((round) =>
+    round
+      .map((m) => normalizeMatch(m, valid))
+      .filter(Boolean)
+      .map((m) => ({ ...m!, reports: { ...(m!.reports || {}) } })) as Match[]
+  );
+  if (t.rounds.length && t.status !== 'setup') buildNextRoundFromSync(t, 0);
+}
+function seatTeamIntoFirstRound(t: Tournament, teamId?: string) {
+  if (!teamId) return;
+  t.rounds[0] ??= [];
+  const already = t.rounds[0].some((m) => m.a === teamId || m.b === teamId);
+  if (already) return;
+  for (const m of t.rounds[0]) {
+    if (!m.a) { m.a = teamId; clearRoundsFrom(t, 0); buildNextRoundFromSync(t, 0); return; }
+    if (!m.b) { m.b = teamId; clearRoundsFrom(t, 0); buildNextRoundFromSync(t, 0); return; }
+  }
+  t.rounds[0].push({ a: teamId, b: undefined, reports: {} });
+  clearRoundsFrom(t, 0);
+  buildNextRoundFromSync(t, 0);
 }
 
 export default function Lobby() {
@@ -179,11 +264,15 @@ export default function Lobby() {
       pending: [...t.pending],
       rounds: t.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
       coHosts: [...coHosts],
+      teams: [...(t.teams || [])].map(tm => ({ ...tm, memberIds: [...tm.memberIds] })),
+      settings: normalizeSettings(t.settings),
+      groupStage: t.groupStage ? { groups: t.groupStage.groups.map(g => [...g]) } : undefined,
       v: t.v, // carry version through
     };
     const first = structuredClone(base);
     try {
       await mut(first);
+      reconcileTeams(first);
       const saved = await saveTournamentRemote(first);
       setT(saved); pollRef.current?.bump(); bumpAlerts();
     } catch {
@@ -196,9 +285,13 @@ export default function Lobby() {
           pending: [...latest.pending],
           rounds: latest.rounds.map(rr => rr.map(m => ({ ...m, reports: { ...(m.reports || {}) } }))),
           coHosts: [...(latest.coHosts ?? [])],
+          teams: [...(latest.teams || [])].map(tm => ({ ...tm, memberIds: [...tm.memberIds] })),
+          settings: normalizeSettings(latest.settings),
+          groupStage: latest.groupStage ? { groups: latest.groupStage.groups.map(g => [...g]) } : undefined,
           v: latest.v,
         };
         await mut(second);
+        reconcileTeams(second);
         const saved = await saveTournamentRemote(second);
         setT(saved); pollRef.current?.bump(); bumpAlerts();
       } catch {
@@ -220,15 +313,6 @@ export default function Lobby() {
       x.players = x.players.filter(p => p.id !== me.id);
       x.pending = x.pending.filter(p => p.id !== me.id);
       x.coHosts = (x.coHosts ?? []).filter(id => id !== me.id);
-      x.rounds = x.rounds.map(round =>
-        round.map(m => ({
-          ...m,
-          a: m.a === me.id ? undefined : m.a,
-          b: m.b === me.id ? undefined : m.b,
-          winner: m.winner === me.id ? undefined : m.winner,
-          reports: Object.fromEntries(Object.entries(m.reports || {}).filter(([k]) => k !== me.id)),
-        })),
-      );
     });
     r.push('/'); r.refresh();
   }
@@ -270,38 +354,36 @@ export default function Lobby() {
     if (idx < 0) return;
     const p = x.pending[idx];
     x.pending.splice(idx, 1);
+    if (!x.players.some(pp => pp.id === p.id)) x.players.push(p);
+
+    const settings = normalizeSettings(x.settings);
+    x.settings = settings;
+    x.teams = mergeTeams(x.players, settings, x.teams);
+
     if (x.status === 'active') {
-      const r0 = x.rounds[0] || [];
-      let placed = false;
-      for (const m of r0) {
-        if (!m.a) { m.a = p.id; m.reports ??= {}; placed = true; break; }
-        if (!m.b) { m.b = p.id; m.reports ??= {}; placed = true; break; }
-      }
-      if (!placed) {
-        r0.push({ a: p.id, b: undefined, reports: {} });
-        x.rounds[0] = r0;
-      }
-      buildNextRoundFromSync(x, 0);
-    } else {
-      if (!x.players.some(pp => pp.id === p.id)) x.players.push(p);
+      const teamId = (x.teams || []).find((tm) => tm.memberIds.includes(p.id))?.id;
+      seatTeamIntoFirstRound(x, teamId);
     }
   }
   function declineLocal(x: Tournament, playerId: string) {
     x.pending = x.pending.filter(p => p.id !== playerId);
   }
   function addLateLocal(x: Tournament, p: {id:string; name:string}) {
+    if (!x.players.find(pp => pp.id === p.id)) x.players.push(p);
+
+    const settings = normalizeSettings(x.settings);
+    x.settings = settings;
+    x.teams = mergeTeams(x.players, settings, x.teams);
+
     if (x.status === 'active') {
-      const r0 = x.rounds[0] || [];
-      if (!x.players.find(pp => pp.id === p.id)) x.players.push(p);
-      let placed = false;
-      for (const m of r0) {
-        if (!m.a) { m.a = p.id; m.reports ??= {}; placed = true; break; }
-        if (!m.b) { m.b = p.id; m.reports ??= {}; placed = true; break; }
+      const teamId = (x.teams || []).find((tm) => tm.memberIds.includes(p.id))?.id;
+      if (settings.format === 'groups' && x.groupStage?.groups) {
+        const target = x.groupStage.groups.reduce((best, g, idx) =>
+          g.length < best[0] ? [g.length, idx] : best,
+        [Number.MAX_SAFE_INTEGER, 0] as [number, number]);
+        x.groupStage.groups[target[1]].push(teamId || p.id);
       }
-      if (!placed) { r0.push({ a: p.id, b: undefined, reports: {} }); x.rounds[0] = r0; }
-      buildNextRoundFromSync(x, 0);
-    } else {
-      if (!x.players.find(pp => pp.id === p.id)) x.players.push(p);
+      seatTeamIntoFirstRound(x, teamId);
     }
   }
   function submitReportLocal(
@@ -315,10 +397,21 @@ export default function Lobby() {
     if (!m) return;
     m.reports ??= {};
     m.reports[playerId] = result;
+    const teams = x.teams || [];
+    const verdictForTeam = (teamId?: string) => {
+      if (!teamId) return undefined;
+      const team = teams.find((tm) => tm.id === teamId);
+      if (!team) return undefined;
+      for (const pid of team.memberIds) {
+        const vote = m.reports?.[pid];
+        if (vote) return vote;
+      }
+      return undefined;
+    };
     if (m.a && !m.b) m.winner = m.a;
     if (!m.a && m.b) m.winner = m.b;
     if (m.a && m.b) {
-      const ra = m.reports[m.a], rb = m.reports[m.b];
+      const ra = verdictForTeam(m.a), rb = verdictForTeam(m.b);
       if (ra && rb) {
         if (ra === 'win' && rb === 'loss') m.winner = m.a;
         else if (ra === 'loss' && rb === 'win') m.winner = m.b;
@@ -341,9 +434,32 @@ export default function Lobby() {
     update(x => addLateLocal(x, p));
   }
 
+  const settings = normalizeSettings(t.settings);
+  const teamsForDisplay = t.teams?.length ? t.teams : mergeTeams(t.players, settings, t.teams);
+  const teamName = (teamId?: string) => {
+    if (!teamId) return '—';
+    const team = teamsForDisplay.find((tm) => tm.id === teamId);
+    if (!team) return '??';
+    const names = team.memberIds.map((pid) => t.players.find((p) => p.id === pid)?.name || '??');
+    return team.name || names.join(' / ');
+  };
+  const teamHasPlayer = (teamId?: string, playerId?: string) => {
+    if (!teamId || !playerId) return false;
+    const team = teamsForDisplay.find((tm) => tm.id === teamId);
+    return !!team?.memberIds.includes(playerId);
+  };
+  const formatLabel = (() => {
+    switch (settings.format) {
+      case 'doubles': return 'Doubles (2v2)';
+      case 'groups': return 'Groups / Pools';
+      case 'singles': return 'Singles';
+      default: return 'Single elimination';
+    }
+  })();
+  const myTeams = me ? teamsForDisplay.filter((tm) => tm.memberIds.includes(me.id)).map((tm) => tm.id) : [];
   const lastRound = t.rounds.at(-1);
   const finalWinnerId = lastRound?.[0]?.winner;
-  const iAmChampion = t.status === 'completed' && finalWinnerId === me?.id;
+  const iAmChampion = t.status === 'completed' && finalWinnerId && myTeams.includes(finalWinnerId);
   const lock = { opacity: busy ? .6 : 1, pointerEvents: busy ? 'none' as const : 'auto' };
 
   const playersScrollable = t.players.length > 5;
@@ -358,7 +474,7 @@ export default function Lobby() {
           <div>
             <h1 style={h1}>{t.name}</h1>
             <div style={subhead}>
-              {t.code ? <>Private code: <b>{t.code}</b></> : 'Public tournament'} • {t.players.length} {t.players.length === 1 ? 'player' : 'players'}
+              {t.code ? <>Private code: <b>{t.code}</b></> : 'Public tournament'} • {t.players.length} {t.players.length === 1 ? 'player' : 'players'} • {formatLabel}
             </div>
             {iAmChampion && <div style={champ}>🎉 <b>Congratulations!</b> You won the tournament!</div>}
           </div>
@@ -369,11 +485,11 @@ export default function Lobby() {
         </header>
 
         <section style={notice}>
-          <b>How it works:</b> Tap <i>Start</i> to seed a single-elimination bracket.
+          <b>How it works:</b> Tap <i>Start</i> to seed the bracket using the selected format.
           Players can self-report (<i>I won / I lost</i>). When all matches in a round have winners,
           the next round is created automatically until a champion is decided.
           Hosts can override winners with the <i>A wins / B wins / Clear</i> buttons.
-          Drag player pills in <b>Round 1</b> to rearrange matchups.
+          Drag player pills in <b>any round</b> to fix placements or swap matchups.
         </section>
 
         {/* Players */}
@@ -474,6 +590,36 @@ export default function Lobby() {
               )}
             </div>
 
+            <div style={{ display:'grid', gap:6, marginBottom:12 }}>
+              <label style={{ display:'grid', gap:4 }}>
+                <span style={{ fontSize:13, opacity:.8 }}>Format</span>
+                <select
+                  value={settings.format}
+                  onChange={(e) => {
+                    const fmt = e.target.value as TournamentSettings['format'];
+                    update(x => {
+                      if (x.status !== 'setup') return;
+                      const nextSettings = normalizeSettings({ ...x.settings, format: fmt, teamSize: fmt === 'doubles' ? 2 : 1 });
+                      x.settings = nextSettings;
+                      x.teams = mergeTeams(x.players, nextSettings, x.teams);
+                      x.rounds = [];
+                      x.groupStage = fmt === 'groups' ? { groups: buildGroups(x.teams || [], nextSettings) } : undefined;
+                    });
+                  }}
+                  disabled={busy || t.status !== 'setup'}
+                  style={input}
+                >
+                  <option value="single_elim">Standard bracket (single elimination)</option>
+                  <option value="singles">Singles (1v1 flexible)</option>
+                  <option value="doubles">Doubles (2v2 teams)</option>
+                  <option value="groups">Groups / Pools</option>
+                </select>
+              </label>
+              <div style={{ fontSize:12, opacity:.7 }}>
+                Team size: {settings.teamSize} • Bracket: {settings.bracketStyle.replace('_',' ')}
+              </div>
+            </div>
+
             <div style={{ marginTop: 8 }}>
               <h4 style={{ margin: '6px 0' }}>Pending approvals ({t.pending?.length || 0})</h4>
               {(t.pending?.length || 0) === 0 ? (
@@ -495,6 +641,31 @@ export default function Lobby() {
           </div>
         )}
 
+        {settings.format === 'groups' && t.groupStage?.groups && (
+          <section style={card}>
+            <h3 style={{ marginTop: 0 }}>Groups / Pools</h3>
+            <div style={{ display:'grid', gap:10, gridTemplateColumns:'repeat(auto-fit, minmax(220px, 1fr))' }}>
+              {t.groupStage.groups.map((group, idx) => (
+                <div key={idx} style={{ background:'#0f172a', borderRadius:10, padding:10, border:'1px solid rgba(255,255,255,0.1)' }}>
+                  <div style={{ fontWeight:700, marginBottom:6 }}>Group {String.fromCharCode(65 + idx)}</div>
+                  {group.length === 0 ? (
+                    <div style={{ opacity:.7, fontSize:13 }}>No teams yet.</div>
+                  ) : (
+                    <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:6 }}>
+                      {group.map(teamId => (
+                        <li key={teamId} style={{ padding:'6px 8px', borderRadius:8, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.08)' }}>
+                          {teamName(teamId)}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div style={{ opacity:.7, fontSize:12, marginTop:8 }}>Late arrivals are added to the smallest group and also appear in the elimination bracket.</div>
+          </section>
+        )}
+
         {/* Bracket */}
         {t.rounds.length > 0 && (
           <div style={card}>
@@ -504,14 +675,14 @@ export default function Lobby() {
                 <div key={rIdx} style={{ display: 'grid', gap: 8 }}>
                   <div style={{ opacity: .8, fontSize: 13 }}>Round {rIdx + 1}</div>
                   {round.map((m, i) => {
-                    const aName = t.players.find(p => p.id === m.a)?.name || (m.a ? '??' : 'BYE');
-                    const bName = t.players.find(p => p.id === m.b)?.name || (m.b ? '??' : 'BYE');
+                    const aName = teamName(m.a) || (m.a ? '??' : 'BYE');
+                    const bName = teamName(m.b) || (m.b ? '??' : 'BYE');
                     const w = m.winner;
-                    const iPlay = me && (m.a === me?.id || m.b === me?.id);
+                    const iPlay = me && (teamHasPlayer(m.a, me?.id) || teamHasPlayer(m.b, me?.id));
                     const canReport = !canHost && iPlay && !w && t.status === 'active';
 
-                    // Drag & drop Round 1 seats
-                    type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; pid?: string };
+                    // Drag & drop seats across any round
+                    type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; teamId?: string };
                     function onDragStart(ev: React.DragEvent, info: DragInfo) {
                       ev.dataTransfer.setData('application/json', JSON.stringify(info));
                       ev.dataTransfer.effectAllowed = 'move';
@@ -524,11 +695,11 @@ export default function Lobby() {
                       let src: DragInfo;
                       try { src = JSON.parse(raw); } catch { return; }
                       if (src.type !== 'seat' || target.type !== 'seat') return;
-                      if (t.status !== 'active' || src.round !== 0 || target.round !== 0) return;
+                      if (t.status === 'completed') return;
 
                       update(x => {
-                        const mSrc = x.rounds?.[0]?.[src.match];
-                        const mTgt = x.rounds?.[0]?.[target.match];
+                        const mSrc = x.rounds?.[src.round]?.[src.match];
+                        const mTgt = x.rounds?.[target.round]?.[target.match];
                         if (!mSrc || !mTgt) return;
 
                         const clear = (mm: Match) => { mm.winner = undefined; mm.reports = {}; };
@@ -539,22 +710,22 @@ export default function Lobby() {
                         (mSrc as any)[src.side] = valTgt;
                         (mTgt as any)[target.side] = valSrc;
 
-                        x.rounds = [x.rounds[0]];
+                        clearRoundsFrom(x, Math.min(src.round, target.round));
                         buildNextRoundFromSync(x, 0);
                       });
                     }
-                    function pill(pid?: string, round?: number, match?: number, side?: 'a' | 'b') {
-                      const name = pid ? (t.players.find(p => p.id === pid)?.name || '??') : '—';
-                      const draggable = canHost && t.status === 'active' && round === 0;
-                      const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, pid };
+                    function pill(teamId?: string, round?: number, match?: number, side?: 'a' | 'b') {
+                      const name = teamName(teamId);
+                      const draggable = canHost && t.status !== 'completed';
+                      const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, teamId };
                       return (
                         <span
                           draggable={draggable}
                           onDragStart={e => onDragStart(e, info)}
                           onDragOver={onDragOver}
                           onDrop={e => onDrop(e, info)}
-                          style={{ ...pillStyle, opacity: pid ? 1 : .6, cursor: draggable ? 'grab' : 'default' }}
-                          title={draggable ? 'Drag to swap seats in Round 1' : undefined}
+                          style={{ ...pillStyle, opacity: teamId ? 1 : .6, cursor: draggable ? 'grab' : 'default' }}
+                          title={draggable ? 'Drag to move this team' : undefined}
                         >
                           {name}
                         </span>
@@ -588,7 +759,7 @@ export default function Lobby() {
                               title={`Ping ${bName}`}
                             >Ping B 🔔</button>
 
-                            {w && <span style={{ fontSize: 12, opacity: .8 }}>Winner: {t.players.find(p => p.id === w)?.name}</span>}
+                            {w && <span style={{ fontSize: 12, opacity: .8 }}>Winner: {teamName(w)}</span>}
                           </div>
                         )}
 
@@ -600,7 +771,7 @@ export default function Lobby() {
                         )}
                         {!canHost && w && (
                           <div style={{ fontSize: 12, opacity: .8 }}>
-                            Winner: {t.players.find(p => p.id === w)?.name}
+                            Winner: {teamName(w)}
                           </div>
                         )}
                       </div>

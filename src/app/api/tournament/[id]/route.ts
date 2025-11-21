@@ -46,6 +46,14 @@ async function bumpV(env: Env, id: string) {
 
 /* ---------- types + coercion ---------- */
 type Player = { id: string; name: string };
+type TournamentFormat = "singles" | "doubles" | "groups" | "single_elim";
+type TournamentSettings = {
+  format: TournamentFormat;
+  teamSize: number;
+  bracketStyle: "single_elim";
+  groups?: { count: number; size: number };
+};
+type Team = { id: string; name: string; memberIds: string[] };
 type Match = { a?: string; b?: string; winner?: string; reports?: Record<string,"win"|"loss"> };
 type Tournament = {
   id: string; name: string; code?: string; hostId: string;
@@ -54,6 +62,9 @@ type Tournament = {
   createdAt: number; updatedAt?: number;
   coHosts?: string[];
   v?: number; // header echo
+  teams?: Team[];
+  settings?: TournamentSettings;
+  groupStage?: { groups: string[][] };
 };
 
 function coerceTournament(raw: any): Tournament | null {
@@ -70,6 +81,20 @@ function coerceTournament(raw: any): Tournament | null {
         })) : [])
       : [];
     const status = (raw.status==="setup"||raw.status==="active"||raw.status==="completed") ? raw.status : "setup";
+    const settings: TournamentSettings = {
+      format: (raw.settings?.format as TournamentFormat) || "single_elim",
+      teamSize: Number(raw.settings?.teamSize ?? (raw.settings?.format === "doubles" ? 2 : 1)),
+      bracketStyle: (raw.settings?.bracketStyle as TournamentSettings["bracketStyle"]) || "single_elim",
+      groups: raw.settings?.groups,
+    };
+    const teams: Team[] = Array.isArray(raw.teams)
+      ? raw.teams.map((tm:any) => ({
+          id: String(tm?.id ?? crypto.randomUUID()),
+          name: String(tm?.name ?? "Team"),
+          memberIds: Array.isArray(tm?.memberIds) ? tm.memberIds.map(String) : [],
+        }))
+      : [];
+
     return {
       id:String(raw.id??""),
       name:String(raw.name??"Untitled"),
@@ -79,6 +104,9 @@ function coerceTournament(raw: any): Tournament | null {
       createdAt:Number(raw.createdAt ?? Date.now()),
       updatedAt:Number(raw.updatedAt ?? Date.now()),
       coHosts: Array.isArray(raw.coHosts) ? raw.coHosts.map(String) : [],
+      teams,
+      settings,
+      groupStage: raw.groupStage?.groups ? { groups: raw.groupStage.groups.map((g:any)=>Array.isArray(g)?g.map(String):[]) } : undefined,
     };
   } catch { return null; }
 }

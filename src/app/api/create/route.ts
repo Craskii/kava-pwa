@@ -16,11 +16,20 @@ type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
 type Player = { id: string; name: string };
 type Report = "win" | "loss" | undefined;
+type TournamentFormat = "singles" | "doubles" | "groups" | "single_elim";
+type TournamentSettings = {
+  format: TournamentFormat;
+  teamSize: number;
+  bracketStyle: "single_elim";
+  groups?: { count: number; size: number };
+};
+type Team = { id: string; name: string; memberIds: string[] };
 type Match = { a?: string; b?: string; winner?: string; reports?: Record<string, Report> };
 type TournamentStatus = "setup" | "active" | "completed";
 type Tournament = {
   id: string; name: string; code?: string; hostId: string;
   status: TournamentStatus; createdAt: number; players: Player[]; pending: Player[]; queue: string[]; rounds: Match[][];
+  teams?: Team[]; settings?: TournamentSettings; groupStage?: { groups: string[][] };
 };
 type Table = { a?: string; b?: string };
 type ListGame = {
@@ -28,7 +37,7 @@ type ListGame = {
   createdAt: number; tables: Table[]; players: Player[]; queue: string[];
 };
 
-type CreateBody = { name?: string; hostId?: string; type?: "tournament" | "list" };
+type CreateBody = { name?: string; hostId?: string; type?: "tournament" | "list"; settings?: TournamentSettings };
 
 const TKEY = (id: string) => `t:${id}`;
 const TVER = (id: string) => `tv:${id}`;
@@ -68,6 +77,7 @@ export async function POST(req: Request) {
   const name = (body.name ?? "Untitled").toString();
   const hostId = (body.hostId ?? crypto.randomUUID()).toString();
   const type: "tournament" | "list" = body.type ?? "tournament";
+  const incomingSettings = body.settings;
 
   const id = crypto.randomUUID();
   const code = await uniqueNumericCode(env);
@@ -88,6 +98,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, id, code, hostId, type: "list" });
   }
 
+  const settings: TournamentSettings = {
+    format: incomingSettings?.format || "single_elim",
+    teamSize: incomingSettings?.teamSize || (incomingSettings?.format === "doubles" ? 2 : 1),
+    bracketStyle: incomingSettings?.bracketStyle || "single_elim",
+    groups: incomingSettings?.groups,
+  };
+
   const tournament: Tournament = {
     id, code, name, hostId,
     status: "setup",
@@ -96,6 +113,8 @@ export async function POST(req: Request) {
     pending: [],
     queue: [],
     rounds: [],
+    teams: [],
+    settings,
   };
 
   await env.KAVA_TOURNAMENTS.put(TKEY(id), JSON.stringify(tournament));
