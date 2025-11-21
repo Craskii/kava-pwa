@@ -683,21 +683,29 @@ export default function Lobby() {
 
                     // Drag & drop seats across any round
                     type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; teamId?: string };
+                    const allowDrag = canHost && t.status !== 'completed';
                     function onDragStart(ev: React.DragEvent, info: DragInfo) {
+                      if (!allowDrag) return;
                       ev.dataTransfer.setData('application/json', JSON.stringify(info));
                       ev.dataTransfer.effectAllowed = 'move';
                     }
-                    function onDragOver(ev: React.DragEvent) { ev.preventDefault(); }
-                    function onDrop(ev: React.DragEvent, target: DragInfo) {
+                    function onDragOver(ev: React.DragEvent) {
+                      if (!allowDrag) return;
                       ev.preventDefault();
+                    }
+                    function parseDrag(ev: React.DragEvent): DragInfo | null {
                       const raw = ev.dataTransfer.getData('application/json');
-                      if (!raw) return;
-                      let src: DragInfo;
-                      try { src = JSON.parse(raw); } catch { return; }
-                      if (src.type !== 'seat' || target.type !== 'seat') return;
-                      if (t.status === 'completed') return;
-
-                      update(x => {
+                      if (!raw) return null;
+                      try {
+                        const parsed = JSON.parse(raw);
+                        if (parsed?.type === 'seat') return parsed as DragInfo;
+                      } catch {
+                        return null;
+                      }
+                      return null;
+                    }
+                    function swapSeats(src: DragInfo, target: DragInfo) {
+                      update((x) => {
                         const mSrc = x.rounds?.[src.round]?.[src.match];
                         const mTgt = x.rounds?.[target.round]?.[target.match];
                         if (!mSrc || !mTgt) return;
@@ -714,18 +722,35 @@ export default function Lobby() {
                         buildNextRoundFromSync(x, 0);
                       });
                     }
+                    function onDrop(ev: React.DragEvent, target: DragInfo) {
+                      if (!allowDrag) return;
+                      ev.preventDefault();
+                      const src = parseDrag(ev);
+                      if (!src) return;
+                      swapSeats(src, target);
+                    }
+                    function onDropIntoMatch(ev: React.DragEvent, roundIdx: number, matchIdx: number) {
+                      if (!allowDrag) return;
+                      ev.preventDefault();
+                      const src = parseDrag(ev);
+                      if (!src) return;
+
+                      const m = t.rounds?.[roundIdx]?.[matchIdx];
+                      if (!m) return;
+                      const side: 'a' | 'b' = !m.a ? 'a' : !m.b ? 'b' : 'a';
+                      swapSeats(src, { type: 'seat', round: roundIdx, match: matchIdx, side });
+                    }
                     function pill(teamId?: string, round?: number, match?: number, side?: 'a' | 'b') {
                       const name = teamName(teamId);
-                      const draggable = canHost && t.status !== 'completed';
                       const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, teamId };
                       return (
                         <span
-                          draggable={draggable}
+                          draggable={allowDrag}
                           onDragStart={e => onDragStart(e, info)}
                           onDragOver={onDragOver}
                           onDrop={e => onDrop(e, info)}
-                          style={{ ...pillStyle, opacity: teamId ? 1 : .6, cursor: draggable ? 'grab' : 'default' }}
-                          title={draggable ? 'Drag to move this team' : undefined}
+                          style={{ ...pillStyle, opacity: teamId ? 1 : .6, cursor: allowDrag ? 'grab' : 'default' }}
+                          title={allowDrag ? 'Drag to move this team' : undefined}
                         >
                           {name}
                         </span>
@@ -733,7 +758,12 @@ export default function Lobby() {
                     }
 
                     return (
-                      <div key={i} style={{ background: '#111', borderRadius: 10, padding: '10px 12px', display: 'grid', gap: 8 }}>
+                      <div
+                        key={i}
+                        style={{ background: '#111', borderRadius: 10, padding: '10px 12px', display: 'grid', gap: 8 }}
+                        onDragOver={onDragOver}
+                        onDrop={(ev) => onDropIntoMatch(ev, rIdx, i)}
+                      >
                         <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
                           {pill(m.a, rIdx, i, 'a')}
                           <span style={{ opacity:.7 }}>vs</span>
