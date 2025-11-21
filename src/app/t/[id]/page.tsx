@@ -16,6 +16,7 @@ import {
   getTournamentRemote,
   TournamentSettings,
   Team,
+  GroupRecord,
 } from '@/lib/storage';
 import { startAdaptivePoll } from '@/lib/poll';
 
@@ -82,9 +83,12 @@ function seedLocal(t: Tournament): Tournament {
   const settings = normalizeSettings(t.settings);
   const teams = mergeTeams(t.players, settings, t.teams);
   const seededGroups = settings.format === 'groups' ? buildGroups(teams, settings) : undefined;
+  const seededRecords = seededGroups
+    ? Object.fromEntries(seededGroups.flat().map((id) => [id, { points: 0, wins: 0, losses: 0, played: 0 }])) as Record<string, GroupRecord>
+    : undefined;
   const ids =
     settings.format === 'groups'
-      ? (seededGroups?.flat() || [])
+      ? buildSeedsFromGroups(seededGroups || [], seededRecords || {}, teams, settings.groups?.advancement || 'points')
       : shuffle(teams.map((tm) => tm.id));
   const first: Match[] = [];
   for (let i = 0; i < ids.length; i += 2) {
@@ -97,7 +101,7 @@ function seedLocal(t: Tournament): Tournament {
     teams,
     rounds: [first],
     status: 'active',
-    groupStage: seededGroups ? { groups: seededGroups } : undefined,
+    groupStage: seededGroups ? { groups: seededGroups, records: seededRecords } : undefined,
   };
   buildNextRoundFromSync(seeded, 0);
   return seeded;
@@ -113,6 +117,75 @@ function buildGroups(teams: Team[], settings: TournamentSettings): string[][] {
     groups[target[1]].push(tm.id);
   });
   return groups;
+}
+function ensureGroupStage(t: Tournament, settings: TournamentSettings) {
+  if (settings.format !== 'groups') { t.groupStage = undefined; return undefined; }
+  const baseGroups = t.groupStage?.groups?.length ? t.groupStage.groups : buildGroups(t.teams || [], settings);
+  const records: Record<string, GroupRecord> = { ...(t.groupStage?.records || {}) };
+  baseGroups.flat().forEach((id) => {
+    if (!records[id]) records[id] = { points: 0, wins: 0, losses: 0, played: 0 };
+  });
+  t.groupStage = { groups: baseGroups, records };
+  return t.groupStage;
+}
+function rankGroupMembers(
+  groupIds: string[],
+  records: Record<string, GroupRecord>,
+  teams: Team[],
+  advancement: 'points' | 'wins'
+) {
+  const nm = (id?: string) => teams.find((tm) => tm.id === id)?.name || '';
+  return [...groupIds].sort((a, b) => {
+    const ra = records[a] || { points: 0, wins: 0, losses: 0, played: 0 };
+    const rb = records[b] || { points: 0, wins: 0, losses: 0, played: 0 };
+    if (advancement === 'wins') {
+      if (ra.wins !== rb.wins) return rb.wins - ra.wins;
+    } else if (ra.points !== rb.points) {
+      return rb.points - ra.points;
+    }
+    if (ra.wins !== rb.wins) return rb.wins - ra.wins;
+    if (ra.losses !== rb.losses) return ra.losses - rb.losses;
+    return nm(a).localeCompare(nm(b));
+  });
+}
+function buildSeedsFromGroups(
+  groups: string[][],
+  records: Record<string, GroupRecord>,
+  teams: Team[],
+  advancement: 'points' | 'wins'
+) {
+  const ranked = groups.map((g) => rankGroupMembers(g, records, teams, advancement));
+  const seeds: string[] = [];
+  for (let i = 0; i < ranked.length; i += 2) {
+    const gA = ranked[i];
+    const gB = ranked[i + 1];
+    if (gA?.length) {
+      if (gA[0]) seeds.push(gA[0]);
+      if (gB?.[1]) seeds.push(gB[1]);
+      if (gB?.[0]) seeds.push(gB[0]);
+      if (gA[1]) seeds.push(gA[1]);
+    } else if (gB?.length) {
+      if (gB[0]) seeds.push(gB[0]);
+      if (gB[1]) seeds.push(gB[1]);
+    }
+  }
+  if (ranked.length === 1) seeds.push(...ranked[0].slice(1));
+  return seeds.filter(Boolean);
+}
+function rebuildBracketFromGroups(t: Tournament, settings: TournamentSettings) {
+  const stage = ensureGroupStage(t, settings);
+  if (!stage) return;
+  const seeds = buildSeedsFromGroups(stage.groups, stage.records || {}, t.teams || [], settings.groups?.advancement || 'points');
+  if (!seeds.length) return;
+  const first: Match[] = [];
+  for (let i = 0; i < seeds.length; i += 2) {
+    const a = seeds[i], b = seeds[i + 1];
+    const nm = normalizeMatch({ a, b, reports: {} });
+    if (nm) first.push(nm);
+  }
+  t.rounds[0] = first;
+  clearRoundsFrom(t, 0);
+  buildNextRoundFromSync(t, 0);
 }
 function clearRoundsFrom(t: Tournament, roundIndex: number) {
   for (let r = roundIndex; r < t.rounds.length; r++) {
@@ -148,9 +221,16 @@ function reconcileTeams(t: Tournament) {
   const valid = new Set((t.teams || []).map((tm) => tm.id));
   if (settings.format === 'groups') {
     const safeGroups = t.groupStage?.groups?.map(g => g.filter(id => valid.has(id)));
-    t.groupStage = { groups: safeGroups && safeGroups.length ? safeGroups : buildGroups(t.teams || [], settings) };
+    t.groupStage = {
+      groups: safeGroups && safeGroups.length ? safeGroups : buildGroups(t.teams || [], settings),
+      records: { ...(t.groupStage?.records || {}) },
+    };
+    ensureGroupStage(t, settings);
   } else {
     t.groupStage = undefined;
+  }
+  if (settings.format === 'groups' && (!t.rounds.length || t.status === 'setup')) {
+    rebuildBracketFromGroups(t, settings);
   }
   t.rounds = (t.rounds || []).map((round) =>
     round
@@ -290,7 +370,7 @@ export default function Lobby() {
       coHosts: [...coHosts],
       teams: [...(t.teams || [])].map(tm => ({ ...tm, memberIds: [...tm.memberIds] })),
       settings: normalizeSettings(t.settings),
-      groupStage: t.groupStage ? { groups: t.groupStage.groups.map(g => [...g]) } : undefined,
+      groupStage: t.groupStage ? { groups: t.groupStage.groups.map(g => [...g]), records: { ...(t.groupStage.records || {}) } } : undefined,
       v: t.v, // carry version through
     };
     const first = structuredClone(base);
@@ -311,7 +391,7 @@ export default function Lobby() {
           coHosts: [...(latest.coHosts ?? [])],
           teams: [...(latest.teams || [])].map(tm => ({ ...tm, memberIds: [...tm.memberIds] })),
           settings: normalizeSettings(latest.settings),
-          groupStage: latest.groupStage ? { groups: latest.groupStage.groups.map(g => [...g]) } : undefined,
+          groupStage: latest.groupStage ? { groups: latest.groupStage.groups.map(g => [...g]), records: { ...(latest.groupStage.records || {}) } } : undefined,
           v: latest.v,
         };
         await mut(second);
@@ -402,10 +482,17 @@ export default function Lobby() {
     if (x.status === 'active') {
       const teamId = (x.teams || []).find((tm) => tm.memberIds.includes(p.id))?.id;
       if (settings.format === 'groups' && x.groupStage?.groups) {
+        ensureGroupStage(x, settings);
         const target = x.groupStage.groups.reduce((best, g, idx) =>
           g.length < best[0] ? [g.length, idx] : best,
         [Number.MAX_SAFE_INTEGER, 0] as [number, number]);
         x.groupStage.groups[target[1]].push(teamId || p.id);
+        if (teamId || p.id) {
+          const key = teamId || p.id;
+          x.groupStage.records ??= {};
+          x.groupStage.records[key] ??= { points: 0, wins: 0, losses: 0, played: 0 };
+        }
+        rebuildBracketFromGroups(x, settings);
       }
       seatTeamIntoFirstRound(x, teamId);
     }
@@ -473,6 +560,31 @@ export default function Lobby() {
     const team = teamsForDisplay.find((tm) => tm.id === teamId);
     return !!team?.memberIds.includes(playerId);
   };
+  const groupStage = useMemo(() => {
+    if (settings.format !== 'groups') return null;
+    const groups = t.groupStage?.groups?.length ? t.groupStage.groups : buildGroups(teamsForDisplay, settings);
+    const records: Record<string, GroupRecord> = { ...(t.groupStage?.records || {}) };
+    groups.flat().forEach((id) => {
+      if (!records[id]) records[id] = { points: 0, wins: 0, losses: 0, played: 0 };
+    });
+    return { groups, records };
+  }, [settings.format, settings.groups?.advancement, t.groupStage, teamsForDisplay]);
+  const rankedGroups = useMemo(() => {
+    if (!groupStage) return [] as string[][];
+    return groupStage.groups.map((g) => rankGroupMembers(g, groupStage.records, teamsForDisplay, settings.groups?.advancement || 'points'));
+  }, [groupStage, teamsForDisplay, settings.groups?.advancement]);
+  function adjustGroupRecord(teamId: string, key: keyof GroupRecord, delta: number) {
+    update((x) => {
+      const nextSettings = normalizeSettings(x.settings);
+      const stage = ensureGroupStage(x, nextSettings);
+      if (!stage?.records?.[teamId]) return;
+      stage.records[teamId][key] = Math.max(0, (stage.records[teamId][key] || 0) + delta);
+      if (key === 'wins' || key === 'losses') {
+        stage.records[teamId].played = Math.max(stage.records[teamId].played, (stage.records[teamId].wins || 0) + (stage.records[teamId].losses || 0));
+      }
+      rebuildBracketFromGroups(x, nextSettings);
+    });
+  }
   const formatLabel = (() => {
     switch (settings.format) {
       case 'doubles': return 'Doubles (2v2)';
@@ -793,147 +905,340 @@ export default function Lobby() {
         {/* Bracket */}
         {t.rounds.length > 0 && (
           <div style={card}>
-            <h3 style={{ marginTop: 0 }}>Bracket</h3>
-            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${t.rounds.length}, minmax(260px, 1fr))`, gap: 12, overflowX: 'auto' }}>
-              {t.rounds.map((round, rIdx) => (
-                <div key={rIdx} style={{ display: 'grid', gap: 8 }}>
-                  <div style={{ opacity: .8, fontSize: 13 }}>Round {rIdx + 1}</div>
-                  {round.map((m, i) => {
-                    const aName = teamName(m.a) || (m.a ? '??' : 'BYE');
-                    const bName = teamName(m.b) || (m.b ? '??' : 'BYE');
-                    const w = m.winner;
-                    const iPlay = me && (teamHasPlayer(m.a, me?.id) || teamHasPlayer(m.b, me?.id));
-                    const canReport = !canHost && iPlay && !w && t.status === 'active';
-
-                    // Drag & drop seats across any round
-                    type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; teamId?: string };
-                    const allowDrag = canHost && t.status !== 'completed';
-                    function onDragStart(ev: React.DragEvent, info: DragInfo) {
-                      if (!allowDrag) return;
-                      ev.dataTransfer.setData('application/json', JSON.stringify(info));
-                      ev.dataTransfer.effectAllowed = 'move';
-                    }
-                    function onDragOver(ev: React.DragEvent) {
-                      if (!allowDrag) return;
-                      ev.preventDefault();
-                    }
-                    function parseDrag(ev: React.DragEvent): DragInfo | null {
-                      const raw = ev.dataTransfer.getData('application/json');
-                      if (!raw) return null;
-                      try {
-                        const parsed = JSON.parse(raw);
-                        if (parsed?.type === 'seat') return parsed as DragInfo;
-                      } catch {
-                        return null;
-                      }
-                      return null;
-                    }
-                    function swapSeats(src: DragInfo, target: DragInfo) {
-                      update((x) => {
-                        const mSrc = x.rounds?.[src.round]?.[src.match];
-                        const mTgt = x.rounds?.[target.round]?.[target.match];
-                        if (!mSrc || !mTgt) return;
-
-                        const clear = (mm: Match) => { mm.winner = undefined; mm.reports = {}; };
-                        clear(mSrc); clear(mTgt);
-
-                        const valSrc = (mSrc as any)[src.side] as string | undefined;
-                        const valTgt = (mTgt as any)[target.side] as string | undefined;
-                        (mSrc as any)[src.side] = valTgt;
-                        (mTgt as any)[target.side] = valSrc;
-
-                        clearRoundsFrom(x, Math.min(src.round, target.round));
-                        buildNextRoundFromSync(x, 0);
-                      });
-                    }
-                    function onDrop(ev: React.DragEvent, target: DragInfo) {
-                      if (!allowDrag) return;
-                      ev.preventDefault();
-                      const src = parseDrag(ev);
-                      if (!src) return;
-                      swapSeats(src, target);
-                    }
-                    function onDropIntoMatch(ev: React.DragEvent, roundIdx: number, matchIdx: number) {
-                      if (!allowDrag) return;
-                      ev.preventDefault();
-                      const src = parseDrag(ev);
-                      if (!src) return;
-
-                      const m = t.rounds?.[roundIdx]?.[matchIdx];
-                      if (!m) return;
-                      const side: 'a' | 'b' = !m.a ? 'a' : !m.b ? 'b' : 'a';
-                      swapSeats(src, { type: 'seat', round: roundIdx, match: matchIdx, side });
-                    }
-                    function pill(teamId?: string, round?: number, match?: number, side?: 'a' | 'b') {
-                      const name = teamName(teamId);
-                      const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, teamId };
-                      return (
-                        <span
-                          draggable={allowDrag}
-                          onDragStart={e => onDragStart(e, info)}
-                          onDragOver={onDragOver}
-                          onDrop={e => onDrop(e, info)}
-                          style={{ ...pillStyle, opacity: teamId ? 1 : .6, cursor: allowDrag ? 'grab' : 'default' }}
-                          title={allowDrag ? 'Drag to move this team' : undefined}
-                        >
-                          {name}
-                        </span>
-                      );
-                    }
-
-                    return (
-                      <div
-                        key={i}
-                        style={{ background: '#111', borderRadius: 10, padding: '10px 12px', display: 'grid', gap: 8 }}
-                        onDragOver={onDragOver}
-                        onDrop={(ev) => onDropIntoMatch(ev, rIdx, i)}
-                      >
-                        <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-                          {pill(m.a, rIdx, i, 'a')}
-                          <span style={{ opacity:.7 }}>vs</span>
-                          {pill(m.b, rIdx, i, 'b')}
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
+              <h3 style={{ marginTop: 0, marginBottom: 6 }}>Bracket</h3>
+              {settings.format === 'groups' && canHost && (
+                <button style={btnMini} onClick={() => update(x => rebuildBracketFromGroups(x, normalizeSettings(x.settings)))} disabled={busy}>
+                  Rebuild from group standings
+                </button>
+              )}
+            </div>
+            {settings.format === 'groups' && groupStage ? (
+              <div style={{ display:'grid', gridTemplateColumns: `minmax(320px, 1fr) repeat(${t.rounds.length}, minmax(260px, 1fr))`, gap:12, overflowX:'auto' }}>
+                <div style={{ display:'grid', gap:10 }}>
+                  <div style={{ opacity:.8, fontSize:13 }}>Group Stage</div>
+                  <div style={{ display:'grid', gap:10 }}>
+                    {rankedGroups.map((group, idx) => (
+                      <div key={idx} style={{ background:'linear-gradient(135deg, #3b0d45, #14061a)', borderRadius:16, padding:12, border:'1px solid rgba(255,255,255,0.08)', boxShadow:'0 12px 24px rgba(0,0,0,0.3)' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
+                          <div style={{ fontWeight:900, letterSpacing:0.5 }}>{groupLabel(idx)}</div>
+                          <span style={{ fontSize:12, opacity:.7 }}>{settings.groups?.advancement === 'wins' ? 'Wins advance' : 'Points advance'}</span>
                         </div>
-
-                        {canHost && t.status !== 'completed' && (
-                          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems:'center' }}>
-                            <button style={w === m.a ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.a)} disabled={busy}>A wins</button>
-                            <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)} disabled={busy}>B wins</button>
-                            <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)} disabled={busy}>Clear</button>
-
-                            <button
-                              style={btnPing}
-                              onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
-                              disabled={busy}
-                              title={`Ping ${aName}`}
-                            >Ping A 🔔</button>
-                            <button
-                              style={btnPing}
-                              onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
-                              disabled={busy}
-                              title={`Ping ${bName}`}
-                            >Ping B 🔔</button>
-
-                            {w && <span style={{ fontSize: 12, opacity: .8 }}>Winner: {teamName(w)}</span>}
-                          </div>
-                        )}
-
-                        {!canHost && canReport && (
-                          <div style={{ display: 'flex', gap: 6 }}>
-                            <button style={btnMini} onClick={() => report(rIdx, i, 'win')} disabled={busy}>I won</button>
-                            <button style={btnMini} onClick={() => report(rIdx, i, 'loss')} disabled={busy}>I lost</button>
-                          </div>
-                        )}
-                        {!canHost && w && (
-                          <div style={{ fontSize: 12, opacity: .8 }}>
-                            Winner: {teamName(w)}
-                          </div>
+                        {group.length === 0 ? (
+                          <div style={{ opacity:.7, fontSize:12 }}>No teams yet.</div>
+                        ) : (
+                          <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
+                            {group.map((teamId, rankIdx) => {
+                              const rec = groupStage.records[teamId] || { points:0, wins:0, losses:0, played:0 };
+                              return (
+                                <li key={teamId} style={{ background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:'8px 10px', display:'grid', gap:6 }}>
+                                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6 }}>
+                                    <div style={{ fontWeight:700 }}>{teamName(teamId)}</div>
+                                    <span style={{ fontSize:11, opacity:.65 }}>#{rankIdx + 1}</span>
+                                  </div>
+                                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6 }}>
+                                    <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                                      <span style={statPill}>Pts {rec.points}</span>
+                                      <span style={statPill}>Wins {rec.wins}</span>
+                                      <span style={statPill}>Losses {rec.losses}</span>
+                                    </div>
+                                    {canHost && (
+                                      <div style={{ display:'flex', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>
+                                        <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'points', 1)} disabled={busy}>+1 pt</button>
+                                        <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'wins', 1)} disabled={busy}>+1 win</button>
+                                        <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'losses', 1)} disabled={busy}>+1 loss</button>
+                                      </div>
+                                    )}
+                                  </div>
+                                </li>
+                              );
+                            })}
+                          </ul>
                         )}
                       </div>
-                    );
-                  })}
+                    ))}
+                  </div>
                 </div>
-              ))}
-            </div>
+
+                {t.rounds.map((round, rIdx) => (
+                  <div key={rIdx} style={{ display: 'grid', gap: 8 }}>
+                    <div style={{ opacity: .8, fontSize: 13 }}>Round {rIdx + 1}</div>
+                    {round.map((m, i) => {
+                      const aName = teamName(m.a) || (m.a ? '??' : 'BYE');
+                      const bName = teamName(m.b) || (m.b ? '??' : 'BYE');
+                      const w = m.winner;
+                      const iPlay = me && (teamHasPlayer(m.a, me?.id) || teamHasPlayer(m.b, me?.id));
+                      const canReport = !canHost && iPlay && !w && t.status === 'active';
+
+                      type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; teamId?: string };
+                      const allowDrag = canHost && t.status !== 'completed';
+                      function onDragStart(ev: React.DragEvent, info: DragInfo) {
+                        if (!allowDrag) return;
+                        ev.dataTransfer.setData('application/json', JSON.stringify(info));
+                        ev.dataTransfer.effectAllowed = 'move';
+                      }
+                      function onDragOver(ev: React.DragEvent) {
+                        if (!allowDrag) return;
+                        ev.preventDefault();
+                      }
+                      function parseDrag(ev: React.DragEvent): DragInfo | null {
+                        const raw = ev.dataTransfer.getData('application/json');
+                        if (!raw) return null;
+                        try {
+                          const parsed = JSON.parse(raw);
+                          if (parsed?.type === 'seat') return parsed as DragInfo;
+                        } catch {
+                          return null;
+                        }
+                        return null;
+                      }
+                      function swapSeats(src: DragInfo, target: DragInfo) {
+                        update((x) => {
+                          const mSrc = x.rounds?.[src.round]?.[src.match];
+                          const mTgt = x.rounds?.[target.round]?.[target.match];
+                          if (!mSrc || !mTgt) return;
+
+                          const clear = (mm: Match) => { mm.winner = undefined; mm.reports = {}; };
+                          clear(mSrc); clear(mTgt);
+
+                          const valSrc = (mSrc as any)[src.side] as string | undefined;
+                          const valTgt = (mTgt as any)[target.side] as string | undefined;
+                          (mSrc as any)[src.side] = valTgt;
+                          (mTgt as any)[target.side] = valSrc;
+
+                          clearRoundsFrom(x, Math.min(src.round, target.round));
+                          buildNextRoundFromSync(x, 0);
+                        });
+                      }
+                      function onDrop(ev: React.DragEvent, target: DragInfo) {
+                        if (!allowDrag) return;
+                        ev.preventDefault();
+                        const src = parseDrag(ev);
+                        if (!src) return;
+                        swapSeats(src, target);
+                      }
+                      function onDropIntoMatch(ev: React.DragEvent, roundIdx: number, matchIdx: number) {
+                        if (!allowDrag) return;
+                        ev.preventDefault();
+                        const src = parseDrag(ev);
+                        if (!src) return;
+
+                        const m = t.rounds?.[roundIdx]?.[matchIdx];
+                        if (!m) return;
+                        const side: 'a' | 'b' = !m.a ? 'a' : !m.b ? 'b' : 'a';
+                        swapSeats(src, { type: 'seat', round: roundIdx, match: matchIdx, side });
+                      }
+                      function pill(teamId?: string, round?: number, match?: number, side?: 'a' | 'b') {
+                        const name = teamName(teamId);
+                        const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, teamId };
+                        return (
+                          <span
+                            draggable={allowDrag}
+                            onDragStart={e => onDragStart(e, info)}
+                            onDragOver={onDragOver}
+                            onDrop={e => onDrop(e, info)}
+                            style={{ ...pillStyle, opacity: teamId ? 1 : .6, cursor: allowDrag ? 'grab' : 'default' }}
+                            title={allowDrag ? 'Drag to move this team' : undefined}
+                          >
+                            {name}
+                          </span>
+                        );
+                      }
+
+                      return (
+                        <div
+                          key={i}
+                          style={{ background: '#111', borderRadius: 10, padding: '10px 12px', display: 'grid', gap: 8 }}
+                          onDragOver={onDragOver}
+                          onDrop={(ev) => onDropIntoMatch(ev, rIdx, i)}
+                        >
+                          <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                            {pill(m.a, rIdx, i, 'a')}
+                            <span style={{ opacity:.7 }}>vs</span>
+                            {pill(m.b, rIdx, i, 'b')}
+                          </div>
+
+                          {canHost && t.status !== 'completed' && (
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems:'center' }}>
+                              <button style={w === m.a ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.a)} disabled={busy}>A wins</button>
+                              <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)} disabled={busy}>B wins</button>
+                              <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)} disabled={busy}>Clear</button>
+
+                              <button
+                                style={btnPing}
+                                onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
+                                disabled={busy}
+                                title={`Ping ${aName}`}
+                              >Ping A 🔔</button>
+                              <button
+                                style={btnPing}
+                                onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
+                                disabled={busy}
+                                title={`Ping ${bName}`}
+                              >Ping B 🔔</button>
+
+                              {w && <span style={{ fontSize: 12, opacity: .8 }}>Winner: {teamName(w)}</span>}
+                            </div>
+                          )}
+
+                          {!canHost && canReport && (
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <button style={btnMini} onClick={() => report(rIdx, i, 'win')} disabled={busy}>I won</button>
+                              <button style={btnMini} onClick={() => report(rIdx, i, 'loss')} disabled={busy}>I lost</button>
+                            </div>
+                          )}
+                          {!canHost && w && (
+                            <div style={{ fontSize: 12, opacity: .8 }}>
+                              Winner: {teamName(w)}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: `repeat(${t.rounds.length}, minmax(260px, 1fr))`, gap: 12, overflowX: 'auto' }}>
+                {t.rounds.map((round, rIdx) => (
+                  <div key={rIdx} style={{ display: 'grid', gap: 8 }}>
+                    <div style={{ opacity: .8, fontSize: 13 }}>Round {rIdx + 1}</div>
+                    {round.map((m, i) => {
+                      const aName = teamName(m.a) || (m.a ? '??' : 'BYE');
+                      const bName = teamName(m.b) || (m.b ? '??' : 'BYE');
+                      const w = m.winner;
+                      const iPlay = me && (teamHasPlayer(m.a, me?.id) || teamHasPlayer(m.b, me?.id));
+                      const canReport = !canHost && iPlay && !w && t.status === 'active';
+
+                      type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; teamId?: string };
+                      const allowDrag = canHost && t.status !== 'completed';
+                      function onDragStart(ev: React.DragEvent, info: DragInfo) {
+                        if (!allowDrag) return;
+                        ev.dataTransfer.setData('application/json', JSON.stringify(info));
+                        ev.dataTransfer.effectAllowed = 'move';
+                      }
+                      function onDragOver(ev: React.DragEvent) {
+                        if (!allowDrag) return;
+                        ev.preventDefault();
+                      }
+                      function parseDrag(ev: React.DragEvent): DragInfo | null {
+                        const raw = ev.dataTransfer.getData('application/json');
+                        if (!raw) return null;
+                        try {
+                          const parsed = JSON.parse(raw);
+                          if (parsed?.type === 'seat') return parsed as DragInfo;
+                        } catch {
+                          return null;
+                        }
+                        return null;
+                      }
+                      function swapSeats(src: DragInfo, target: DragInfo) {
+                        update((x) => {
+                          const mSrc = x.rounds?.[src.round]?.[src.match];
+                          const mTgt = x.rounds?.[target.round]?.[target.match];
+                          if (!mSrc || !mTgt) return;
+
+                          const clear = (mm: Match) => { mm.winner = undefined; mm.reports = {}; };
+                          clear(mSrc); clear(mTgt);
+
+                          const valSrc = (mSrc as any)[src.side] as string | undefined;
+                          const valTgt = (mTgt as any)[target.side] as string | undefined;
+                          (mSrc as any)[src.side] = valTgt;
+                          (mTgt as any)[target.side] = valSrc;
+
+                          clearRoundsFrom(x, Math.min(src.round, target.round));
+                          buildNextRoundFromSync(x, 0);
+                        });
+                      }
+                      function onDrop(ev: React.DragEvent, target: DragInfo) {
+                        if (!allowDrag) return;
+                        ev.preventDefault();
+                        const src = parseDrag(ev);
+                        if (!src) return;
+                        swapSeats(src, target);
+                      }
+                      function onDropIntoMatch(ev: React.DragEvent, roundIdx: number, matchIdx: number) {
+                        if (!allowDrag) return;
+                        ev.preventDefault();
+                        const src = parseDrag(ev);
+                        if (!src) return;
+
+                        const m = t.rounds?.[roundIdx]?.[matchIdx];
+                        if (!m) return;
+                        const side: 'a' | 'b' = !m.a ? 'a' : !m.b ? 'b' : 'a';
+                        swapSeats(src, { type: 'seat', round: roundIdx, match: matchIdx, side });
+                      }
+                      function pill(teamId?: string, round?: number, match?: number, side?: 'a' | 'b') {
+                        const name = teamName(teamId);
+                        const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, teamId };
+                        return (
+                          <span
+                            draggable={allowDrag}
+                            onDragStart={e => onDragStart(e, info)}
+                            onDragOver={onDragOver}
+                            onDrop={e => onDrop(e, info)}
+                            style={{ ...pillStyle, opacity: teamId ? 1 : .6, cursor: allowDrag ? 'grab' : 'default' }}
+                            title={allowDrag ? 'Drag to move this team' : undefined}
+                          >
+                            {name}
+                          </span>
+                        );
+                      }
+
+                      return (
+                        <div
+                          key={i}
+                          style={{ background: '#111', borderRadius: 10, padding: '10px 12px', display: 'grid', gap: 8 }}
+                          onDragOver={onDragOver}
+                          onDrop={(ev) => onDropIntoMatch(ev, rIdx, i)}
+                        >
+                          <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                            {pill(m.a, rIdx, i, 'a')}
+                            <span style={{ opacity:.7 }}>vs</span>
+                            {pill(m.b, rIdx, i, 'b')}
+                          </div>
+
+                          {canHost && t.status !== 'completed' && (
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems:'center' }}>
+                              <button style={w === m.a ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.a)} disabled={busy}>A wins</button>
+                              <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)} disabled={busy}>B wins</button>
+                              <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)} disabled={busy}>Clear</button>
+
+                              <button
+                                style={btnPing}
+                                onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
+                                disabled={busy}
+                                title={`Ping ${aName}`}
+                              >Ping A 🔔</button>
+                              <button
+                                style={btnPing}
+                                onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; })}
+                                disabled={busy}
+                                title={`Ping ${bName}`}
+                              >Ping B 🔔</button>
+
+                              {w && <span style={{ fontSize: 12, opacity: .8 }}>Winner: {teamName(w)}</span>}
+                            </div>
+                          )}
+
+                          {!canHost && canReport && (
+                            <div style={{ display: 'flex', gap: 6 }}>
+                              <button style={btnMini} onClick={() => report(rIdx, i, 'win')} disabled={busy}>I won</button>
+                              <button style={btnMini} onClick={() => report(rIdx, i, 'loss')} disabled={busy}>I lost</button>
+                            </div>
+                          )}
+                          {!canHost && w && (
+                            <div style={{ fontSize: 12, opacity: .8 }}>
+                              Winner: {teamName(w)}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -959,3 +1264,4 @@ const btnActive: React.CSSProperties = { ...btnMini, background: '#0ea5e9', bord
 const btnPing: React.CSSProperties = { ...btnMini, background: 'rgba(14,165,233,0.15)', border: '1px solid rgba(14,165,233,0.45)', color: '#38bdf8' };
 const input: React.CSSProperties = { width: '100%', padding: '12px 14px', borderRadius: 10, border: '1px solid #333', background: '#111', color: '#fff' };
 const pillStyle: React.CSSProperties = { padding:'4px 8px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', minWidth:40, textAlign:'center' };
+const statPill: React.CSSProperties = { padding:'4px 8px', borderRadius: 999, background:'rgba(255,255,255,0.08)', fontSize: 12 };

@@ -59,6 +59,7 @@ type TournamentSettings = {
     losersNext?: boolean;
   };
 };
+type GroupRecord = { points: number; wins: number; losses: number; played: number };
 type Team = { id: string; name: string; memberIds: string[] };
 type Match = { a?: string; b?: string; winner?: string; reports?: Record<string,"win"|"loss"> };
 type Tournament = {
@@ -70,7 +71,7 @@ type Tournament = {
   v?: number; // header echo
   teams?: Team[];
   settings?: TournamentSettings;
-  groupStage?: { groups: string[][] };
+  groupStage?: { groups: string[][]; records?: Record<string, GroupRecord> };
 };
 
 function coerceTournament(raw: any): Tournament | null {
@@ -122,7 +123,19 @@ function coerceTournament(raw: any): Tournament | null {
       coHosts: Array.isArray(raw.coHosts) ? raw.coHosts.map(String) : [],
       teams,
       settings,
-      groupStage: raw.groupStage?.groups ? { groups: raw.groupStage.groups.map((g:any)=>Array.isArray(g)?g.map(String):[]) } : undefined,
+      groupStage: raw.groupStage?.groups
+        ? {
+            groups: raw.groupStage.groups.map((g:any)=>Array.isArray(g)?g.map(String):[]),
+            records: typeof raw.groupStage.records === "object" && raw.groupStage.records
+              ? Object.fromEntries(Object.entries(raw.groupStage.records).map(([k,v]: any) => [String(k), {
+                  points: Number((v as GroupRecord)?.points ?? 0),
+                  wins: Number((v as GroupRecord)?.wins ?? 0),
+                  losses: Number((v as GroupRecord)?.losses ?? 0),
+                  played: Number((v as GroupRecord)?.played ?? 0),
+                }]))
+              : undefined,
+          }
+        : undefined,
     };
   } catch { return null; }
 }
