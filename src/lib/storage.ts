@@ -4,10 +4,41 @@ export type Player = { id: string; name: string };
 export type Report = "win" | "loss" | undefined;
 
 /* ===== Tournaments ===== */
-export type Match = {
+export type TournamentFormat = "singles" | "doubles" | "groups" | "single_elim";
+export type TournamentSettings = {
+  format: TournamentFormat;
+  teamSize: number;
+  bracketStyle: "single_elim";
+  groups?: {
+    count: number;
+    size: number;
+    matchType?: "singles" | "doubles";
+    advancement?: "points" | "wins";
+    losersNext?: boolean;
+  };
+};
+export type Team = { id: string; name: string; memberIds: string[] };
+export type GroupRecord = {
+  points: number;
+  wins: number;
+  losses: number;
+  played: number;
+  gamesWon: number;
+  gamesLost: number;
+};
+export type GroupMatch = {
+  id: string;
+  group: number;
   a?: string;
   b?: string;
+  scoreA?: number;
+  scoreB?: number;
   winner?: string;
+};
+export type Match = {
+  a?: string; // teamId
+  b?: string; // teamId
+  winner?: string; // teamId
   reports?: { [playerId: string]: Report };
 };
 export type TournamentStatus = "setup" | "active" | "completed";
@@ -23,6 +54,9 @@ export type Tournament = {
   rounds: Match[][];
   v?: number;
   coHosts?: string[]; // <-- NEW: can ping & manage players/seeding
+  teams?: Team[];
+  settings?: TournamentSettings;
+  groupStage?: { groups: string[][]; records?: Record<string, GroupRecord>; matches?: GroupMatch[] };
 };
 
 /* ===== Lists ===== */
