@@ -802,6 +802,190 @@ export default function Lobby() {
   const allowGroupDrag = canHost && t.status !== 'completed' && settings.format === 'groups';
   type GroupDragPayload = { type: 'group-seat'; teamId: string; from: number };
 
+  const onGroupDragStart = (ev: React.DragEvent, payload: GroupDragPayload) => {
+    if (!allowGroupDrag) return;
+    ev.dataTransfer.setData('application/json', JSON.stringify(payload));
+    ev.dataTransfer.effectAllowed = 'move';
+  };
+  const parseGroupDrag = (ev: React.DragEvent): GroupDragPayload | null => {
+    const raw = ev.dataTransfer.getData('application/json');
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed?.type === 'group-seat') return parsed as GroupDragPayload;
+    } catch { return null; }
+    return null;
+  };
+  const onGroupDragOver = (ev: React.DragEvent) => { if (allowGroupDrag) ev.preventDefault(); };
+  const onGroupDrop = (ev: React.DragEvent, toGroup: number) => {
+    if (!allowGroupDrag) return;
+    ev.preventDefault();
+    const parsed = parseGroupDrag(ev);
+    if (!parsed) return;
+    moveTeamBetweenGroups(parsed.teamId, parsed.from, toGroup);
+  };
+
+  const renderGroupCard = (idx: number, opts?: { variant?: 'stage' | 'bracket'; showAdd?: boolean; showMatches?: boolean }) => {
+    const variant = opts?.variant || 'stage';
+    const showAdd = opts?.showAdd ?? true;
+    const showMatches = opts?.showMatches ?? true;
+    const group = t.groupStage?.groups?.[idx] || groupStage?.groups?.[idx] || [];
+    const ordered = rankedGroups[idx] || group;
+    const matchesForGroup = (groupStage?.matches || []).filter((m) => m.group === idx);
+    const surface = variant === 'bracket'
+      ? { background:'linear-gradient(135deg, #3b0d45, #14061a)', border:'1px solid rgba(255,255,255,0.08)' }
+      : { background:'linear-gradient(135deg, #111827, #0b1020)', border:'1px solid rgba(56,189,248,0.15)' };
+
+    return (
+      <div
+        key={idx}
+        style={{ ...surface, borderRadius:14, padding:12, boxShadow:'0 10px 25px rgba(0,0,0,0.25)', display:'grid', gap:10 }}
+        onDragOver={onGroupDragOver}
+        onDrop={(ev) => onGroupDrop(ev, idx)}
+      >
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:8 }}>
+          <div>
+            <div style={{ fontWeight:800, letterSpacing:0.5 }}>{groupLabel(idx)}</div>
+            <div style={{ fontSize:12, opacity:.7 }}>{group.length} team{group.length === 1 ? '' : 's'} • Round robin</div>
+          </div>
+          <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
+            <span style={{ fontSize:12, opacity:.7 }}>{settings.groups?.advancement === 'wins' ? 'Winners advance' : 'Points advance'}</span>
+            {canHost && showAdd && (
+              <button
+                style={btnMini}
+                onClick={() => {
+                  const nm = prompt(`Add a player/team directly to ${groupLabel(idx)}?`);
+                  if (!nm) return;
+                  const p = { id: uid(), name: nm.trim() || 'Player' };
+                  update((x) => addLateLocal(x, p, idx));
+                }}
+                disabled={busy}
+              >Add to {groupLabel(idx)}</button>
+            )}
+          </div>
+        </div>
+
+        {ordered.length === 0 ? (
+          <div style={{ opacity:.65, fontSize:13 }}>No teams yet.</div>
+        ) : (
+          <div style={{ display:'grid', gap:6 }}>
+            <div
+              style={{
+                display:'grid',
+                gridTemplateColumns:`1fr repeat(${settings.groups?.advancement === 'wins' ? 4 : 5}, auto)`,
+                gap:6,
+                fontSize:12,
+                opacity:.7
+              }}
+            >
+              <span>Team</span>
+              {settings.groups?.advancement !== 'wins' && <span>Pts</span>}
+              <span>W</span><span>L</span><span>GD</span><span>GW</span>
+            </div>
+            {ordered.map((teamId, rankIdx) => {
+              const rec = groupStage?.records?.[teamId] || { points:0, wins:0, losses:0, played:0, gamesWon:0, gamesLost:0 };
+              const gd = (rec.gamesWon || 0) - (rec.gamesLost || 0);
+              const label = `${groupLabel(idx).split(' ')[1]}${rankIdx + 1}`;
+              return (
+                <div
+                  key={teamId}
+                  draggable={allowGroupDrag}
+                  onDragStart={(ev) => onGroupDragStart(ev, { type:'group-seat', teamId, from: idx })}
+                  style={{
+                    display:'grid',
+                    gridTemplateColumns:`1fr repeat(${settings.groups?.advancement === 'wins' ? 4 : 5}, auto)`,
+                    gap:6,
+                    alignItems:'center',
+                    padding:'6px 8px',
+                    borderRadius:10,
+                    background:'rgba(255,255,255,0.04)',
+                    border:'1px solid rgba(255,255,255,0.08)',
+                    cursor: allowGroupDrag ? 'grab' : 'default'
+                  }}
+                >
+                  <div style={{ display:'flex', gap:6, alignItems:'center', minWidth:0 }}>
+                    <span style={{ fontSize:11, opacity:.6 }}>{label}</span>
+                    <span style={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{teamName(teamId)}</span>
+                  </div>
+                  {settings.groups?.advancement !== 'wins' && <span>{rec.points}</span>}
+                  <span>{rec.wins}</span>
+                  <span>{rec.losses}</span>
+                  <span>{gd}</span>
+                  <span>{rec.gamesWon}</span>
+                  {canHost && (
+                    <div style={{ gridColumn:`span ${settings.groups?.advancement === 'wins' ? 4 : 5}`, display:'flex', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>
+                      {settings.groups?.advancement !== 'wins' && (
+                        <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'points', 1)} disabled={!canHost}>+1 pt</button>
+                      )}
+                      <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'wins', 1)} disabled={!canHost}>+1 win</button>
+                      <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'losses', 1)} disabled={!canHost}>+1 loss</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {showMatches && (
+          <div style={{ display:'grid', gap:6 }}>
+            <div style={{ fontWeight:700, fontSize:13 }}>Group matches</div>
+            {matchesForGroup.length === 0 ? (
+              <div style={{ opacity:.65, fontSize:13 }}>Matches will appear once at least two teams are in this group.</div>
+            ) : (
+              <div style={{ display:'grid', gap:6 }}>
+                {matchesForGroup.map((m) => {
+                  const aScore = Number.isFinite(m.scoreA) ? Number(m.scoreA) : '';
+                  const bScore = Number.isFinite(m.scoreB) ? Number(m.scoreB) : '';
+                  const aName = teamName(m.a);
+                  const bName = teamName(m.b);
+                  return (
+                    <div key={m.id} style={{ display:'grid', gridTemplateColumns:'1fr auto 1fr', gap:6, alignItems:'center', padding:'8px 10px', borderRadius:10, background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)' }}>
+                      <div style={{ display:'grid', gap:4 }}>
+                        <span style={{ fontWeight:600 }}>{aName}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          value={aScore}
+                          onChange={(e) => setGroupMatchScore(m.id, e.target.value === '' ? null : Number(e.target.value), Number.isFinite(m.scoreB) ? Number(m.scoreB) : null)}
+                          style={{ ...input, padding:'4px 6px' }}
+                          disabled={!canHost}
+                        />
+                      </div>
+                      <div style={{ display:'grid', gap:6, justifyItems:'center' }}>
+                        <span style={{ opacity:.7, fontSize:12 }}>vs</span>
+                        {canHost && (
+                          <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:'center' }}>
+                            <button style={btnMini} onClick={() => setGroupMatchScore(m.id, (Number.isFinite(m.scoreA) ? Number(m.scoreA) : 0) + 1, Number.isFinite(m.scoreB) ? Number(m.scoreB) : 0)} disabled={!canHost}>A +1</button>
+                            <button style={btnMini} onClick={() => setGroupMatchScore(m.id, Number.isFinite(m.scoreA) ? Number(m.scoreA) : 0, (Number.isFinite(m.scoreB) ? Number(m.scoreB) : 0) + 1)} disabled={!canHost}>B +1</button>
+                            <button style={btnMini} onClick={() => setGroupMatchScore(m.id, 0, 0)} disabled={!canHost}>Clear</button>
+                          </div>
+                        )}
+                        {m.winner && <span style={{ fontSize:11, opacity:.75 }}>Winner: {teamName(m.winner)}</span>}
+                      </div>
+                      <div style={{ display:'grid', gap:4 }}>
+                        <span style={{ fontWeight:600, textAlign:'right' }}>{bName}</span>
+                        <input
+                          type="number"
+                          min={0}
+                          value={bScore}
+                          onChange={(e) => setGroupMatchScore(m.id, Number.isFinite(m.scoreA) ? Number(m.scoreA) : null, e.target.value === '' ? null : Number(e.target.value))}
+                          style={{ ...input, padding:'4px 6px' }}
+                          disabled={!canHost}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            <div style={{ opacity:.65, fontSize:12 }}>Each team plays every other team once. Enter games won for each side (e.g., 3-1).</div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const playersScrollable = t.players.length > 5;
   const playersBox: React.CSSProperties = playersScrollable ? { maxHeight: 260, overflowY: 'auto', paddingRight: 4 } : {};
 
@@ -1102,169 +1286,7 @@ export default function Lobby() {
               </div>
             </div>
             <div style={{ display:'grid', gap:10, gridTemplateColumns:'repeat(auto-fit, minmax(340px, 1fr))', marginTop:10 }}>
-              {t.groupStage.groups.map((group, idx) => {
-                const ordered = rankedGroups[idx] || group;
-                const matchesForGroup = (groupStage?.matches || []).filter((m) => m.group === idx);
-                const onGroupDragStart = (ev: React.DragEvent, payload: GroupDragPayload) => {
-                  if (!allowGroupDrag) return;
-                  ev.dataTransfer.setData('application/json', JSON.stringify(payload));
-                  ev.dataTransfer.effectAllowed = 'move';
-                };
-                const parseGroupDrag = (ev: React.DragEvent): GroupDragPayload | null => {
-                  const raw = ev.dataTransfer.getData('application/json');
-                  if (!raw) return null;
-                  try {
-                    const parsed = JSON.parse(raw);
-                    if (parsed?.type === 'group-seat') return parsed as GroupDragPayload;
-                  } catch { return null; }
-                  return null;
-                };
-                const onGroupDrop = (ev: React.DragEvent, toGroup: number) => {
-                  if (!allowGroupDrag) return;
-                  ev.preventDefault();
-                  const parsed = parseGroupDrag(ev);
-                  if (!parsed) return;
-                  moveTeamBetweenGroups(parsed.teamId, parsed.from, toGroup);
-                };
-                const onGroupDragOver = (ev: React.DragEvent) => { if (allowGroupDrag) ev.preventDefault(); };
-                return (
-                  <div
-                    key={idx}
-                    style={{ background:'linear-gradient(135deg, #111827, #0b1020)', borderRadius:14, padding:12, border:'1px solid rgba(56,189,248,0.15)', boxShadow:'0 10px 25px rgba(0,0,0,0.25)', display:'grid', gap:10 }}
-                    onDragOver={onGroupDragOver}
-                    onDrop={(ev) => onGroupDrop(ev, idx)}
-                  >
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:8 }}>
-                      <div>
-                        <div style={{ fontWeight:800, letterSpacing:0.5 }}>{groupLabel(idx)}</div>
-                        <div style={{ fontSize:12, opacity:.7 }}>{group.length} team{group.length === 1 ? '' : 's'} • Round robin</div>
-                      </div>
-                      <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
-                        <span style={{ fontSize:12, opacity:.7 }}>{settings.groups?.advancement === 'wins' ? 'Winners advance' : 'Points advance'}</span>
-                        {canHost && (
-                          <button
-                            style={btnMini}
-                            onClick={() => {
-                              const nm = prompt(`Add a player/team directly to ${groupLabel(idx)}?`);
-                              if (!nm) return;
-                              const p = { id: uid(), name: nm.trim() || 'Player' };
-                              update((x) => addLateLocal(x, p, idx));
-                            }}
-                            disabled={busy}
-                          >Add to {groupLabel(idx)}</button>
-                        )}
-                      </div>
-                    </div>
-
-                    {ordered.length === 0 ? (
-                      <div style={{ opacity:.65, fontSize:13 }}>No teams yet.</div>
-                    ) : (
-                      <div style={{ display:'grid', gap:6 }}>
-                        <div
-                          style={{
-                            display:'grid',
-                            gridTemplateColumns:`1fr repeat(${settings.groups?.advancement === 'wins' ? 4 : 5}, auto)`,
-                            gap:6,
-                            fontSize:12,
-                            opacity:.7
-                          }}
-                        >
-                          <span>Team</span>
-                          {settings.groups?.advancement !== 'wins' && <span>Pts</span>}
-                          <span>W</span><span>L</span><span>GD</span><span>GW</span>
-                        </div>
-                        {ordered.map((teamId, rankIdx) => {
-                          const rec = groupStage?.records?.[teamId] || { points:0, wins:0, losses:0, played:0, gamesWon:0, gamesLost:0 };
-                          const gd = (rec.gamesWon || 0) - (rec.gamesLost || 0);
-                          const label = `${groupLabel(idx).split(' ')[1]}${rankIdx + 1}`;
-                          return (
-                            <div
-                              key={teamId}
-                              draggable={allowGroupDrag}
-                              onDragStart={(ev) => onGroupDragStart(ev, { type:'group-seat', teamId, from: idx })}
-                              style={{
-                                display:'grid',
-                                gridTemplateColumns:`1fr repeat(${settings.groups?.advancement === 'wins' ? 4 : 5}, auto)`,
-                                gap:6,
-                                alignItems:'center',
-                                padding:'6px 8px',
-                                borderRadius:10,
-                                background:'rgba(255,255,255,0.04)',
-                                border:'1px solid rgba(255,255,255,0.08)',
-                                cursor: allowGroupDrag ? 'grab' : 'default'
-                              }}
-                            >
-                              <div style={{ display:'flex', gap:6, alignItems:'center', minWidth:0 }}>
-                                <span style={{ fontSize:11, opacity:.6 }}>{label}</span>
-                                <span style={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{teamName(teamId)}</span>
-                              </div>
-                              {settings.groups?.advancement !== 'wins' && <span>{rec.points}</span>}
-                              <span>{rec.wins}</span>
-                              <span>{rec.losses}</span>
-                              <span>{gd}</span>
-                              <span>{rec.gamesWon}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    <div style={{ display:'grid', gap:6 }}>
-                      <div style={{ fontWeight:700, fontSize:13 }}>Group matches</div>
-                      {matchesForGroup.length === 0 ? (
-                        <div style={{ opacity:.65, fontSize:13 }}>Matches will appear once at least two teams are in this group.</div>
-                      ) : (
-                        <div style={{ display:'grid', gap:6 }}>
-                          {matchesForGroup.map((m, i) => {
-                            const aScore = Number.isFinite(m.scoreA) ? Number(m.scoreA) : '';
-                            const bScore = Number.isFinite(m.scoreB) ? Number(m.scoreB) : '';
-                            const aName = teamName(m.a);
-                            const bName = teamName(m.b);
-                            return (
-                              <div key={m.id} style={{ display:'grid', gridTemplateColumns:'1fr auto 1fr', gap:6, alignItems:'center', padding:'8px 10px', borderRadius:10, background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.07)' }}>
-                                <div style={{ display:'grid', gap:4 }}>
-                                  <span style={{ fontWeight:600 }}>{aName}</span>
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    value={aScore}
-                                    onChange={(e) => setGroupMatchScore(m.id, e.target.value === '' ? null : Number(e.target.value), Number.isFinite(m.scoreB) ? Number(m.scoreB) : null)}
-                                    style={{ ...input, padding:'4px 6px' }}
-                                    disabled={!canHost}
-                                  />
-                                </div>
-                                <div style={{ display:'grid', gap:6, justifyItems:'center' }}>
-                                  <span style={{ opacity:.7, fontSize:12 }}>vs</span>
-                                    {canHost && (
-                                      <div style={{ display:'flex', gap:6, flexWrap:'wrap', justifyContent:'center' }}>
-                                        <button style={btnMini} onClick={() => setGroupMatchScore(m.id, (Number.isFinite(m.scoreA) ? Number(m.scoreA) : 0) + 1, Number.isFinite(m.scoreB) ? Number(m.scoreB) : 0)} disabled={!canHost}>A +1</button>
-                                        <button style={btnMini} onClick={() => setGroupMatchScore(m.id, Number.isFinite(m.scoreA) ? Number(m.scoreA) : 0, (Number.isFinite(m.scoreB) ? Number(m.scoreB) : 0) + 1)} disabled={!canHost}>B +1</button>
-                                        <button style={btnMini} onClick={() => setGroupMatchScore(m.id, 0, 0)} disabled={!canHost}>Clear</button>
-                                      </div>
-                                    )}
-                                  {m.winner && <span style={{ fontSize:11, opacity:.75 }}>Winner: {teamName(m.winner)}</span>}
-                                </div>
-                                <div style={{ display:'grid', gap:4 }}>
-                                  <span style={{ fontWeight:600, textAlign:'right' }}>{bName}</span>
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    value={bScore}
-                                    onChange={(e) => setGroupMatchScore(m.id, Number.isFinite(m.scoreA) ? Number(m.scoreA) : null, e.target.value === '' ? null : Number(e.target.value))}
-                                    style={{ ...input, padding:'4px 6px' }}
-                                    disabled={!canHost}
-                                  />
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                      <div style={{ opacity:.65, fontSize:12 }}>Each team plays every other team once. Enter games won for each side (e.g., 3-1).</div>
-                    </div>
-                  </div>
-                );
-              })}
+              {(t.groupStage.groups || []).map((_, idx) => renderGroupCard(idx, { variant:'stage', showAdd:true, showMatches:true }))}
             </div>
             <div style={{ opacity:.7, fontSize:12, marginTop:8 }}>Late arrivals can be slotted into any group; their remaining matches will appear above and flow into the elimination bracket when rebuilt.</div>
           </section>
@@ -1282,53 +1304,11 @@ export default function Lobby() {
               )}
             </div>
             {settings.format === 'groups' && groupStage ? (
-              <div style={{ display:'grid', gridTemplateColumns: `minmax(320px, 1fr) repeat(${Math.max(t.rounds.length, 1)}, minmax(260px, 1fr))`, gap:12, overflowX:'auto' }}>
+              <div style={{ display:'grid', gridTemplateColumns: `minmax(420px, 1.2fr) repeat(${Math.max(t.rounds.length, 1)}, minmax(260px, 1fr))`, gap:12, overflowX:'auto' }}>
                 <div style={{ display:'grid', gap:10 }}>
                   <div style={{ opacity:.8, fontSize:13 }}>Group Stage</div>
                   <div style={{ display:'grid', gap:10 }}>
-                    {rankedGroups.map((group, idx) => (
-                      <div key={idx} style={{ background:'linear-gradient(135deg, #3b0d45, #14061a)', borderRadius:16, padding:12, border:'1px solid rgba(255,255,255,0.08)', boxShadow:'0 12px 24px rgba(0,0,0,0.3)' }}>
-                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
-                          <div style={{ fontWeight:900, letterSpacing:0.5 }}>{groupLabel(idx)}</div>
-                          <span style={{ fontSize:12, opacity:.7 }}>{settings.groups?.advancement === 'wins' ? 'Wins advance' : 'Points advance'}</span>
-                        </div>
-                          {group.length === 0 ? (
-                            <div style={{ opacity:.7, fontSize:12 }}>No teams yet.</div>
-                          ) : (
-                            <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
-                              {group.map((teamId, rankIdx) => {
-                                const rec = groupStage.records[teamId] || { points:0, wins:0, losses:0, played:0, gamesWon:0, gamesLost:0 };
-                                const gd = (rec.gamesWon || 0) - (rec.gamesLost || 0);
-                                return (
-                                  <li key={teamId} style={{ background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:'8px 10px', display:'grid', gap:6 }}>
-                                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6 }}>
-                                      <div style={{ fontWeight:700 }}>{teamName(teamId)}</div>
-                                      <span style={{ fontSize:11, opacity:.65 }}>#{rankIdx + 1}</span>
-                                    </div>
-                                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:6 }}>
-                                      <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
-                                        {settings.groups?.advancement !== 'wins' && <span style={statPill}>Pts {rec.points}</span>}
-                                        <span style={statPill}>W {rec.wins}</span>
-                                        <span style={statPill}>L {rec.losses}</span>
-                                        <span style={statPill}>GD {gd}</span>
-                                      </div>
-                                        {canHost && (
-                                          <div style={{ display:'flex', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>
-                                            {settings.groups?.advancement !== 'wins' && (
-                                              <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'points', 1)} disabled={!canHost}>+1 pt</button>
-                                            )}
-                                            <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'wins', 1)} disabled={!canHost}>+1 win</button>
-                                            <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'losses', 1)} disabled={!canHost}>+1 loss</button>
-                                          </div>
-                                        )}
-                                    </div>
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                          )}
-                      </div>
-                    ))}
+                    {(groupStage?.groups || []).map((_, idx) => renderGroupCard(idx, { variant:'bracket', showAdd:false, showMatches:true }))}
                   </div>
                 </div>
                 {t.rounds.length === 0 ? (
