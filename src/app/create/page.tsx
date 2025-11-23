@@ -100,7 +100,7 @@ export default function CreatePage() {
             { key: 'single_elim', label: 'Standard bracket (single elimination)', desc: '1v1 bracket — classic knock-out.', teamSize: 1 },
             { key: 'singles', label: 'Singles (1v1 flexible)', desc: 'Supports reseeding or mixed-stage tweaks.', teamSize: 1 },
             { key: 'doubles', label: 'Doubles (2v2)', desc: 'Auto-pairs players into two-person teams.', teamSize: 2 },
-            { key: 'groups', label: 'Groups / Pools', desc: 'Group stage with downstream bracket seeding.', teamSize: 1 },
+            { key: 'groups', label: 'Group stage', desc: 'Group phase with points and downstream bracket seeding.', teamSize: 1 },
           ].map(opt => (
             <label key={opt.key} style={{
               border:'1px solid rgba(255,255,255,0.2)',
@@ -137,8 +137,8 @@ export default function CreatePage() {
       {groupDialogOpen && (
         <div style={dialogOverlay} onClick={() => !loading && setGroupDialogOpen(false)}>
           <div style={dialog} onClick={(e) => e.stopPropagation()}>
-            <h3 style={{ marginTop: 0 }}>Group Pools setup</h3>
-            <p style={{ opacity:.8, marginTop:0 }}>Choose how groups should run before creating the tournament.</p>
+            <h3 style={{ marginTop: 0 }}>Group stage setup</h3>
+            <p style={{ opacity:.8, marginTop:0 }}>Choose how the group stage should run before creating the tournament.</p>
 
             <div style={{ display:'grid', gap:12 }}>
               <div>

@@ -783,7 +783,7 @@ export default function Lobby() {
   const formatLabel = (() => {
     switch (settings.format) {
       case 'doubles': return 'Doubles (2v2)';
-      case 'groups': return 'Groups / Pools';
+      case 'groups': return 'Group stage';
       case 'singles': return 'Singles';
       default: return 'Single elimination';
     }
@@ -958,7 +958,7 @@ export default function Lobby() {
                   <option value="single_elim">Standard bracket (single elimination)</option>
                   <option value="singles">Singles (1v1 flexible)</option>
                   <option value="doubles">Doubles (2v2 teams)</option>
-                  <option value="groups">Groups / Pools</option>
+                  <option value="groups">Group stage</option>
                 </select>
               </label>
               <div style={{ fontSize:12, opacity:.7 }}>
@@ -966,7 +966,7 @@ export default function Lobby() {
               </div>
               {settings.format === 'groups' && (
                 <div style={{ display:'grid', gap:10, padding:10, borderRadius:10, background:'rgba(14,165,233,0.08)', border:'1px solid rgba(14,165,233,0.2)' }}>
-                  <div style={{ fontWeight:700 }}>Group Pools options</div>
+                  <div style={{ fontWeight:700 }}>Group stage options</div>
                   <div style={{ display:'grid', gap:6 }}>
                     <span style={{ fontSize:13, opacity:.85 }}>Match type</span>
                     <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
@@ -1084,7 +1084,7 @@ export default function Lobby() {
           <section style={card}>
             <div style={{ display:'flex', justifyContent:'space-between', gap:8, alignItems:'center' }}>
               <div>
-                <h3 style={{ margin:'0 0 4px' }}>Groups / Pools</h3>
+                <h3 style={{ margin:'0 0 4px' }}>Group stage</h3>
                 <div style={{ opacity:.75, fontSize:13 }}>
                   {settings.groups?.matchType === 'doubles' ? 'Doubles (2v2)' : 'Singles (1v1)'} •
                   {' '}{settings.groups?.advancement === 'wins' ? 'Winners advance' : 'Points + wins advance'}
@@ -1096,9 +1096,9 @@ export default function Lobby() {
                 <button
                   style={btnGhost}
                   onClick={() => alert(
-                    'Group Pools: players are placed into groups (default 4 per group). Each team plays everyone else in their group once. Wins are worth 3 points; losses are 0. Standings use points, game difference, then games won. Top seeds advance (A1 vs B2, B1 vs A2, etc.). You can add late arrivals into a specific group and rebuild the bracket from standings at any time.'
+                    'Group stage: players are placed into balanced groups (default 4 per group). Each team plays everyone else in their group once. Wins are worth 3 points; losses are 0. Standings use points, game difference, then games won. Top seeds advance (A1 vs B2, B1 vs A2, etc.). You can add late arrivals into a specific group, adjust points/wins manually, and rebuild the bracket from standings at any time.'
                   )}
-                >How Group Pools work</button>
+                >How group stage works</button>
               </div>
             </div>
             <div style={{ display:'grid', gap:10, gridTemplateColumns:'repeat(auto-fit, minmax(340px, 1fr))', marginTop:10 }}>
