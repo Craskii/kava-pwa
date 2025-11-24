@@ -18,7 +18,7 @@ export default function CreatePage() {
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
   const [groupConfig, setGroupConfig] = useState({
     matchType: 'singles' as 'singles' | 'doubles',
-    advancement: 'points' as 'points' | 'wins',
+    advancement: 'wins' as 'points' | 'wins',
     losersNext: false,
   });
   const [loading, setLoading] = useState(false);
@@ -100,7 +100,7 @@ export default function CreatePage() {
             { key: 'single_elim', label: 'Standard bracket (single elimination)', desc: '1v1 bracket — classic knock-out.', teamSize: 1 },
             { key: 'singles', label: 'Singles (1v1 flexible)', desc: 'Supports reseeding or mixed-stage tweaks.', teamSize: 1 },
             { key: 'doubles', label: 'Doubles (2v2)', desc: 'Auto-pairs players into two-person teams.', teamSize: 2 },
-            { key: 'groups', label: 'Group stage', desc: 'Group phase with points and downstream bracket seeding.', teamSize: 1 },
+            { key: 'groups', label: 'Group stage', desc: 'Group phase with win-based standings and downstream bracket seeding.', teamSize: 1 },
           ].map(opt => (
             <label key={opt.key} style={{
               border:'1px solid rgba(255,255,255,0.2)',
@@ -158,24 +158,11 @@ export default function CreatePage() {
               </div>
 
               <div>
-                <div style={{ fontWeight:700, marginBottom:6 }}>Advancement / scoring mode</div>
-                <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-                  <button
-                    style={groupConfig.advancement === 'points' ? btnPrimary : btnGhost}
-                    onClick={() => setGroupConfig((g) => ({ ...g, advancement: 'points' }))}
-                    disabled={loading}
-                  >
-                    Points + wins
-                  </button>
-                  <button
-                    style={groupConfig.advancement === 'wins' ? btnPrimary : btnGhost}
-                    onClick={() => setGroupConfig((g) => ({ ...g, advancement: 'wins' }))}
-                    disabled={loading}
-                  >
-                    Winners only
-                  </button>
+                <div style={{ fontWeight:700, marginBottom:6 }}>Scoring mode</div>
+                <div style={{ fontSize:13, opacity:.8, marginBottom:6 }}>
+                  Groups rank by total wins (tiebreakers: game difference, then games won).
                 </div>
-                <label style={{ display:'flex', alignItems:'center', gap:8, marginTop:8, fontSize:13, opacity:.85 }}>
+                <label style={{ display:'flex', alignItems:'center', gap:8, marginTop:4, fontSize:13, opacity:.85 }}>
                   <input
                     type="checkbox"
                     checked={groupConfig.losersNext}

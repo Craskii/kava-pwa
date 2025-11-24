@@ -42,7 +42,7 @@ function normalizeSettings(s?: TournamentSettings): TournamentSettings {
           count: s?.groups?.count || 4,
           size: s?.groups?.size || 4,
           matchType,
-          advancement: s?.groups?.advancement === 'wins' ? 'wins' : 'points',
+          advancement: 'wins',
           losersNext: !!s?.groups?.losersNext,
         }
       : undefined,
@@ -226,8 +226,7 @@ function ensureGroupStage(t: Tournament, settings: TournamentSettings) {
 function rankGroupMembers(
   groupIds: string[],
   records: Record<string, GroupRecord>,
-  teams: Team[],
-  advancement: 'points' | 'wins'
+  teams: Team[]
 ) {
   const nm = (id?: string) => teams.find((tm) => tm.id === id)?.name || '';
   return [...groupIds].sort((a, b) => {
@@ -235,11 +234,7 @@ function rankGroupMembers(
     const rb = records[b] || { points: 0, wins: 0, losses: 0, played: 0, gamesWon: 0, gamesLost: 0 };
     const diffA = (ra.gamesWon || 0) - (ra.gamesLost || 0);
     const diffB = (rb.gamesWon || 0) - (rb.gamesLost || 0);
-    if (advancement === 'wins') {
-      if (ra.wins !== rb.wins) return rb.wins - ra.wins;
-    } else if (ra.points !== rb.points) {
-      return rb.points - ra.points;
-    }
+    if (ra.wins !== rb.wins) return rb.wins - ra.wins;
     if (diffA !== diffB) return diffB - diffA;
     if ((ra.gamesWon || 0) !== (rb.gamesWon || 0)) return (rb.gamesWon || 0) - (ra.gamesWon || 0);
     if (ra.wins !== rb.wins) return rb.wins - ra.wins;
@@ -250,16 +245,10 @@ function rankGroupMembers(
 function buildSeedsFromGroups(
   groups: string[][],
   records: Record<string, GroupRecord>,
-  teams: Team[],
-  advancement: 'points' | 'wins'
+  teams: Team[]
 ) {
-  const ranked = groups.map((g) => rankGroupMembers(g, records, teams, advancement));
+  const ranked = groups.map((g) => rankGroupMembers(g, records, teams));
   const seeds: string[] = [];
-
-  if (advancement === 'wins') {
-    ranked.forEach((g) => { if (g[0]) seeds.push(g[0]); });
-    return seeds.filter(Boolean);
-  }
 
   for (let i = 0; i < ranked.length; i += 2) {
     const gA = ranked[i];
@@ -285,7 +274,7 @@ function rebuildBracketFromGroups(t: Tournament, settings: TournamentSettings) {
     t.status = t.status === 'completed' ? 'completed' : 'active';
     return;
   }
-  const seeds = buildSeedsFromGroups(stage.groups, stage.records || {}, t.teams || [], settings.groups?.advancement || 'points');
+  const seeds = buildSeedsFromGroups(stage.groups, stage.records || {}, t.teams || []);
   if (!seeds.length) return;
   const first: Match[] = [];
   for (let i = 0; i < seeds.length; i += 2) {
@@ -754,7 +743,7 @@ export default function Lobby() {
     return { groups, records, matches };
   })();
   const rankedGroups = groupStage
-    ? groupStage.groups.map((g) => rankGroupMembers(g, groupStage.records, teamsForDisplay, settings.groups?.advancement || 'points'))
+    ? groupStage.groups.map((g) => rankGroupMembers(g, groupStage.records, teamsForDisplay))
     : ([] as string[][]);
   const seedLabels = new Map<string, string>();
   if (settings.format === 'groups') {
@@ -861,7 +850,7 @@ export default function Lobby() {
             <div style={{ fontSize:12, opacity:.7 }}>{group.length} team{group.length === 1 ? '' : 's'} • Round robin</div>
           </div>
           <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
-            <span style={{ fontSize:12, opacity:.7 }}>{settings.groups?.advancement === 'wins' ? 'Winners advance' : 'Points advance'}</span>
+            <span style={{ fontSize:12, opacity:.7 }}>Standings rank by wins (GD, then games won)</span>
             {canHost && showAdd && (
               <button
                 style={btnMini}
@@ -882,16 +871,9 @@ export default function Lobby() {
         ) : (
           <div style={{ display:'grid', gap:6 }}>
             <div
-              style={{
-                display:'grid',
-                gridTemplateColumns:`1fr repeat(${settings.groups?.advancement === 'wins' ? 4 : 5}, auto)`,
-                gap:6,
-                fontSize:12,
-                opacity:.7
-              }}
+              style={{ display:'grid', gridTemplateColumns:'1fr repeat(4, auto)', gap:6, fontSize:12, opacity:.7 }}
             >
               <span>Team</span>
-              {settings.groups?.advancement !== 'wins' && <span>Pts</span>}
               <span>W</span><span>L</span><span>GD</span><span>GW</span>
             </div>
             {ordered.map((teamId, rankIdx) => {
@@ -905,7 +887,7 @@ export default function Lobby() {
                   onDragStart={(ev) => onGroupDragStart(ev, { type:'group-seat', teamId, from: idx })}
                   style={{
                     display:'grid',
-                    gridTemplateColumns:`1fr repeat(${settings.groups?.advancement === 'wins' ? 4 : 5}, auto)`,
+                    gridTemplateColumns:'1fr repeat(4, auto)',
                     gap:6,
                     alignItems:'center',
                     padding:'6px 8px',
@@ -919,16 +901,12 @@ export default function Lobby() {
                     <span style={{ fontSize:11, opacity:.6 }}>{label}</span>
                     <span style={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{teamName(teamId)}</span>
                   </div>
-                  {settings.groups?.advancement !== 'wins' && <span>{rec.points}</span>}
                   <span>{rec.wins}</span>
                   <span>{rec.losses}</span>
                   <span>{gd}</span>
                   <span>{rec.gamesWon}</span>
                   {canHost && (
-                    <div style={{ gridColumn:`span ${settings.groups?.advancement === 'wins' ? 4 : 5}`, display:'flex', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>
-                      {settings.groups?.advancement !== 'wins' && (
-                        <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'points', 1)} disabled={!canHost}>+1 pt</button>
-                      )}
+                    <div style={{ gridColumn:'span 4', display:'flex', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>
                       <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'wins', 1)} disabled={!canHost}>+1 win</button>
                       <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'losses', 1)} disabled={!canHost}>+1 loss</button>
                     </div>
@@ -1194,28 +1172,7 @@ export default function Lobby() {
                   <div style={{ display:'grid', gap:6 }}>
                     <span style={{ fontSize:13, opacity:.85 }}>Advancement</span>
                     <div style={{ display:'flex', gap:8, flexWrap:'wrap' }}>
-                      {([
-                        { key:'points', label:'Points + wins' },
-                        { key:'wins', label:'Winners only' },
-                      ] as const).map(opt => (
-                        <button
-                          key={opt.key}
-                          style={settings.groups?.advancement === opt.key ? btnActive : btnMini}
-                          disabled={busy || t.status !== 'setup'}
-                          onClick={() => update(x => {
-                            if (x.status !== 'setup') return;
-                            const current = normalizeSettings(x.settings);
-                            const nextSettings = normalizeSettings({
-                              ...x.settings,
-                              format: 'groups',
-                              groups: { ...(current.groups || {}), advancement: opt.key },
-                            });
-                            x.settings = nextSettings;
-                          })}
-                        >
-                          {opt.label}
-                        </button>
-                      ))}
+                      <span style={{ fontSize:12, opacity:.8 }}>Standings rank by total wins; tiebreakers are game difference then games won.</span>
                     </div>
                     <label style={{ display:'flex', alignItems:'center', gap:8, fontSize:13, opacity:.9 }}>
                       <input
@@ -1287,10 +1244,10 @@ export default function Lobby() {
                 {settings.format === 'groups' && (
                   <>
                     <div style={{ opacity:.85, fontSize:14 }}>
-                      {settings.groups?.matchType === 'doubles' ? 'Doubles (2v2)' : 'Singles (1v1)'} • {settings.groups?.advancement === 'wins' ? 'Winners advance' : 'Points + wins advance'}{settings.groups?.losersNext ? ' • Consolation enabled' : ''}
+                      {settings.groups?.matchType === 'doubles' ? 'Doubles (2v2)' : 'Singles (1v1)'} • Wins-based standings{settings.groups?.losersNext ? ' • Consolation enabled' : ''}
                     </div>
                     <div style={{ opacity:.8, fontSize:13 }}>
-                      Points: 3 for a win, 0 for a loss. Tiebreakers: game difference then games won. Groups stay ordered (A, B, C…) and feed the bracket.
+                      Standings are based on wins; tiebreakers use game difference then games won. Groups stay ordered (A, B, C…) and feed the bracket.
                     </div>
                   </>
                 )}
