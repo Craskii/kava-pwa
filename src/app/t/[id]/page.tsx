@@ -370,6 +370,8 @@ export default function Lobby() {
   const [t, setT] = useState<Tournament | null>(null);
   const [busy, setBusy] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
+  const [bracketOpen, setBracketOpen] = useState(true);
+  const bracketRef = useRef<HTMLDivElement | null>(null);
   const pollRef = useRef<{ stop: () => void; bump: () => void } | null>(null);
 
   const me = useMemo(() => {
@@ -468,6 +470,16 @@ export default function Lobby() {
   const iAmHost = me?.id === t.hostId;
   const iAmCoHost = !!me && coHosts.includes(me.id);
   const canHost = iAmHost || iAmCoHost;
+
+  const handleToggleBracket = () => {
+    setBracketOpen((prev) => {
+      const next = !prev;
+      if (!prev) {
+        setTimeout(() => bracketRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 80);
+      }
+      return next;
+    });
+  };
 
   async function update(mut: (x: Tournament) => void | Promise<void>, opts?: { blockUI?: boolean }) {
     const blockUI = opts?.blockUI ?? true;
@@ -1264,218 +1276,228 @@ export default function Lobby() {
           </div>
         )}
 
-        {settings.format === 'groups' && t.groupStage?.groups && (
-          <section style={card}>
-            <div style={{ display:'flex', justifyContent:'space-between', gap:8, alignItems:'center' }}>
-              <div>
-                <h3 style={{ margin:'0 0 4px' }}>Group stage</h3>
-                <div style={{ opacity:.75, fontSize:13 }}>
-                  {settings.groups?.matchType === 'doubles' ? 'Doubles (2v2)' : 'Singles (1v1)'} •
-                  {' '}{settings.groups?.advancement === 'wins' ? 'Winners advance' : 'Points + wins advance'}
-                  {settings.groups?.losersNext ? ' • Consolation enabled' : ''}
-                </div>
-              </div>
-              <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-                <span style={{ fontSize:12, opacity:.7 }}>Groups stay ordered (A, B, C…) and feed the bracket.</span>
-                <button
-                  style={btnGhost}
-                  onClick={() => alert(
-                    'Group stage: players are placed into balanced groups (default 4 per group). Each team plays everyone else in their group once. Wins are worth 3 points; losses are 0. Standings use points, game difference, then games won. Top seeds advance (A1 vs B2, B1 vs A2, etc.). You can add late arrivals into a specific group, adjust points/wins manually, and rebuild the bracket from standings at any time.'
-                  )}
-                >How group stage works</button>
-              </div>
-            </div>
-            <div style={{ display:'grid', gap:10, gridTemplateColumns:'repeat(auto-fit, minmax(340px, 1fr))', marginTop:10 }}>
-              {(t.groupStage.groups || []).map((_, idx) => renderGroupCard(idx, { variant:'stage', showAdd:true, showMatches:true }))}
-            </div>
-            <div style={{ opacity:.7, fontSize:12, marginTop:8 }}>Late arrivals can be slotted into any group; their remaining matches will appear above and flow into the elimination bracket when rebuilt.</div>
-          </section>
-        )}
-
         {/* Bracket */}
         {(t.rounds.length > 0 || settings.format === 'groups') && (
-          <div style={card}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:8 }}>
-              <h3 style={{ marginTop: 0, marginBottom: 6 }}>Bracket</h3>
-              {settings.format === 'groups' && canHost && (
-                <button style={btnMini} onClick={() => update(x => rebuildBracketFromGroups(x, normalizeSettings(x.settings)))} disabled={busy}>
-                  Rebuild from group standings
-                </button>
-              )}
+          <div ref={bracketRef} style={card}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:12, flexWrap:'wrap' }}>
+              <div style={{ display:'grid', gap:6 }}>
+                <h3 style={{ marginTop: 0, marginBottom: 2, fontSize: settings.format === 'groups' ? 20 : 18 }}>
+                  {settings.format === 'groups' ? 'Group stage & bracket' : 'Bracket'}
+                </h3>
+                {settings.format === 'groups' && (
+                  <>
+                    <div style={{ opacity:.85, fontSize:14 }}>
+                      {settings.groups?.matchType === 'doubles' ? 'Doubles (2v2)' : 'Singles (1v1)'} • {settings.groups?.advancement === 'wins' ? 'Winners advance' : 'Points + wins advance'}{settings.groups?.losersNext ? ' • Consolation enabled' : ''}
+                    </div>
+                    <div style={{ opacity:.8, fontSize:13 }}>
+                      Points: 3 for a win, 0 for a loss. Tiebreakers: game difference then games won. Groups stay ordered (A, B, C…) and feed the bracket.
+                    </div>
+                  </>
+                )}
+              </div>
+              <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                {settings.format === 'groups' && (
+                  <>
+                    <button style={btnMini} onClick={handleToggleBracket}>
+                      {bracketOpen ? 'Hide bracket' : 'View bracket'}
+                    </button>
+                    <button
+                      style={btnGhost}
+                      onClick={() => alert(
+                        'Group stage: players are placed into balanced groups (default 4 per group). Each team plays everyone else in their group once. Wins are worth 3 points; losses are 0. Standings use points, game difference, then games won. Top seeds advance (A1 vs B2, B1 vs A2, etc.). You can add late arrivals into a specific group, adjust points/wins manually, and rebuild the bracket from standings at any time.'
+                      )}
+                    >How group stage works</button>
+                  </>
+                )}
+                {settings.format === 'groups' && canHost && (
+                  <button style={btnMini} onClick={() => update(x => rebuildBracketFromGroups(x, normalizeSettings(x.settings)))} disabled={busy}>
+                    Rebuild from group standings
+                  </button>
+                )}
+              </div>
             </div>
             {settings.format === 'groups' && groupStage ? (
-              <div style={{ display:'grid', gridTemplateColumns: `minmax(420px, 1.2fr) repeat(${Math.max(t.rounds.length, 1)}, minmax(260px, 1fr))`, gap:12, overflowX:'auto' }}>
+              <div style={{ display:'grid', gridTemplateColumns: bracketOpen ? `minmax(420px, 1.2fr) repeat(${Math.max(t.rounds.length, 1)}, minmax(260px, 1fr))` : 'minmax(420px, 1fr)', gap:12, overflowX:'auto', marginTop:12 }}>
                 <div style={{ display:'grid', gap:10 }}>
-                  <div style={{ opacity:.8, fontSize:13 }}>Group Stage</div>
+                  <div style={{ opacity:.85, fontSize:14, fontWeight:600 }}>Group Stage</div>
                   <div style={{ display:'grid', gap:10 }}>
                     {(groupStage?.groups || []).map((_, idx) => renderGroupCard(idx, { variant:'bracket', showAdd:false, showMatches:true }))}
                   </div>
-                </div>
-                {t.rounds.length === 0 ? (
-                  <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:12 }}>
-                    <div style={{ fontWeight:700, marginBottom:6 }}>Waiting for group results</div>
-                    <div style={{ fontSize:12, opacity:.75 }}>
-                      Enter scores for every group match. Once all matches have a winner, the knockout bracket will seed automatically (A1 vs B2, B1 vs A2, etc.).
+                  {!bracketOpen && (
+                    <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:12, fontSize:13, opacity:.85 }}>
+                      Bracket view is hidden. Click “View bracket” to jump to the elimination layout once you’re ready.
                     </div>
-                  </div>
-                ) : t.rounds.map((round, rIdx) => (
-                  <div key={rIdx} style={{ display: 'grid', gap: 8 }}>
-                    <div style={{ opacity: .8, fontSize: 13 }}>{roundName(rIdx, t.rounds.length)}</div>
-                  {round.map((m, i) => {
-                    const aName = teamName(m.a) || (m.a ? '??' : 'BYE');
-                    const bName = teamName(m.b) || (m.b ? '??' : 'BYE');
-                    const w = m.winner;
-                    const iPlay = me && (teamHasPlayer(m.a, me?.id) || teamHasPlayer(m.b, me?.id));
-                    const canReport = !canHost && iPlay && !w && t.status === 'active';
-                    const matchShellB: React.CSSProperties = {
-                      background: 'linear-gradient(135deg, #0f172a, #0b1223)',
-                      borderRadius: 12,
-                      padding: '12px',
-                      display: 'grid',
-                      gap: 8,
-                      border: w ? '1px solid rgba(34,197,94,0.55)' : '1px solid rgba(255,255,255,0.08)',
-                      boxShadow: w ? '0 10px 20px rgba(34,197,94,0.25)' : '0 10px 18px rgba(0,0,0,0.25)',
-                    };
-                    const advanceNoteB = rIdx === t.rounds.length - 1 ? 'Winner takes the title' : 'Winner advances to the next round';
-                      const matchShellA: React.CSSProperties = {
-                        background: 'linear-gradient(135deg, #0f172a, #0b1223)',
-                        borderRadius: 12,
-                        padding: '12px',
-                        display: 'grid',
-                        gap: 8,
-                        border: w ? '1px solid rgba(34,197,94,0.55)' : '1px solid rgba(255,255,255,0.08)',
-                        boxShadow: w ? '0 10px 20px rgba(34,197,94,0.25)' : '0 10px 18px rgba(0,0,0,0.25)',
-                      };
-                      const advanceNoteA = rIdx === t.rounds.length - 1 ? 'Winner takes the title' : 'Winner advances to the next round';
+                  )}
+                </div>
+                {bracketOpen && (
+                  t.rounds.length === 0 ? (
+                    <div style={{ background:'rgba(255,255,255,0.03)', border:'1px solid rgba(255,255,255,0.08)', borderRadius:12, padding:12 }}>
+                      <div style={{ fontWeight:700, marginBottom:6 }}>Waiting for group results</div>
+                      <div style={{ fontSize:13, opacity:.8 }}>
+                        Enter scores for every group match. Once all matches have a winner, the knockout bracket will seed automatically (A1 vs B2, B1 vs A2, etc.).
+                      </div>
+                    </div>
+                  ) : (
+                    t.rounds.map((round, rIdx) => (
+                      <div key={rIdx} style={{ display: 'grid', gap: 8 }}>
+                        <div style={{ opacity: .8, fontSize: 13 }}>{roundName(rIdx, t.rounds.length)}</div>
+                        {round.map((m, i) => {
+                          const aName = teamName(m.a) || (m.a ? '??' : 'BYE');
+                          const bName = teamName(m.b) || (m.b ? '??' : 'BYE');
+                          const w = m.winner;
+                          const iPlay = me && (teamHasPlayer(m.a, me?.id) || teamHasPlayer(m.b, me?.id));
+                          const canReport = !canHost && iPlay && !w && t.status === 'active';
+                          const matchShellB: React.CSSProperties = {
+                            background: 'linear-gradient(135deg, #0f172a, #0b1223)',
+                            borderRadius: 12,
+                            padding: '12px',
+                            display: 'grid',
+                            gap: 8,
+                            border: w ? '1px solid rgba(34,197,94,0.55)' : '1px solid rgba(255,255,255,0.08)',
+                            boxShadow: w ? '0 10px 20px rgba(34,197,94,0.25)' : '0 10px 18px rgba(0,0,0,0.25)',
+                          };
+                          const advanceNoteB = rIdx === t.rounds.length - 1 ? 'Winner takes the title' : 'Winner advances to the next round';
+                          const matchShellA: React.CSSProperties = {
+                            background: 'linear-gradient(135deg, #0f172a, #0b1223)',
+                            borderRadius: 12,
+                            padding: '12px',
+                            display: 'grid',
+                            gap: 8,
+                            border: w ? '1px solid rgba(34,197,94,0.55)' : '1px solid rgba(255,255,255,0.08)',
+                            boxShadow: w ? '0 10px 20px rgba(34,197,94,0.25)' : '0 10px 18px rgba(0,0,0,0.25)',
+                          };
+                          const advanceNoteA = rIdx === t.rounds.length - 1 ? 'Winner takes the title' : 'Winner advances to the next round';
 
-                      type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; teamId?: string };
-                      const allowDrag = canHost && t.status !== 'completed';
-                      function onDragStart(ev: React.DragEvent, info: DragInfo) {
-                        if (!allowDrag) return;
-                        ev.dataTransfer.setData('application/json', JSON.stringify(info));
-                        ev.dataTransfer.effectAllowed = 'move';
-                      }
-                      function onDragOver(ev: React.DragEvent) {
-                        if (!allowDrag) return;
-                        ev.preventDefault();
-                      }
-                      function parseDrag(ev: React.DragEvent): DragInfo | null {
-                        const raw = ev.dataTransfer.getData('application/json');
-                        if (!raw) return null;
-                        try {
-                          const parsed = JSON.parse(raw);
-                          if (parsed?.type === 'seat') return parsed as DragInfo;
-                        } catch {
-                          return null;
-                        }
-                        return null;
-                      }
-                      function swapSeats(src: DragInfo, target: DragInfo) {
-                        update((x) => {
-                          const mSrc = x.rounds?.[src.round]?.[src.match];
-                          const mTgt = x.rounds?.[target.round]?.[target.match];
-                          if (!mSrc || !mTgt) return;
+                          type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; teamId?: string };
+                          const allowDrag = canHost && t.status !== 'completed';
+                          function onDragStart(ev: React.DragEvent, info: DragInfo) {
+                            if (!allowDrag) return;
+                            ev.dataTransfer.setData('application/json', JSON.stringify(info));
+                            ev.dataTransfer.effectAllowed = 'move';
+                          }
+                          function onDragOver(ev: React.DragEvent) {
+                            if (!allowDrag) return;
+                            ev.preventDefault();
+                          }
+                          function parseDrag(ev: React.DragEvent): DragInfo | null {
+                            const raw = ev.dataTransfer.getData('application/json');
+                            if (!raw) return null;
+                            try {
+                              const parsed = JSON.parse(raw);
+                              if (parsed?.type === 'seat') return parsed as DragInfo;
+                            } catch {
+                              return null;
+                            }
+                            return null;
+                          }
+                          function swapSeats(src: DragInfo, target: DragInfo) {
+                            update((x) => {
+                              const mSrc = x.rounds?.[src.round]?.[src.match];
+                              const mTgt = x.rounds?.[target.round]?.[target.match];
+                              if (!mSrc || !mTgt) return;
 
-                          const clear = (mm: Match) => { mm.winner = undefined; mm.reports = {}; };
-                          clear(mSrc); clear(mTgt);
+                              const clear = (mm: Match) => { mm.winner = undefined; mm.reports = {}; };
+                              clear(mSrc); clear(mTgt);
 
-                          const valSrc = (mSrc as any)[src.side] as string | undefined;
-                          const valTgt = (mTgt as any)[target.side] as string | undefined;
-                          (mSrc as any)[src.side] = valTgt;
-                          (mTgt as any)[target.side] = valSrc;
+                              const valSrc = (mSrc as any)[src.side] as string | undefined;
+                              const valTgt = (mTgt as any)[target.side] as string | undefined;
+                              (mSrc as any)[src.side] = valTgt;
+                              (mTgt as any)[target.side] = valSrc;
 
-                          clearRoundsFrom(x, Math.min(src.round, target.round));
-                          buildNextRoundFromSync(x, 0);
-                        });
-                      }
-                      function onDrop(ev: React.DragEvent, target: DragInfo) {
-                        if (!allowDrag) return;
-                        ev.preventDefault();
-                        const src = parseDrag(ev);
-                        if (!src) return;
-                        swapSeats(src, target);
-                      }
-                      function onDropIntoMatch(ev: React.DragEvent, roundIdx: number, matchIdx: number) {
-                        if (!allowDrag) return;
-                        ev.preventDefault();
-                        const src = parseDrag(ev);
-                        if (!src) return;
+                              clearRoundsFrom(x, Math.min(src.round, target.round));
+                              buildNextRoundFromSync(x, 0);
+                            });
+                          }
+                          function onDrop(ev: React.DragEvent, target: DragInfo) {
+                            if (!allowDrag) return;
+                            ev.preventDefault();
+                            const src = parseDrag(ev);
+                            if (!src) return;
+                            swapSeats(src, target);
+                          }
+                          function onDropIntoMatch(ev: React.DragEvent, roundIdx: number, matchIdx: number) {
+                            if (!allowDrag) return;
+                            ev.preventDefault();
+                            const src = parseDrag(ev);
+                            if (!src) return;
 
-                        const m = t.rounds?.[roundIdx]?.[matchIdx];
-                        if (!m) return;
-                        const side: 'a' | 'b' = !m.a ? 'a' : !m.b ? 'b' : 'a';
-                        swapSeats(src, { type: 'seat', round: roundIdx, match: matchIdx, side });
-                      }
-                      function pill(teamId?: string, round?: number, match?: number, side?: 'a' | 'b') {
-                        const name = teamName(teamId);
-                        const label = seedLabels.get(teamId || '');
-                        const display = label ? `${name} (${label})` : name;
-                        const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, teamId };
-                        return (
-                          <span
-                            draggable={allowDrag}
-                            onDragStart={e => onDragStart(e, info)}
-                            onDragOver={onDragOver}
-                            onDrop={e => onDrop(e, info)}
-                            style={{ ...pillStyle, opacity: teamId ? 1 : .6, cursor: allowDrag ? 'grab' : 'default' }}
-                            title={allowDrag ? 'Drag to move this team' : undefined}
-                          >
-                            {display}
-                          </span>
-                        );
-                      }
+                            const m = t.rounds?.[roundIdx]?.[matchIdx];
+                            if (!m) return;
+                            const side: 'a' | 'b' = !m.a ? 'a' : !m.b ? 'b' : 'a';
+                            swapSeats(src, { type: 'seat', round: roundIdx, match: matchIdx, side });
+                          }
+                          function pill(teamId?: string, round?: number, match?: number, side?: 'a' | 'b') {
+                            const name = teamName(teamId);
+                            const label = seedLabels.get(teamId || '');
+                            const display = label ? `${name} (${label})` : name;
+                            const info: DragInfo = { type: 'seat', round: round!, match: match!, side: side!, teamId };
+                            return (
+                              <span
+                                draggable={allowDrag}
+                                onDragStart={e => onDragStart(e, info)}
+                                onDragOver={onDragOver}
+                                onDrop={e => onDrop(e, info)}
+                                style={{ ...pillStyle, opacity: teamId ? 1 : .6, cursor: allowDrag ? 'grab' : 'default' }}
+                                title={allowDrag ? 'Drag to move this team' : undefined}
+                              >
+                                {display}
+                              </span>
+                            );
+                          }
 
-                      return (
-                        <div
-                          key={i}
-                          style={matchShellA}
-                          onDragOver={onDragOver}
-                          onDrop={(ev) => onDropIntoMatch(ev, rIdx, i)}
-                        >
-                          <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-                            {pill(m.a, rIdx, i, 'a')}
-                            <span style={{ opacity:.7 }}>vs</span>
-                            {pill(m.b, rIdx, i, 'b')}
-                          </div>
+                          return (
+                            <div
+                              key={i}
+                              style={matchShellA}
+                              onDragOver={onDragOver}
+                              onDrop={(ev) => onDropIntoMatch(ev, rIdx, i)}
+                            >
+                              <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                                {pill(m.a, rIdx, i, 'a')}
+                                <span style={{ opacity:.7 }}>vs</span>
+                                {pill(m.b, rIdx, i, 'b')}
+                              </div>
 
-                            {canHost && t.status !== 'completed' && (
-                              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems:'center' }}>
-                                <button style={w === m.a ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.a)}>A wins</button>
-                                <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)}>B wins</button>
-                                <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)}>Clear</button>
+                              {canHost && t.status !== 'completed' && (
+                                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems:'center' }}>
+                                  <button style={w === m.a ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.a)}>A wins</button>
+                                  <button style={w === m.b ? btnActive : btnMini} onClick={() => hostSetWinner(rIdx, i, m.b)}>B wins</button>
+                                  <button style={btnMini} onClick={() => hostSetWinner(rIdx, i, undefined)}>Clear</button>
 
-                              <button
-                                style={btnPing}
-                                  onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; }, { blockUI: false })}
-                                  title={`Ping ${aName}`}
-                                >Ping A 🔔</button>
-                              <button
-                                style={btnPing}
-                                  onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; }, { blockUI: false })}
-                                  title={`Ping ${bName}`}
-                                >Ping B 🔔</button>
+                                  <button
+                                    style={btnPing}
+                                    onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; }, { blockUI: false })}
+                                    title={`Ping ${aName}`}
+                                  >Ping A 🔔</button>
+                                  <button
+                                    style={btnPing}
+                                    onClick={() => update(x => { (x as any).lastPingAt = Date.now(); (x as any).lastPingR = rIdx; (x as any).lastPingM = i; }, { blockUI: false })}
+                                    title={`Ping ${bName}`}
+                                  >Ping B 🔔</button>
 
-                              {w && <span style={{ fontSize: 12, opacity: .8 }}>Winner: {teamName(w)}</span>}
+                                  {w && <span style={{ fontSize: 12, opacity: .8 }}>Winner: {teamName(w)}</span>}
+                                </div>
+                              )}
+
+                              {!canHost && canReport && (
+                                <div style={{ display: 'flex', gap: 6 }}>
+                                  <button style={btnMini} onClick={() => report(rIdx, i, 'win')} disabled={busy}>I won</button>
+                                  <button style={btnMini} onClick={() => report(rIdx, i, 'loss')} disabled={busy}>I lost</button>
+                                </div>
+                              )}
+                              {!canHost && w && (
+                                <div style={{ fontSize: 12, opacity: .8 }}>
+                                  Winner: {teamName(w)}
+                                </div>
+                              )}
+                              <div style={{ fontSize:12, opacity:.65 }}>{advanceNoteA}</div>
                             </div>
-                          )}
-
-                          {!canHost && canReport && (
-                            <div style={{ display: 'flex', gap: 6 }}>
-                              <button style={btnMini} onClick={() => report(rIdx, i, 'win')} disabled={busy}>I won</button>
-                              <button style={btnMini} onClick={() => report(rIdx, i, 'loss')} disabled={busy}>I lost</button>
-                            </div>
-                          )}
-                          {!canHost && w && (
-                            <div style={{ fontSize: 12, opacity: .8 }}>
-                              Winner: {teamName(w)}
-                            </div>
-                          )}
-                          <div style={{ fontSize:12, opacity:.65 }}>{advanceNoteA}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ))}
+                          );
+                        })}
+                      </div>
+                    ))
+                  )
+                )}
               </div>
             ) : (
               <div style={{ display: 'grid', gridTemplateColumns: `repeat(${t.rounds.length}, minmax(260px, 1fr))`, gap: 12, overflowX: 'auto' }}>
