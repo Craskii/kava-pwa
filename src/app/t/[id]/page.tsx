@@ -234,11 +234,9 @@ function rankGroupMembers(
     const rb = records[b] || { points: 0, wins: 0, losses: 0, played: 0, gamesWon: 0, gamesLost: 0 };
     const diffA = (ra.gamesWon || 0) - (ra.gamesLost || 0);
     const diffB = (rb.gamesWon || 0) - (rb.gamesLost || 0);
-    if (ra.wins !== rb.wins) return rb.wins - ra.wins;
+    if (ra.points !== rb.points) return (rb.points || 0) - (ra.points || 0);
     if (diffA !== diffB) return diffB - diffA;
     if ((ra.gamesWon || 0) !== (rb.gamesWon || 0)) return (rb.gamesWon || 0) - (ra.gamesWon || 0);
-    if (ra.wins !== rb.wins) return rb.wins - ra.wins;
-    if (ra.losses !== rb.losses) return ra.losses - rb.losses;
     return nm(a).localeCompare(nm(b));
   });
 }
@@ -760,10 +758,10 @@ export default function Lobby() {
       if (!stage?.records?.[teamId]) return;
       stage.records[teamId][key] = Math.max(0, (stage.records[teamId][key] || 0) + delta);
       stage.records[teamId].gamesWon ??= 0; stage.records[teamId].gamesLost ??= 0;
-      if (key === 'wins' || key === 'losses') {
-        stage.records[teamId].played = Math.max(stage.records[teamId].played, (stage.records[teamId].wins || 0) + (stage.records[teamId].losses || 0));
-      }
-      stage.records[teamId].points = (stage.records[teamId].wins || 0) * 3;
+      stage.records[teamId].played = Math.max(
+        stage.records[teamId].played,
+        (stage.records[teamId].wins || 0) + (stage.records[teamId].losses || 0)
+      );
       rebuildBracketFromGroups(x, nextSettings);
     }, { blockUI: false });
   }
@@ -850,7 +848,7 @@ export default function Lobby() {
             <div style={{ fontSize:12, opacity:.7 }}>{group.length} team{group.length === 1 ? '' : 's'} • Round robin</div>
           </div>
           <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
-            <span style={{ fontSize:12, opacity:.7 }}>Standings rank by wins (GD, then games won)</span>
+            <span style={{ fontSize:12, opacity:.7 }}>Standings rank by points (game diff, then games won)</span>
             {canHost && showAdd && (
               <button
                 style={btnMini}
@@ -871,14 +869,13 @@ export default function Lobby() {
         ) : (
           <div style={{ display:'grid', gap:6 }}>
             <div
-              style={{ display:'grid', gridTemplateColumns:'1fr repeat(4, auto)', gap:6, fontSize:12, opacity:.7 }}
+              style={{ display:'grid', gridTemplateColumns:'1fr auto', gap:6, fontSize:12, opacity:.7 }}
             >
               <span>Team</span>
-              <span>W</span><span>L</span><span>GD</span><span>GW</span>
+              <span style={{ textAlign:'right' }}>Pts</span>
             </div>
             {ordered.map((teamId, rankIdx) => {
               const rec = groupStage?.records?.[teamId] || { points:0, wins:0, losses:0, played:0, gamesWon:0, gamesLost:0 };
-              const gd = (rec.gamesWon || 0) - (rec.gamesLost || 0);
               const label = `${groupLabel(idx).split(' ')[1]}${rankIdx + 1}`;
               return (
                 <div
@@ -887,7 +884,7 @@ export default function Lobby() {
                   onDragStart={(ev) => onGroupDragStart(ev, { type:'group-seat', teamId, from: idx })}
                   style={{
                     display:'grid',
-                    gridTemplateColumns:'1fr repeat(4, auto)',
+                    gridTemplateColumns:'1fr auto',
                     gap:6,
                     alignItems:'center',
                     padding:'6px 8px',
@@ -901,14 +898,11 @@ export default function Lobby() {
                     <span style={{ fontSize:11, opacity:.6 }}>{label}</span>
                     <span style={{ whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{teamName(teamId)}</span>
                   </div>
-                  <span>{rec.wins}</span>
-                  <span>{rec.losses}</span>
-                  <span>{gd}</span>
-                  <span>{rec.gamesWon}</span>
+                  <span style={{ textAlign:'right', fontWeight:600 }}>{rec.points || 0}</span>
                   {canHost && (
-                    <div style={{ gridColumn:'span 4', display:'flex', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>
-                      <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'wins', 1)} disabled={!canHost}>+1 win</button>
-                      <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'losses', 1)} disabled={!canHost}>+1 loss</button>
+                    <div style={{ gridColumn:'span 2', display:'flex', gap:4, flexWrap:'wrap', justifyContent:'flex-end' }}>
+                      <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'points', 1)} disabled={!canHost}>+1 point</button>
+                      <button style={btnMini} onClick={() => adjustGroupRecord(teamId, 'points', -1)} disabled={!canHost}>-1 point</button>
                     </div>
                   )}
                 </div>
