@@ -115,7 +115,7 @@ function coerceTournament(raw: any): Tournament | null {
             count: Number(raw.settings?.groups?.count ?? 4),
             size: Number(raw.settings?.groups?.size ?? 4),
             matchType,
-            advancement: raw.settings?.groups?.advancement === "wins" ? "wins" : "points",
+            advancement: "wins",
             losersNext: !!raw.settings?.groups?.losersNext,
           }
         : undefined,

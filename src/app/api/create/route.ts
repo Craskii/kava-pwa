@@ -115,7 +115,7 @@ export async function POST(req: Request) {
           count: incomingSettings?.groups?.count || 4,
           size: incomingSettings?.groups?.size || 4,
           matchType,
-          advancement: incomingSettings?.groups?.advancement || "points",
+          advancement: incomingSettings?.groups?.advancement || "wins",
           losersNext: !!incomingSettings?.groups?.losersNext,
         }
       : undefined,
