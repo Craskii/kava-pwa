@@ -27,7 +27,6 @@ const teamMembers = (id: string): [string, string] => {
   const [a, b] = raw.split("+");
   return [a, b] as [string, string];
 };
-const makeTeamId = (a: string, b: string) => `${TEAM_PREFIX}${[a, b].sort().join("+")}`;
 type ListGame = {
   id: string; name: string; code?: string; hostId: string;
   status: "active"; createdAt: number;
@@ -159,8 +158,6 @@ export default function Page() {
   const [showHistory, setShowHistory] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [supportsDnD, setSupportsDnD] = useState<boolean>(true);
-  const [teamA, setTeamA] = useState("");
-  const [teamB, setTeamB] = useState("");
 
   useEffect(() => { setSupportsDnD(true); }, []);
 
@@ -507,15 +504,6 @@ export default function Page() {
   const joinQueue = () => scheduleCommit(d => { ensureMe(d); d.queue ??= []; if (!d.queue.includes(me.id)) d.queue.push(me.id); });
   const leaveQueue = () => scheduleCommit(d => { d.queue = (d.queue ?? []).filter(x => x !== me.id && !(isTeam(x) && teamMembers(x).includes(me.id))); });
   const addPlayer = () => { const v = nameField.trim(); if (!v) return; setNameField(""); const p: Player = { id: uid(), name: v }; scheduleCommit(d => { d.players.push(p); d.prefs ??= {}; d.prefs[p.id] = "any"; d.queue ??= []; if (!d.queue.includes(p.id)) d.queue.push(p.id); }); };
-  const addTeamToQueue = () => {
-    if (!doublesEnabled) return;
-    const a = teamA.trim();
-    const b = teamB.trim();
-    if (!a || !b || a === b) return;
-    enqueueTeam(a, b);
-    setTeamA("");
-    setTeamB("");
-  };
   const removePlayer = (pid: string) => scheduleCommit(d => { d.players = d.players.filter(p => p.id !== pid); d.queue = (d.queue ?? []).filter(x => x !== pid && !(isTeam(x) && teamMembers(x).includes(pid))); if (d.prefs) delete d.prefs[pid]; clearPidFromTables(d, pid); });
   const renamePlayer = (pid: string) => {
     const cur = players.find(p => p.id === pid)?.name || "";
@@ -528,7 +516,6 @@ export default function Page() {
   };
   const setPrefFor = (pid: string, pref: Pref) => scheduleCommit(d => { d.prefs ??= {}; d.prefs[pid] = pref; });
   const enqueuePid = (pid: string) => scheduleCommit(d => { d.queue ??= []; if (!d.queue.includes(pid)) d.queue.push(pid); });
-  const enqueueTeam = (pidA: string, pidB: string) => scheduleCommit(d => { const entry = makeTeamId(pidA, pidB); d.queue ??= []; if (!d.queue.includes(entry)) d.queue.push(entry); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = (d.queue ?? []).filter(x => x !== pid && !(isTeam(x) && teamMembers(x).includes(pid))); });
 
   const leaveList = () => {
@@ -585,21 +572,52 @@ export default function Page() {
       alert(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
     }
 
+    const eliminated = new Set<string>([loser]);
+
     scheduleCommit(d => {
       d.queue ??= [];
       const t = d.tables.find(tt => seatKeys.some(sk => seatValue(tt, sk) === loser));
       if (!t) return;
-      seatKeys.forEach(sk => { if (seatValue(t, sk) === loser) setSeatValue(t, sk, undefined); });
+
+      const seatOfLoser = seatKeys.find(sk => seatValue(t, sk) === loser);
+      if (d.doubles && seatOfLoser) {
+        const onLeft = seatOfLoser.startsWith('a');
+        const teammates = onLeft ? (['a1', 'a2'] as SeatKey[]) : (['b1', 'b2'] as SeatKey[]);
+        teammates.forEach(sk => {
+          const teammate = seatValue(t, sk);
+          if (teammate) eliminated.add(teammate);
+        });
+      }
+
+      seatKeys.forEach(sk => { if (eliminated.has(seatValue(t, sk) ?? '')) setSeatValue(t, sk, undefined); });
+
       d.queue = (d.queue ?? []).filter(x => {
-        if (x === loser) return false;
+        if (eliminated.has(x)) return false;
         if (!isTeam(x)) return true;
-        if (isTeam(loser)) return !teamMembers(x).some(id => teamMembers(loser).includes(id));
-        return !teamMembers(x).includes(loser);
+        return !teamMembers(x).some(id => eliminated.has(id));
       });
-      if (shouldQueue && !d.queue.includes(loser)) d.queue!.push(loser);
+
+      if (shouldQueue) {
+        eliminated.forEach(p => { if (!d.queue!.includes(p)) d.queue!.push(p); });
+      }
+
       excludeSeatPidRef.current = loser;
     });
   };
+
+  const moveSeatBetweenTables = (tableIndex: number, seat: SeatKey, direction: -1 | 1) => scheduleCommit(d => {
+    if (!d.tables) return;
+    const targetIndex = tableIndex + direction;
+    if (targetIndex < 0 || targetIndex >= d.tables.length) return;
+
+    const from = d.tables[tableIndex];
+    const to = d.tables[targetIndex];
+    const fromVal = seatValue(from, seat);
+    const toVal = seatValue(to, seat);
+
+    setSeatValue(from, seat, toVal);
+    setSeatValue(to, seat, fromVal);
+  });
 
   /* UI */
   return (
@@ -763,7 +781,17 @@ export default function Page() {
                           <span style={{opacity:.7,fontSize:13,fontWeight:600}}>{label}</span>
                           <span style={{fontSize:15}}>{nameOf(pid)}</span>
                         </span>
-                        {pid && (canSeat || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
+                        {pid && (
+                          <span style={{display:'flex',gap:6,alignItems:'center'}}>
+                            {g.tables.length > 1 && canSeat && (
+                              <span style={{display:'flex',gap:4}}>
+                                {i > 0 && <button style={btnTiny} onClick={()=>moveSeatBetweenTables(i, side, -1)} aria-label="Move to previous table">←</button>}
+                                {i < g.tables.length - 1 && <button style={btnTiny} onClick={()=>moveSeatBetweenTables(i, side, 1)} aria-label="Move to next table">→</button>}
+                              </span>
+                            )}
+                            {(canSeat || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
+                          </span>
+                        )}
                       </div>
                     );
                   };
@@ -819,29 +847,6 @@ export default function Page() {
                   <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">Skip first</button>
                 )}
               </div>
-
-              {doublesEnabled && (me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) && players.length >= 2 && (
-                <div style={{display:"flex",flexWrap:"wrap",gap:8,alignItems:"center",marginBottom:10}}>
-                  <div style={{opacity:.8,fontSize:13,display:'flex',alignItems:'center',gap:6}}>
-                    <span style={dragHandleMini} aria-hidden>⋮</span>
-                    Queue a doubles team:
-                  </div>
-                  <select value={teamA} onChange={(e)=>setTeamA(e.target.value)} style={select} disabled={busy}>
-                    <option value="">Player A</option>
-                    {players.map(p=>(<option key={`ta-${p.id}`} value={p.id}>{p.name}</option>))}
-                  </select>
-                  <select value={teamB} onChange={(e)=>setTeamB(e.target.value)} style={select} disabled={busy}>
-                    <option value="">Player B</option>
-                    {players.map(p=>(<option key={`tb-${p.id}`} value={p.id}>{p.name}</option>))}
-                  </select>
-                  <button
-                    style={btnGhostSm}
-                    onClick={addTeamToQueue}
-                    disabled={busy || !teamA || !teamB || teamA===teamB}
-                    title="Add two players as a team"
-                  >Add doubles</button>
-                </div>
-              )}
 
               {queue.length===0 ? <div style={{opacity:.6,fontStyle:"italic"}}>Drop players here</div> : (
                 <ol style={{margin:0,paddingLeft:18,display:"grid",gap:6}}
