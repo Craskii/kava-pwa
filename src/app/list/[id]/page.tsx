@@ -340,6 +340,19 @@ export default function Page() {
   const prefs = g?.prefs || {};
   const players = g?.players ?? [];
   const doublesEnabled = g?.doubles ?? false;
+  const seatedPids = useMemo(() => {
+    if (!g) return new Set<string>();
+    const set = new Set<string>();
+    g.tables.forEach(t => {
+      const sides = [t.a, t.b];
+      sides.forEach(val => {
+        if (!val) return;
+        set.add(val);
+        if (isTeam(val)) teamMembers(val).forEach(m => set.add(m));
+      });
+    });
+    return set;
+  }, [g]);
   const iAmHost = g ? (me.id === g.hostId) : false;
   const iAmCohost = g ? ((g.cohosts ?? []).includes(me.id)) : false;
   const seatedIndex = g ? g.tables.findIndex((t) => t.a === me.id || t.b === me.id) : -1;
@@ -476,6 +489,7 @@ export default function Page() {
   /* actions */
   const renameList = (nm: string) => { const v = nm.trim(); if (!v) return; scheduleCommit(d => { d.name = v; }); };
   const ensureMe = (d: ListGame) => { if (!d.players.some(p => p.id === me.id)) d.players.push(me); d.prefs ??= {}; if (!d.prefs[me.id]) d.prefs[me.id] = "any"; };
+  const addSelfToList = () => scheduleCommit(d => { ensureMe(d); });
   const joinQueue = () => scheduleCommit(d => { ensureMe(d); d.queue ??= []; if (!d.queue.includes(me.id)) d.queue.push(me.id); });
   const leaveQueue = () => scheduleCommit(d => { d.queue = (d.queue ?? []).filter(x => x !== me.id && !(isTeam(x) && teamMembers(x).includes(me.id))); });
   const addPlayer = () => { const v = nameField.trim(); if (!v) return; setNameField(""); const p: Player = { id: uid(), name: v }; scheduleCommit(d => { d.players.push(p); d.prefs ??= {}; d.prefs[p.id] = "any"; d.queue ??= []; if (!d.queue.includes(p.id)) d.queue.push(p.id); }); };
@@ -614,6 +628,9 @@ export default function Page() {
                 </div>
               </div>
               <div style={{display:"grid",gap:6,justifyItems:"end"}}>
+                {!players.some(p => p.id === me.id) && (
+                  <button style={btnGhost} onClick={addSelfToList} disabled={busy}>Add me as "{me.name}"</button>
+                )}
                 {!seated && !queue.includes(me.id) && <button style={btn} onClick={joinQueue} disabled={busy}>Join queue</button>}
                 {queue.includes(me.id) && <button style={btnGhost} onClick={leaveQueue} disabled={busy}>Leave queue</button>}
                 {g && me.id !== g.hostId && players.some(p => p.id === me.id) && (
@@ -697,9 +714,9 @@ export default function Page() {
                 </div>
               )}
 
-              <div style={{display:"grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px,1fr))", gap:12}}>
+              <div style={{display:"grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px,1fr))", gap:12}}>
                 {g.tables.map((t,i)=>{
-                  const Seat = ({side}:{side:"a"|"b"})=>{
+                  const Seat = ({side,label}:{side:"a"|"b";label:string})=>{
                     const pid = t[side];
                     return (
                       <div
@@ -707,11 +724,12 @@ export default function Page() {
                         onDragStart={(e)=>pid && onDragStart(e,{type:"seat",table:i,side,pid})}
                         onDragOver={supportsDnD ? onDragOver : undefined}
                         onDrop={supportsDnD ? (e)=>handleDrop(e,{type:"seat",table:i,side,pid}) : undefined}
-                        style={{minHeight:24,padding:"8px 10px",border:"1px dashed rgba(255,255,255,.25)",borderRadius:8,background:"rgba(56,189,248,.10)",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}
-                        title={supportsDnD ? "Drag from queue or swap seats" : "Use Queue controls"}
+                        style={{minHeight:24,padding:"10px 12px",border:"1px dashed rgba(255,255,255,.25)",borderRadius:10,background:"rgba(56,189,248,.10)",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8, boxShadow:"inset 0 1px 0 rgba(255,255,255,.08)"}}
+                        title={supportsDnD ? "Drag from queue, players, or swap seats" : "Use Queue controls"}
                       >
                         <span style={{display:'flex',alignItems:'center',gap:8}}>
                           <span style={dragHandleMini} aria-hidden>⋮</span>
+                          <span style={{opacity:.7,fontSize:12}}>{label}</span>
                           <span>{nameOf(pid)}</span>
                         </span>
                         {pid && ((me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
@@ -719,17 +737,31 @@ export default function Page() {
                     );
                   };
                   return (
-                    <div key={i} style={{ background:"#0b3a66", borderRadius:12, padding:"12px 14px", border:"1px solid rgba(56,189,248,.35)"}}>
-                      <div style={{ opacity:.9, fontSize:12, marginBottom:6, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                    <div key={i} style={{ background:"#0b3a66", borderRadius:12, padding:"12px 14px", border:"1px solid rgba(56,189,248,.35)", display:"grid", gap:10 }}>
+                      <div style={{ opacity:.9, fontSize:12, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
                         <span>{t.label==="9 foot"?"9-Foot Table":"8-Foot Table"} • Table {i+1}</span>
                         {doublesEnabled && <span style={pillBadge}>Doubles</span>}
                       </div>
-                      <div style={{ display:"grid", gap:8 }}>
-                        <Seat side="a"/><div style={{opacity:.7,textAlign:"center"}}>vs</div><Seat side="b"/>
+                      <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',alignItems:'center',gap:10}}>
+                        <div style={{display:'grid',gap:8}}>
+                          <Seat side="a" label={doublesEnabled ? "Left team" : "Player"}/>
+                        </div>
+                        <div style={{opacity:.7,textAlign:'center',fontWeight:600}}>vs</div>
+                        <div style={{display:'grid',gap:8}}>
+                          <Seat side="b" label={doublesEnabled ? "Right team" : "Player"}/>
+                        </div>
                       </div>
                     </div>
                   );
                 })}
+              </div>
+              <div
+                onDragOver={supportsDnD ? onDragOver : undefined}
+                onDrop={supportsDnD ? (e)=>handleDrop(e,{type:'bench'}) : undefined}
+                style={{marginTop:10,padding:'10px 12px',border:'1px dashed rgba(255,255,255,.25)',borderRadius:12,opacity:.75,fontSize:13,display:'flex',alignItems:'center',gap:10}}
+              >
+                <span style={dragHandleMini} aria-hidden>⋮</span>
+                Drop here to clear a seat or remove from queue
               </div>
             </section>
 
@@ -832,18 +864,36 @@ export default function Page() {
             {/* Players */}
             <section style={card}>
               <h3 style={{marginTop:0}}>List (Players) — {players.length}</h3>
+              <div style={{opacity:.75,fontSize:13,marginBottom:8,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <span style={dragHandleMini} aria-hidden>⋮</span>
+                Drag a player onto a table side to seat them, or onto the queue to line them up.
+              </div>
               {players.length===0 ? <div style={{opacity:.7}}>No players yet.</div> : (
                 <ul style={{ listStyle:"none", padding:0, margin:0, display:"grid", gap:8 }}>
                   {players.map(p=>{
                     const pref = (prefs[p.id] ?? "any") as Pref;
                     const canEditSelf = p.id===me.id;
                     const isCohost = (g.cohosts ?? []).includes(p.id);
+                    const isSeated = seatedPids.has(p.id);
+                    const status = isSeated ? "table" : (inQueue(p.id) ? "queue" : "idle");
                     return (
-                      <li key={p.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", background:"#111", padding:"10px 12px", borderRadius:10 }}>
-                        <span>{p.name}{isCohost ? <em style={{opacity:.6,marginLeft:8}}>(Cohost)</em> : null}</span>
+                      <li
+                        key={p.id}
+                        style={{ display:"flex", justifyContent:"space-between", alignItems:"center", background:"#111", padding:"10px 12px", borderRadius:10 }}
+                        draggable={supportsDnD && (me.id === g.hostId || (g.cohosts ?? []).includes(me.id))}
+                        onDragStart={supportsDnD && (me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) ? (e)=>onDragStart(e,{type:"player",pid:p.id}) : undefined}
+                        onDragOver={supportsDnD ? onDragOver : undefined}
+                        onDrop={supportsDnD ? (e)=>handleDrop(e,{type:"queue",index:queue.length,pid:p.id}) : undefined}
+                      >
+                        <span style={{display:'flex',alignItems:'center',gap:8}}>
+                          <span>{p.name}{isCohost ? <em style={{opacity:.6,marginLeft:8}}>(Cohost)</em> : null}</span>
+                          <span style={{fontSize:11,opacity:.65,padding:'3px 8px',borderRadius:999,border:'1px solid rgba(255,255,255,.18)'}}>
+                            {status}
+                          </span>
+                        </span>
                         <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
                           {!inQueue(p.id)
-                            ? ((me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) ? <button style={btnMini} onClick={()=>enqueuePid(p.id)} disabled={busy}>Queue</button> : null)
+                            ? ((me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) ? <button style={btnMini} onClick={()=>enqueuePid(p.id)} disabled={busy || isSeated}>Queue</button> : null)
                             : ((me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) ? <button style={btnMini} onClick={()=>dequeuePid(p.id)} disabled={busy}>Dequeue</button> : null)}
                           {(me.id === g.hostId || (g.cohosts ?? []).includes(me.id) || canEditSelf) && (
                             <div style={{display:"flex",gap:6}}>
@@ -876,7 +926,9 @@ export default function Page() {
   /* DnD helpers */
   type DragInfo =
     | { type: "seat"; table: number; side: "a"|"b"; pid?: string }
-    | { type: "queue"; index: number; pid: string };
+    | { type: "queue"; index: number; pid: string }
+    | { type: "player"; pid: string }
+    | { type: "bench" };
 
   function onDragStart(e: React.DragEvent, info: DragInfo) { e.dataTransfer.setData("application/json", JSON.stringify(info)); e.dataTransfer.effectAllowed = "move"; }
   function onDragOver(e: React.DragEvent) { e.preventDefault(); }
@@ -898,10 +950,16 @@ export default function Page() {
         } else if (src.type === "queue") {
           d.queue = (d.queue ?? []).filter(x => x !== src.pid);
           placeSeat(target.table, target.side, src.pid);
+        } else if (src.type === "player") {
+          placeSeat(target.table, target.side, src.pid);
         }
       } else if (target.type === "queue") {
         if (src.type === "queue") d.queue = moveWithin(d.queue!, src.index, target.index);
         else if (src.type === "seat") { const pid = d.tables[src.table][src.side]; d.tables[src.table][src.side] = undefined; if (pid) d.queue!.splice(target.index, 0, pid); }
+        else if (src.type === "player") { if (!d.queue!.includes(src.pid)) d.queue!.splice(target.index, 0, src.pid); }
+      } else if (target.type === "bench") {
+        if (src.type === "seat") { const pid = d.tables[src.table][src.side]; d.tables[src.table][src.side] = undefined; removeEverywhere(pid ?? ""); }
+        if (src.type === "queue") { d.queue = (d.queue ?? []).filter(x => x !== src.pid); }
       }
     });
   }
