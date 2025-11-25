@@ -380,6 +380,10 @@ export default function LocalListPage() {
     const a = d.queue[index - 1]; d.queue[index - 1] = d.queue[index]; d.queue[index] = a;
   });
   
+  type ConfirmState = { message: string; resolve: (v: boolean) => void } | null;
+  const [confirmState, setConfirmState] = useState<ConfirmState>(null);
+  const confirmYesNo = (message: string) => new Promise<boolean>(resolve => setConfirmState({ message, resolve }));
+
   const moveDown = (index: number) => update(d => {
     if (index < 0 || index >= d.queue.length - 1) return;
     const a = d.queue[index + 1]; d.queue[index + 1] = d.queue[index]; d.queue[index] = a;
@@ -393,12 +397,13 @@ export default function LocalListPage() {
     }
   }, { t: Date.now(), who: me.id, type: 'skip-first' });
 
-  const iLost = (pid?: string) => {
+  const iLost = async (pid?: string) => {
     const loser = pid ?? me.id;
     const playerName = nameOf(loser);
 
-    if (!confirm(`${playerName}, are you sure you lost?`)) return;
-    const shouldQueue = confirm('Put yourself back in the queue?');
+    const confirmed = await confirmYesNo(`${playerName}, are you sure you lost?`);
+    if (!confirmed) return;
+    const shouldQueue = await confirmYesNo('Put yourself back in the queue?');
 
     if (!shouldQueue) {
       setLostMessage(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
@@ -882,6 +887,17 @@ export default function LocalListPage() {
           </ul>
         )}
       </section>
+      {confirmState && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50}}>
+          <div style={{background:"#0f172a",border:"1px solid rgba(255,255,255,0.15)",borderRadius:12,padding:"16px 18px",width:"min(420px, 92vw)",boxShadow:"0 20px 50px rgba(0,0,0,0.45)"}}>
+            <div style={{marginBottom:14,fontWeight:700,lineHeight:1.4}}>{confirmState.message}</div>
+            <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
+              <button style={btnMini} onClick={()=>{ confirmState.resolve(false); setConfirmState(null); }}>No</button>
+              <button style={{...btnMini, background:"#0ea5e9", border:"none"}} onClick={()=>{ confirmState.resolve(true); setConfirmState(null); }}>Yes</button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

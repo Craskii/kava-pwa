@@ -518,20 +518,25 @@ export default function Page() {
   const enqueuePid = (pid: string) => scheduleCommit(d => { d.queue ??= []; if (!d.queue.includes(pid)) d.queue.push(pid); });
   const dequeuePid = (pid: string) => scheduleCommit(d => { d.queue = (d.queue ?? []).filter(x => x !== pid && !(isTeam(x) && teamMembers(x).includes(pid))); });
 
-  const leaveList = () => {
-  // ✅ Confirm before leaving
-  if (!confirm("Are you sure you want to leave this list?")) return;
-  
-  scheduleCommit(d => {
-    d.players = d.players.filter(p => p.id !== me.id);
-    d.queue = (d.queue ?? []).filter(x => x !== me.id && !(isTeam(x) && teamMembers(x).includes(me.id)));
-    clearPidFromTables(d, me.id);
-    if (d.prefs) delete d.prefs[me.id];
-  });
-  
-  // ✅ Navigate away after commit
-  setTimeout(() => { window.location.href = '/lists'; }, 500);
-};
+  type ConfirmState = { message: string; resolve: (v: boolean) => void } | null;
+  const [confirmState, setConfirmState] = useState<ConfirmState>(null);
+  const confirmYesNo = (message: string) => new Promise<boolean>(resolve => setConfirmState({ message, resolve }));
+
+  const leaveList = async () => {
+    // ✅ Confirm before leaving
+    const confirmed = await confirmYesNo("Are you sure you want to leave this list?");
+    if (!confirmed) return;
+
+    scheduleCommit(d => {
+      d.players = d.players.filter(p => p.id !== me.id);
+      d.queue = (d.queue ?? []).filter(x => x !== me.id && !(isTeam(x) && teamMembers(x).includes(me.id)));
+      clearPidFromTables(d, me.id);
+      if (d.prefs) delete d.prefs[me.id];
+    });
+
+    // ✅ Navigate away after commit
+    setTimeout(() => { window.location.href = '/lists'; }, 500);
+  };
 
   const toggleCohost = (pid: string) => {
     scheduleCommit(d => {
@@ -561,12 +566,13 @@ export default function Page() {
     }
   });
 
-  const iLost = (pid?: string) => {
+  const iLost = async (pid?: string) => {
     const loser = pid ?? me.id;
     const playerName = nameOf(loser);
 
-    if (!confirm(`${playerName}, are you sure you lost?`)) return;
-    const shouldQueue = confirm('Put yourself back in the queue?');
+    const confirmed = await confirmYesNo(`${playerName}, are you sure you lost?`);
+    if (!confirmed) return;
+    const shouldQueue = await confirmYesNo('Put yourself back in the queue?');
 
     if (!shouldQueue) {
       alert(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
@@ -970,6 +976,17 @@ export default function Page() {
           </>
         )}
       </main>
+      {confirmState && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50}}>
+          <div style={{background:"#0f172a",border:"1px solid rgba(255,255,255,0.15)",borderRadius:12,padding:"16px 18px",width:"min(420px, 92vw)",boxShadow:"0 20px 50px rgba(0,0,0,0.45)"}}>
+            <div style={{marginBottom:14,fontWeight:700,lineHeight:1.4}}>{confirmState.message}</div>
+            <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
+              <button style={btnMini} onClick={()=>{ confirmState.resolve(false); setConfirmState(null); }}>No</button>
+              <button style={{...btnMini, background:"#0ea5e9", border:"none"}} onClick={()=>{ confirmState.resolve(true); setConfirmState(null); }}>Yes</button>
+            </div>
+          </div>
+        </div>
+      )}
       <DebugPanel/>
     </ErrorBoundary>
   );
