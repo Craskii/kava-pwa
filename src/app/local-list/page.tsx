@@ -142,14 +142,14 @@ export default function LocalListPage() {
     }
   }, [me]);
 
-  const [g, setG] = useState<ListGame>(() => {
-    const doc = loadLocal();
-    if (!doc.hostId && me.id) { 
-      doc.hostId = me.id; 
-      saveLocal(doc); 
-    }
-    return doc;
-  });
+  const withHost = (doc: ListGame) => {
+    if (doc.hostId) return doc;
+    const next = { ...doc, hostId: me.id };
+    saveLocal(next);
+    return next;
+  };
+
+  const [g, setG] = useState<ListGame>(() => withHost(loadLocal()));
 
   const [busy, setBusy] = useState(false);
   const [nameField, setNameField] = useState('');
@@ -547,8 +547,8 @@ export default function LocalListPage() {
         <BackButton href="/" />
         <div style={{display:'flex',alignItems:'center',gap:8}}>
           <span style={pillBadge}>Local</span>
-          <button style={btnGhostSm} onClick={()=>{ const fresh = loadLocal(); setG(fresh); }}>Reload</button>
-          <button style={btnGhostSm} onClick={()=>{ localStorage.removeItem(LS_KEY); setG(loadLocal()); }}>Reset</button>
+          <button style={btnGhostSm} onClick={()=>{ const fresh = withHost(loadLocal()); setG(fresh); }}>Reload</button>
+          <button style={btnGhostSm} onClick={()=>{ localStorage.removeItem(LS_KEY); setG(withHost(loadLocal())); }}>Reset</button>
         </div>
       </div>
 
