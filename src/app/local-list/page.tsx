@@ -690,15 +690,26 @@ export default function LocalListPage() {
                     {doublesEnabled && <span style={pillBadge}>Doubles</span>}
                   </div>
                   <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                    <button style={btnGhostSm} onClick={() => update(d => {
-                      const tt = d.tables[i];
-                      ([['a','b'],['a1','b1'],['a2','b2']] as [SeatKey,SeatKey][]).forEach(([l,r]) => {
-                        const lv = seatValue(tt, l);
-                        const rv = seatValue(tt, r);
-                        setSeatValue(tt, l, rv);
-                        setSeatValue(tt, r, lv);
-                      });
-                    }, { t: Date.now(), who: me.id, type: 'swap-sides', note: `Table ${i+1}` });} disabled={busy || !iHaveMod}>Swap sides</button>
+                    <button
+                      style={btnGhostSm}
+                      onClick={() =>
+                        update(
+                          d => {
+                            const tt = d.tables[i];
+                            ([['a','b'],['a1','b1'],['a2','b2']] as [SeatKey,SeatKey][]).forEach(([l,r]) => {
+                              const lv = seatValue(tt, l);
+                              const rv = seatValue(tt, r);
+                              setSeatValue(tt, l, rv);
+                              setSeatValue(tt, r, lv);
+                            });
+                          },
+                          { t: Date.now(), who: me.id, type: 'swap-sides', note: `Table ${i+1}` },
+                        )
+                      }
+                      disabled={busy || !iHaveMod}
+                    >
+                      Swap sides
+                    </button>
                   </div>
                 </div>
                 <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',alignItems:'stretch',gap:10}}>
