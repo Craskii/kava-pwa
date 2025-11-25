@@ -7,7 +7,10 @@ import { uid } from '@/lib/storage';
 
 /* ============ Types ============ */
 type TableLabel = '8 foot' | '9 foot';
-type Table = { a?: string; b?: string; label: TableLabel };
+type Table = { a?: string; b?: string; a1?: string; a2?: string; b1?: string; b2?: string; label: TableLabel };
+type SeatKey = keyof Pick<Table, 'a' | 'b' | 'a1' | 'a2' | 'b1' | 'b2'>;
+const seatKeys = ['a', 'b', 'a1', 'a2', 'b1', 'b2'] as const satisfies SeatKey[];
+const seatsForMode = (doubles: boolean) => doubles ? (['a1', 'a2', 'b1', 'b2'] as const) : (['a', 'b'] as const);
 type Player = { id: string; name: string };
 type Pref = '8 foot' | '9 foot' | 'any';
 type AuditEntry = { t: number; who?: string; type: string; note?: string };
@@ -71,6 +74,10 @@ function loadLocal(): ListGame {
           ? raw.tables.map((t: any, i: number) => ({
               a: t?.a,
               b: t?.b,
+              a1: t?.a1 ?? t?.a,
+              a2: t?.a2,
+              b1: t?.b1 ?? t?.b,
+              b2: t?.b2,
               label:
                 t?.label === '9 foot' || t?.label === '8 foot'
                   ? t.label
@@ -173,10 +180,27 @@ export default function LocalListPage() {
   const players = g.players;
   const doublesEnabled = g.doubles ?? false;
   const prefs = g.prefs || {};
+  const activeSeats = seatsForMode(doublesEnabled);
+
+  const seatValue = (t: Table, key: SeatKey) => (t as any)[key] as string | undefined;
+  const setSeatValue = (t: Table, key: SeatKey, pid?: string) => {
+    (t as any)[key] = pid;
+    if (key === 'a1' || key === 'a') { t.a = pid; t.a1 = pid; }
+    if (key === 'b1' || key === 'b') { t.b = pid; t.b1 = pid; }
+  };
+  const seatValues = (t: Table, doubles: boolean) => seatsForMode(doubles).map(k => seatValue(t, k));
+  const clearPidFromTables = (d: ListGame, pid: string) => {
+    d.tables = d.tables.map(t => {
+      const nt = { ...t } as Table;
+      seatKeys.forEach(k => { if (seatValue(nt, k) === pid) setSeatValue(nt, k, undefined); });
+      return nt;
+    });
+  };
   const seatedPids = useMemo(() => {
     const set = new Set<string>();
     g.tables.forEach(t => {
-      [t.a, t.b].forEach(val => {
+      seatKeys.forEach(key => {
+        const val = seatValue(t, key);
         if (!val) return;
         set.add(val);
         if (isTeam(val)) teamMembers(val).forEach(m => set.add(m));
@@ -238,16 +262,15 @@ export default function LocalListPage() {
     };
 
     const fillFromPlayersIfNoQueue = false; // Require queue membership to auto-seat
+    const seatOrder = seatsForMode(next.doubles ?? false);
     const seatedSet = new Set<string>();
     for (const t of next.tables) {
-      if (t.a) {
-        seatedSet.add(t.a);
-        if (isTeam(t.a)) teamMembers(t.a).forEach(m => seatedSet.add(m));
-      }
-      if (t.b) {
-        seatedSet.add(t.b);
-        if (isTeam(t.b)) teamMembers(t.b).forEach(m => seatedSet.add(m));
-      }
+      seatKeys.forEach(sk => {
+        const val = seatValue(t, sk);
+        if (!val) return;
+        seatedSet.add(val);
+        if (isTeam(val)) teamMembers(val).forEach(m => seatedSet.add(m));
+      });
     }
     const candidates = fillFromPlayersIfNoQueue
       ? next.players.map(p => p.id).filter(pid => !seatedSet.has(pid))
@@ -263,8 +286,9 @@ export default function LocalListPage() {
     };
 
     next.tables.forEach((t) => {
-      if (!t.a) t.a = takeFromQueue(t.label) ?? (fillFromPlayersIfNoQueue ? takeFromPlayers(t.label) : undefined);
-      if (!t.b) t.b = takeFromQueue(t.label) ?? (fillFromPlayersIfNoQueue ? takeFromPlayers(t.label) : undefined);
+      seatOrder.forEach(sk => {
+        if (!seatValue(t, sk)) setSeatValue(t, sk, takeFromQueue(t.label) ?? (fillFromPlayersIfNoQueue ? takeFromPlayers(t.label) : undefined));
+      });
     });
 
     excludeSeatPidRef.current = null;
@@ -330,7 +354,7 @@ export default function LocalListPage() {
     d.players = d.players.filter(p => p.id !== pid);
     d.queue = d.queue.filter(x => x !== pid && !(isTeam(x) && teamMembers(x).includes(pid)));
     delete d.prefs[pid];
-    d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b }));
+    clearPidFromTables(d, pid);
   }, { t: Date.now(), who: me.id, type: 'remove-player', note: nameOf(pid) });
   
   const renamePlayer = (pid: string) => {
@@ -361,7 +385,7 @@ export default function LocalListPage() {
   const leaveList = () => update(d => {
     d.players = d.players.filter(p => p.id !== me.id);
     d.queue = d.queue.filter(x => x !== me.id && !(isTeam(x) && teamMembers(x).includes(me.id)));
-    d.tables = d.tables.map(t => ({ ...t, a: t.a === me.id ? undefined : t.a, b: t.b === me.id ? undefined : t.b }));
+    clearPidFromTables(d, me.id);
     delete d.prefs[me.id];
   }, { t: Date.now(), who: me.id, type: 'leave-list' });
 
@@ -402,10 +426,9 @@ export default function LocalListPage() {
     }
 
     update(d => {
-      const t = d.tables.find(tt => tt.a === loser || tt.b === loser);
+      const t = d.tables.find(tt => seatKeys.some(sk => seatValue(tt, sk) === loser));
       if (!t) return;
-      if (t.a === loser) t.a = undefined;
-      if (t.b === loser) t.b = undefined;
+      seatKeys.forEach(sk => { if (seatValue(t, sk) === loser) setSeatValue(t, sk, undefined); });
       d.queue = d.queue.filter(x => {
         if (x === loser) return false;
         if (!isTeam(x)) return true;
@@ -418,7 +441,7 @@ export default function LocalListPage() {
   };
 
   type DragInfo =
-    | { type: 'seat'; table: number; side: 'a'|'b'; pid?: string }
+    | { type: 'seat'; table: number; side: SeatKey; pid?: string }
     | { type: 'queue'; index: number; pid: string }
     | { type: 'player'; pid: string }
     | { type: 'bench' };
@@ -455,20 +478,20 @@ export default function LocalListPage() {
       
       const removeEverywhere = (pid: string) => {
         d.queue = d.queue.filter(x => x !== pid);
-        d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b }));
+        clearPidFromTables(d, pid);
       };
-      
-      const placeSeat = (ti: number, side: 'a'|'b', pid?: string) => {
-        if (!pid) return; 
-        removeEverywhere(pid); 
-        d.tables[ti][side] = pid;
+
+      const placeSeat = (ti: number, side: SeatKey, pid?: string) => {
+        if (!pid) return;
+        removeEverywhere(pid);
+        setSeatValue(d.tables[ti], side, pid);
       };
 
       if (target.type === 'seat') {
         if (src.type === 'seat') {
-          const sp = d.tables[src.table][src.side], tp = d.tables[target.table][target.side];
-          d.tables[src.table][src.side] = tp;
-          d.tables[target.table][target.side] = sp;
+          const sp = seatValue(d.tables[src.table], src.side), tp = seatValue(d.tables[target.table], target.side);
+          setSeatValue(d.tables[src.table], src.side, tp);
+          setSeatValue(d.tables[target.table], target.side, sp);
         } else if (src.type === 'queue') {
           d.queue = d.queue.filter(x => x !== src.pid);
           placeSeat(target.table, target.side, src.pid);
@@ -478,18 +501,18 @@ export default function LocalListPage() {
       } else if (target.type === 'queue') {
         if (src.type === 'queue') d.queue = moveWithin(d.queue, src.index, target.index);
         else if (src.type === 'seat') {
-          const pid = d.tables[src.table][src.side];
-          d.tables[src.table][src.side] = undefined;
+          const pid = seatValue(d.tables[src.table], src.side);
+          setSeatValue(d.tables[src.table], src.side, undefined);
           if (pid) d.queue.splice(target.index, 0, pid);
         } else if (src.type === 'player') { if (!d.queue.includes(src.pid)) d.queue.splice(target.index, 0, src.pid); }
       } else if (target.type === 'bench') {
-        if (src.type === 'seat') { const pid = d.tables[src.table][src.side]; d.tables[src.table][src.side] = undefined; removeEverywhere(pid ?? ''); }
+        if (src.type === 'seat') { const pid = seatValue(d.tables[src.table], src.side); setSeatValue(d.tables[src.table], src.side, undefined); removeEverywhere(pid ?? ''); }
         if (src.type === 'queue') { d.queue = d.queue.filter(x => x !== src.pid); }
       }
     });
   };
 
-  const seatedIndex = g.tables.findIndex((t) => t.a === me.id || t.b === me.id);
+  const seatedIndex = g.tables.findIndex((t) => seatKeys.some(sk => seatValue(t, sk) === me.id));
   const seated = seatedIndex >= 0;
 
   const onNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -611,7 +634,24 @@ export default function LocalListPage() {
                 onChange={(e)=>{
                   const target = e.target as HTMLInputElement | null;
                   const next = !!target?.checked;
-                  update(d=>{ d.doubles = next; });
+                  update(d=>{
+                    d.doubles = next;
+                    d.tables = d.tables.map(t => {
+                      const tt = { ...t } as Table;
+                      if (next) {
+                        if (!tt.a1 && tt.a) tt.a1 = tt.a;
+                        if (!tt.b1 && tt.b) tt.b1 = tt.b;
+                      } else {
+                        tt.a = tt.a1 || tt.a;
+                        tt.b = tt.b1 || tt.b;
+                        tt.a1 = tt.a;
+                        tt.b1 = tt.b;
+                        tt.a2 = undefined;
+                        tt.b2 = undefined;
+                      }
+                      return tt;
+                    });
+                  });
                 }}
                 disabled={busy || !iHaveMod}
               />
@@ -622,39 +662,54 @@ export default function LocalListPage() {
 
         <div style={{display:'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px,1fr))', gap:12}}>
           {g.tables.map((t,i)=>{
-            const Seat = ({side,label}:{side:'a'|'b';label:string})=>{
-              const pid = t[side];
+            const Seat = ({side,label}:{side:SeatKey;label:string})=>{
+              const pid = seatValue(t, side);
               return (
                 <div
                   draggable={!!pid && iHaveMod && supportsDnD}
                   onDragStart={(e)=>pid && onDragStart(e,{type:'seat',table:i,side,pid})}
                   onDragOver={supportsDnD ? onDragOver : undefined}
                   onDrop={supportsDnD ? (e)=>handleDrop(e,{type:'seat',table:i,side,pid}) : undefined}
-                  style={{minHeight:24,padding:'10px 12px',border:'1px dashed rgba(255,255,255,.25)',borderRadius:10,background:'rgba(56,189,248,.10)',display:'flex',justifyContent:'space-between',alignItems:'center',gap:8, boxShadow:'inset 0 1px 0 rgba(255,255,255,.08)'}}
+                  style={{minHeight:36,padding:'12px 12px',border:'1px dashed rgba(255,255,255,.25)',borderRadius:10,background:doublesEnabled?'rgba(124,58,237,.16)':'rgba(56,189,248,.10)',display:'flex',justifyContent:'space-between',alignItems:'center',gap:8, boxShadow:'inset 0 1px 0 rgba(255,255,255,.08)'}}
                   title={supportsDnD ? 'Drag from queue, players, or swap seats' : 'Use Queue controls'}
                 >
                   <span style={{display:'flex',alignItems:'center',gap:8}}>
                     <span style={dragHandleMini} aria-hidden>⋮</span>
-                    <span style={{opacity:.7,fontSize:12}}>{label}</span>
-                    <span>{nameOf(pid)}</span>
+                    <span style={{opacity:.7,fontSize:13,fontWeight:600}}>{label}</span>
+                    <span style={{fontSize:15}}>{nameOf(pid)}</span>
                   </span>
                   {pid && (iHaveMod || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
                 </div>
               );
             };
             return (
-              <div key={i} style={{ background:'#0b3a66', borderRadius:12, padding:'12px 14px', border:'1px solid rgba(56,189,248,.35)', display:'grid', gap:10}}>
-                <div style={{ opacity:.9, fontSize:12, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
-                  <span>{t.label==='9 foot'?'9-Foot Table':'8-Foot Table'} • Table {i+1}</span>
-                  {doublesEnabled && <span style={pillBadge}>Doubles</span>}
-                </div>
-                <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',alignItems:'center',gap:10}}>
-                  <div style={{display:'grid',gap:8}}>
-                    <Seat side="a" label={doublesEnabled ? 'Left team' : 'Player'}/>
+              <div key={i} style={{ background:doublesEnabled?'#432775':'#0b3a66', color:'#fff', borderRadius:12, padding:'12px 14px', border:doublesEnabled?'1px solid rgba(168,85,247,.45)':'1px solid rgba(56,189,248,.35)', display:'grid', gap:10, fontSize:15, lineHeight:1.4}}>
+                <div style={{ opacity:.9, fontSize:13, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap', justifyContent:'space-between' }}>
+                  <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                    <span>{t.label==='9 foot'?'9-Foot Table':'8-Foot Table'} • Table {i+1}</span>
+                    {doublesEnabled && <span style={pillBadge}>Doubles</span>}
                   </div>
-                  <div style={{opacity:.7,textAlign:'center',fontWeight:600}}>vs</div>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    <button style={btnGhostSm} onClick={() => update(d => {
+                      const tt = d.tables[i];
+                      ([['a','b'],['a1','b1'],['a2','b2']] as [SeatKey,SeatKey][]).forEach(([l,r]) => {
+                        const lv = seatValue(tt, l);
+                        const rv = seatValue(tt, r);
+                        setSeatValue(tt, l, rv);
+                        setSeatValue(tt, r, lv);
+                      });
+                    }, { t: Date.now(), who: me.id, type: 'swap-sides', note: `Table ${i+1}` });} disabled={busy || !iHaveMod}>Swap sides</button>
+                  </div>
+                </div>
+                <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',alignItems:'stretch',gap:10}}>
                   <div style={{display:'grid',gap:8}}>
-                    <Seat side="b" label={doublesEnabled ? 'Right team' : 'Player'}/>
+                    <Seat side={doublesEnabled ? 'a1' : 'a'} label={doublesEnabled ? 'Left L1' : 'Player'} />
+                    {doublesEnabled && <Seat side='a2' label='Left L2' />}
+                  </div>
+                  <div style={{opacity:.7,textAlign:'center',fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16}}>vs</div>
+                  <div style={{display:'grid',gap:8}}>
+                    <Seat side={doublesEnabled ? 'b1' : 'b'} label={doublesEnabled ? 'Right R1' : 'Player'} />
+                    {doublesEnabled && <Seat side='b2' label='Right R2' />}
                   </div>
                 </div>
               </div>
