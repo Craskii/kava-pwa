@@ -22,8 +22,6 @@ const teamMembers = (id: string): [string, string] => {
   const [a, b] = raw.split('+');
   return [a, b] as [string, string];
 };
-const makeTeamId = (a: string, b: string) => `${TEAM_PREFIX}${[a, b].sort().join('+')}`;
-
 type ListGame = {
   id: string;
   name: string;
@@ -160,8 +158,6 @@ export default function LocalListPage() {
   const [supportsDnD, setSupportsDnD] = useState<boolean>(true);
   const [lostMessage, setLostMessage] = useState<string | null>(null);
   const pageRootRef = useRef<HTMLDivElement | null>(null);
-  const [teamA, setTeamA] = useState('');
-  const [teamB, setTeamB] = useState('');
 
   useEffect(() => {
     setSupportsDnD(true);
@@ -340,16 +336,6 @@ export default function LocalListPage() {
     }, { t: Date.now(), who: me.id, type: 'add-player', note: v });
   };
 
-  const addTeamToQueue = () => {
-    if (!doublesEnabled) return;
-    const a = teamA.trim();
-    const b = teamB.trim();
-    if (!a || !b || a === b) return;
-    enqueueTeam(a, b);
-    setTeamA('');
-    setTeamB('');
-  };
-  
   const removePlayer = (pid: string) => update(d => {
     d.players = d.players.filter(p => p.id !== pid);
     d.queue = d.queue.filter(x => x !== pid && !(isTeam(x) && teamMembers(x).includes(pid)));
@@ -373,11 +359,6 @@ export default function LocalListPage() {
     if (!d.queue.includes(pid)) d.queue.push(pid);
   }, { t: Date.now(), who: me.id, type: 'queue', note: nameOf(pid) });
 
-  const enqueueTeam = (pidA: string, pidB: string) => update(d => {
-    const entry = makeTeamId(pidA, pidB);
-    if (!d.queue.includes(entry)) d.queue.push(entry);
-  }, { t: Date.now(), who: me.id, type: 'queue-team', note: `${nameOf(pidA)} + ${nameOf(pidB)}` });
-  
   const dequeuePid = (pid: string) => update(d => {
     d.queue = d.queue.filter(x => x !== pid && !(isTeam(x) && teamMembers(x).includes(pid)));
   }, { t: Date.now(), who: me.id, type: 'dequeue', note: nameOf(pid) });
@@ -399,6 +380,10 @@ export default function LocalListPage() {
     const a = d.queue[index - 1]; d.queue[index - 1] = d.queue[index]; d.queue[index] = a;
   });
   
+  type ConfirmState = { message: string; resolve: (v: boolean) => void } | null;
+  const [confirmState, setConfirmState] = useState<ConfirmState>(null);
+  const confirmYesNo = (message: string) => new Promise<boolean>(resolve => setConfirmState({ message, resolve }));
+
   const moveDown = (index: number) => update(d => {
     if (index < 0 || index >= d.queue.length - 1) return;
     const a = d.queue[index + 1]; d.queue[index + 1] = d.queue[index]; d.queue[index] = a;
@@ -412,33 +397,63 @@ export default function LocalListPage() {
     }
   }, { t: Date.now(), who: me.id, type: 'skip-first' });
 
-  // ✅ FIXED: iLost now removes player completely - no auto re-queue
-  const iLost = (pid?: string) => {
+  const iLost = async (pid?: string) => {
     const loser = pid ?? me.id;
     const playerName = nameOf(loser);
 
-    if (!confirm(`${playerName}, are you sure you lost?`)) return;
-    const shouldQueue = confirm('Put yourself back in the queue?');
+    const confirmed = await confirmYesNo(`${playerName}, are you sure you lost?`);
+    if (!confirmed) return;
+    const shouldQueue = await confirmYesNo('Put yourself back in the queue?');
 
     if (!shouldQueue) {
       setLostMessage(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
       setTimeout(() => setLostMessage(null), 8000);
     }
 
+    const eliminated = new Set<string>([loser]);
+
     update(d => {
       const t = d.tables.find(tt => seatKeys.some(sk => seatValue(tt, sk) === loser));
       if (!t) return;
-      seatKeys.forEach(sk => { if (seatValue(t, sk) === loser) setSeatValue(t, sk, undefined); });
+
+      const seatOfLoser = seatKeys.find(sk => seatValue(t, sk) === loser);
+      if (d.doubles && seatOfLoser) {
+        const onLeft = seatOfLoser.startsWith('a');
+        const teammates = onLeft ? (['a1', 'a2'] as SeatKey[]) : (['b1', 'b2'] as SeatKey[]);
+        teammates.forEach(sk => {
+          const teammate = seatValue(t, sk);
+          if (teammate) eliminated.add(teammate);
+        });
+      }
+
+      seatKeys.forEach(sk => { if (eliminated.has(seatValue(t, sk) ?? '')) setSeatValue(t, sk, undefined); });
+
       d.queue = d.queue.filter(x => {
-        if (x === loser) return false;
+        if (eliminated.has(x)) return false;
         if (!isTeam(x)) return true;
-        if (isTeam(loser)) return !teamMembers(x).some(id => teamMembers(loser).includes(id));
-        return !teamMembers(x).includes(loser);
+        return !teamMembers(x).some(id => eliminated.has(id));
       });
-      if (shouldQueue && !d.queue.includes(loser)) d.queue.push(loser);
+
+      if (shouldQueue) {
+        eliminated.forEach(p => { if (!d.queue.includes(p)) d.queue.push(p); });
+      }
+
       excludeSeatPidRef.current = loser;
     }, { t: Date.now(), who: me.id, type: 'lost', note: playerName });
   };
+
+  const moveSeatBetweenTables = (tableIndex: number, seat: SeatKey, direction: -1 | 1) => update(d => {
+    const targetIndex = tableIndex + direction;
+    if (targetIndex < 0 || targetIndex >= d.tables.length) return;
+
+    const from = d.tables[tableIndex];
+    const to = d.tables[targetIndex];
+    const fromVal = seatValue(from, seat);
+    const toVal = seatValue(to, seat);
+
+    setSeatValue(from, seat, toVal);
+    setSeatValue(to, seat, fromVal);
+  }, { t: Date.now(), who: me.id, type: 'swap-table-seat', note: `Table ${tableIndex + 1} ↔ Table ${targetIndex + 1}` });
 
   type DragInfo =
     | { type: 'seat'; table: number; side: SeatKey; pid?: string }
@@ -678,7 +693,17 @@ export default function LocalListPage() {
                     <span style={{opacity:.7,fontSize:13,fontWeight:600}}>{label}</span>
                     <span style={{fontSize:15}}>{nameOf(pid)}</span>
                   </span>
-                  {pid && (iHaveMod || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
+                  {pid && (
+                    <span style={{display:'flex',gap:6,alignItems:'center'}}>
+                      {g.tables.length > 1 && iHaveMod && (
+                        <span style={{display:'flex',gap:4}}>
+                          {i > 0 && <button style={btnTiny} onClick={()=>moveSeatBetweenTables(i, side, -1)} aria-label="Move to previous table">←</button>}
+                          {i < g.tables.length - 1 && <button style={btnTiny} onClick={()=>moveSeatBetweenTables(i, side, 1)} aria-label="Move to next table">→</button>}
+                        </span>
+                      )}
+                      {(iHaveMod || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
+                    </span>
+                  )}
                 </div>
               );
             };
@@ -744,29 +769,6 @@ export default function LocalListPage() {
             <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">Skip first</button>
           )}
         </div>
-
-        {doublesEnabled && iHaveMod && players.length >= 2 && (
-          <div style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'center',marginBottom:10}}>
-            <div style={{opacity:.8,fontSize:13,display:'flex',alignItems:'center',gap:6}}>
-              <span style={dragHandleMini} aria-hidden>⋮</span>
-              Queue a doubles team:
-            </div>
-            <select value={teamA} onChange={(e)=>setTeamA(e.target.value)} style={select} disabled={busy}>
-              <option value="">Player A</option>
-              {players.map(p=>(<option key={`ta-${p.id}`} value={p.id}>{p.name}</option>))}
-            </select>
-            <select value={teamB} onChange={(e)=>setTeamB(e.target.value)} style={select} disabled={busy}>
-              <option value="">Player B</option>
-              {players.map(p=>(<option key={`tb-${p.id}`} value={p.id}>{p.name}</option>))}
-            </select>
-            <button
-              style={btnGhostSm}
-              onClick={addTeamToQueue}
-              disabled={busy || !teamA || !teamB || teamA===teamB}
-              title="Add two players as a team"
-            >Add doubles</button>
-          </div>
-        )}
 
         {queue.length===0 ? <div style={{opacity:.6,fontStyle:'italic'}}>Drop players here</div> : (
           <ol style={{margin:0,paddingLeft:18,display:'grid',gap:6}}
@@ -885,6 +887,17 @@ export default function LocalListPage() {
           </ul>
         )}
       </section>
+      {confirmState && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.6)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50}}>
+          <div style={{background:"#0f172a",border:"1px solid rgba(255,255,255,0.15)",borderRadius:12,padding:"16px 18px",width:"min(420px, 92vw)",boxShadow:"0 20px 50px rgba(0,0,0,0.45)"}}>
+            <div style={{marginBottom:14,fontWeight:700,lineHeight:1.4}}>{confirmState.message}</div>
+            <div style={{display:"flex",justifyContent:"flex-end",gap:10}}>
+              <button style={btnMini} onClick={()=>{ confirmState.resolve(false); setConfirmState(null); }}>No</button>
+              <button style={{...btnMini, background:"#0ea5e9", border:"none"}} onClick={()=>{ confirmState.resolve(true); setConfirmState(null); }}>Yes</button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
