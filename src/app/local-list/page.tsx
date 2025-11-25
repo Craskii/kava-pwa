@@ -32,6 +32,7 @@ type ListGame = {
   prefs: Record<string, Pref>;
   cohosts: string[];
   audit: AuditEntry[];
+  doubles?: boolean;
   v: number;
   schema: 'local-v1';
 };
@@ -52,6 +53,7 @@ function loadLocal(): ListGame {
       prefs: {},
       cohosts: [],
       audit: [],
+      doubles: false,
       v: 0,
       schema: 'local-v1',
     };
@@ -87,6 +89,7 @@ function loadLocal(): ListGame {
         prefs,
         cohosts: Array.isArray(raw.cohosts) ? raw.cohosts : [],
         audit: Array.isArray(raw.audit) ? raw.audit.slice(-100) : [],
+        doubles: !!raw.doubles,
         v: Number.isFinite(raw.v) ? Number(raw.v) : 0,
         schema: 'local-v1',
       };
@@ -104,6 +107,7 @@ function loadLocal(): ListGame {
     prefs: {},
     cohosts: [],
     audit: [],
+    doubles: false,
     v: 0,
     schema: 'local-v1',
   };
@@ -167,6 +171,7 @@ export default function LocalListPage() {
   const iHaveMod = iAmHost || iAmCohost;
   const queue = g.queue ?? [];
   const players = g.players;
+  const doublesEnabled = g.doubles ?? false;
   const prefs = g.prefs || {};
   const nameOf = (pid?: string) => {
     if (!pid) return '—';
@@ -299,6 +304,7 @@ export default function LocalListPage() {
   };
 
   const addTeamToQueue = () => {
+    if (!doublesEnabled) return;
     const a = teamA.trim();
     const b = teamB.trim();
     if (!a || !b || a === b) return;
@@ -564,9 +570,26 @@ export default function LocalListPage() {
               </div>
             ))}
             <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-              <button style={btnGhostSm} onClick={()=>update(d=>{ if (d.tables.length<2) d.tables.push({label:d.tables[0]?.label==='9 foot'?'8 foot':'9 foot'}); })} disabled={busy||g.tables.length>=2 || !iHaveMod}>Add second table</button>
-              <button style={btnGhostSm} onClick={()=>update(d=>{ if (d.tables.length>1) d.tables=d.tables.slice(0,1); })} disabled={busy||g.tables.length<=1 || !iHaveMod}>Use one table</button>
+              <button
+                style={btnGhostSm}
+                onClick={()=>update(d=>{ if (d.tables.length<2) d.tables.push({label:d.tables[0]?.label==="9 foot"?'8 foot':'9 foot'}); })}
+                disabled={busy||g.tables.length>=2 || !iHaveMod}
+              >Add second table</button>
+              <button
+                style={btnGhostSm}
+                onClick={()=>update(d=>{ if (d.tables.length>1) d.tables=d.tables.slice(0,1); })}
+                disabled={busy||g.tables.length<=1 || !iHaveMod}
+              >Use one table</button>
             </div>
+            <label style={{display:'flex',alignItems:'center',gap:8,fontSize:14,fontWeight:600}}>
+              <input
+                type="checkbox"
+                checked={!!doublesEnabled}
+                onChange={(e)=>update(d=>{ d.doubles = e.currentTarget.checked; })}
+                disabled={busy || !iHaveMod}
+              />
+              Enable doubles (teams of two)
+            </label>
           </div>
         )}
 
@@ -593,7 +616,10 @@ export default function LocalListPage() {
             };
             return (
               <div key={i} style={{ background:'#0b3a66', borderRadius:12, padding:'12px 14px', border:'1px solid rgba(56,189,248,.35)'}}>
-                <div style={{ opacity:.9, fontSize:12, marginBottom:6 }}>{t.label==='9 foot'?'9-Foot Table':'8-Foot Table'} • Table {i+1}</div>
+                <div style={{ opacity:.9, fontSize:12, marginBottom:6, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+                  <span>{t.label==='9 foot'?'9-Foot Table':'8-Foot Table'} • Table {i+1}</span>
+                  {doublesEnabled && <span style={pillBadge}>Doubles</span>}
+                </div>
                 <div style={{ display:'grid', gap:8 }}>
                   <Seat side="a"/><div style={{opacity:.7,textAlign:'center'}}>vs</div><Seat side="b"/>
                 </div>
@@ -611,7 +637,7 @@ export default function LocalListPage() {
           )}
         </div>
 
-        {iHaveMod && players.length >= 2 && (
+        {doublesEnabled && iHaveMod && players.length >= 2 && (
           <div style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'center',marginBottom:10}}>
             <div style={{opacity:.8,fontSize:13,display:'flex',alignItems:'center',gap:6}}>
               <span style={dragHandleMini} aria-hidden>⋮</span>

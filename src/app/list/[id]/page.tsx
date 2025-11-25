@@ -34,6 +34,7 @@ type ListGame = {
   prefs?: Record<string, Pref>;
   cohosts?: string[];
   audit?: AuditEntry[];
+  doubles?: boolean;
   v?: number; schema?: "v2";
 };
 
@@ -90,6 +91,7 @@ function coerceList(raw: any): ListGame | null {
       [];
 
     const audit: AuditEntry[] = Array.isArray(raw.audit) ? raw.audit.slice(-100) : [];
+    const doubles = !!raw.doubles;
 
     return {
       id: String(raw.id ?? ""),
@@ -100,6 +102,7 @@ function coerceList(raw: any): ListGame | null {
       createdAt: Number(raw.createdAt ?? Date.now()),
       tables, players, queue, prefs,
       cohosts, audit,
+      doubles,
       v: Number.isFinite(raw.v) ? Number(raw.v) : 0,
       schema: "v2",
     };
@@ -336,6 +339,7 @@ export default function Page() {
   const queue = g?.queue ?? [];
   const prefs = g?.prefs || {};
   const players = g?.players ?? [];
+  const doublesEnabled = g?.doubles ?? false;
   const iAmHost = g ? (me.id === g.hostId) : false;
   const iAmCohost = g ? ((g.cohosts ?? []).includes(me.id)) : false;
   const seatedIndex = g ? g.tables.findIndex((t) => t.a === me.id || t.b === me.id) : -1;
@@ -476,6 +480,7 @@ export default function Page() {
   const leaveQueue = () => scheduleCommit(d => { d.queue = (d.queue ?? []).filter(x => x !== me.id && !(isTeam(x) && teamMembers(x).includes(me.id))); });
   const addPlayer = () => { const v = nameField.trim(); if (!v) return; setNameField(""); const p: Player = { id: uid(), name: v }; scheduleCommit(d => { d.players.push(p); d.prefs ??= {}; d.prefs[p.id] = "any"; d.queue ??= []; if (!d.queue.includes(p.id)) d.queue.push(p.id); }); };
   const addTeamToQueue = () => {
+    if (!doublesEnabled) return;
     const a = teamA.trim();
     const b = teamB.trim();
     if (!a || !b || a === b) return;
@@ -676,6 +681,15 @@ export default function Page() {
                       disabled={busy||g.tables.length<=1}
                     >Use one table</button>
                   </div>
+                  <label style={{display:"flex",alignItems:"center",gap:8,fontSize:14,fontWeight:600}}>
+                    <input
+                      type="checkbox"
+                      checked={!!doublesEnabled}
+                      onChange={(e)=>scheduleCommit(d=>{ d.doubles = e.currentTarget.checked; })}
+                      disabled={busy}
+                    />
+                    Enable doubles (teams of two)
+                  </label>
                 </div>
               )}
 
@@ -702,7 +716,10 @@ export default function Page() {
                   };
                   return (
                     <div key={i} style={{ background:"#0b3a66", borderRadius:12, padding:"12px 14px", border:"1px solid rgba(56,189,248,.35)"}}>
-                      <div style={{ opacity:.9, fontSize:12, marginBottom:6 }}>{t.label==="9 foot"?"9-Foot Table":"8-Foot Table"} • Table {i+1}</div>
+                      <div style={{ opacity:.9, fontSize:12, marginBottom:6, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+                        <span>{t.label==="9 foot"?"9-Foot Table":"8-Foot Table"} • Table {i+1}</span>
+                        {doublesEnabled && <span style={pillBadge}>Doubles</span>}
+                      </div>
                       <div style={{ display:"grid", gap:8 }}>
                         <Seat side="a"/><div style={{opacity:.7,textAlign:"center"}}>vs</div><Seat side="b"/>
                       </div>
@@ -721,7 +738,7 @@ export default function Page() {
                 )}
               </div>
 
-              {(me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) && players.length >= 2 && (
+              {doublesEnabled && (me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) && players.length >= 2 && (
                 <div style={{display:"flex",flexWrap:"wrap",gap:8,alignItems:"center",marginBottom:10}}>
                   <div style={{opacity:.8,fontSize:13,display:'flex',alignItems:'center',gap:6}}>
                     <span style={dragHandleMini} aria-hidden>⋮</span>
