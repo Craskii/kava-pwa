@@ -12,6 +12,15 @@ type Player = { id: string; name: string };
 type Pref = '8 foot' | '9 foot' | 'any';
 type AuditEntry = { t: number; who?: string; type: string; note?: string };
 
+const TEAM_PREFIX = 'team:';
+const isTeam = (id?: string) => typeof id === 'string' && id.startsWith(TEAM_PREFIX);
+const teamMembers = (id: string): [string, string] => {
+  const raw = id.replace(TEAM_PREFIX, '');
+  const [a, b] = raw.split('+');
+  return [a, b] as [string, string];
+};
+const makeTeamId = (a: string, b: string) => `${TEAM_PREFIX}${[a, b].sort().join('+')}`;
+
 type ListGame = {
   id: string;
   name: string;
@@ -23,6 +32,7 @@ type ListGame = {
   prefs: Record<string, Pref>;
   cohosts: string[];
   audit: AuditEntry[];
+  doubles?: boolean;
   v: number;
   schema: 'local-v1';
 };
@@ -43,6 +53,7 @@ function loadLocal(): ListGame {
       prefs: {},
       cohosts: [],
       audit: [],
+      doubles: false,
       v: 0,
       schema: 'local-v1',
     };
@@ -78,6 +89,7 @@ function loadLocal(): ListGame {
         prefs,
         cohosts: Array.isArray(raw.cohosts) ? raw.cohosts : [],
         audit: Array.isArray(raw.audit) ? raw.audit.slice(-100) : [],
+        doubles: !!raw.doubles,
         v: Number.isFinite(raw.v) ? Number(raw.v) : 0,
         schema: 'local-v1',
       };
@@ -95,6 +107,7 @@ function loadLocal(): ListGame {
     prefs: {},
     cohosts: [],
     audit: [],
+    doubles: false,
     v: 0,
     schema: 'local-v1',
   };
@@ -137,12 +150,14 @@ export default function LocalListPage() {
   const [nameField, setNameField] = useState('');
   const [showTableControls, setShowTableControls] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [supportsDnD, setSupportsDnD] = useState<boolean>(false);
+  const [supportsDnD, setSupportsDnD] = useState<boolean>(true);
   const [lostMessage, setLostMessage] = useState<string | null>(null);
   const pageRootRef = useRef<HTMLDivElement | null>(null);
-  
-  useEffect(() => { 
-    setSupportsDnD(!('ontouchstart' in window)); 
+  const [teamA, setTeamA] = useState('');
+  const [teamB, setTeamB] = useState('');
+
+  useEffect(() => {
+    setSupportsDnD(true);
   }, []);
 
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -156,9 +171,19 @@ export default function LocalListPage() {
   const iHaveMod = iAmHost || iAmCohost;
   const queue = g.queue ?? [];
   const players = g.players;
+  const doublesEnabled = g.doubles ?? false;
   const prefs = g.prefs || {};
-  const nameOf = (pid?: string) => (pid ? players.find(p => p.id === pid)?.name || '??' : '—');
-  const inQueue = (pid: string) => queue.includes(pid);
+  const nameOf = (pid?: string) => {
+    if (!pid) return '—';
+    if (isTeam(pid)) {
+      const [a, b] = teamMembers(pid);
+      const na = players.find(p => p.id === a)?.name || '??';
+      const nb = players.find(p => p.id === b)?.name || '??';
+      return `${na} + ${nb}`;
+    }
+    return players.find(p => p.id === pid)?.name || '??';
+  };
+  const inQueue = (pid: string) => queue.some(q => q === pid || (isTeam(q) && teamMembers(q).includes(pid)));
 
   useEffect(() => {
     const root = pageRootRef.current;
@@ -178,20 +203,41 @@ export default function LocalListPage() {
     const excluded = excludeSeatPidRef.current;
     const pmap = next.prefs || {};
 
+    const entryMatchesTable = (entry: string, want: TableLabel) => {
+      if (!entry) return false;
+      if (!isTeam(entry)) {
+        const pref = (pmap[entry] ?? 'any') as Pref;
+        return pref === 'any' || pref === want;
+      }
+
+      const [a, b] = teamMembers(entry);
+      const pa = (pmap[a] ?? 'any') as Pref;
+      const pb = (pmap[b] ?? 'any') as Pref;
+      return (pa === 'any' || pa === want) && (pb === 'any' || pb === want);
+    };
+
     const takeFromQueue = (want: TableLabel) => {
       for (let i = 0; i < next.queue.length; i++) {
         const pid = next.queue[i];
         if (!pid) { next.queue.splice(i, 1); i--; continue; }
         if (excluded && pid === excluded) continue;
-        const pref = (pmap[pid] ?? 'any') as Pref;
-        if (pref === 'any' || pref === want) { next.queue.splice(i, 1); return pid; }
+        if (entryMatchesTable(pid, want)) { next.queue.splice(i, 1); return pid; }
       }
       return undefined;
     };
 
     const fillFromPlayersIfNoQueue = false; // Require queue membership to auto-seat
     const seatedSet = new Set<string>();
-    for (const t of next.tables) { if (t.a) seatedSet.add(t.a); if (t.b) seatedSet.add(t.b); }
+    for (const t of next.tables) {
+      if (t.a) {
+        seatedSet.add(t.a);
+        if (isTeam(t.a)) teamMembers(t.a).forEach(m => seatedSet.add(m));
+      }
+      if (t.b) {
+        seatedSet.add(t.b);
+        if (isTeam(t.b)) teamMembers(t.b).forEach(m => seatedSet.add(m));
+      }
+    }
     const candidates = fillFromPlayersIfNoQueue
       ? next.players.map(p => p.id).filter(pid => !seatedSet.has(pid))
       : [];
@@ -256,10 +302,20 @@ export default function LocalListPage() {
       if (!d.queue.includes(p.id)) d.queue.push(p.id);
     }, { t: Date.now(), who: me.id, type: 'add-player', note: v });
   };
+
+  const addTeamToQueue = () => {
+    if (!doublesEnabled) return;
+    const a = teamA.trim();
+    const b = teamB.trim();
+    if (!a || !b || a === b) return;
+    enqueueTeam(a, b);
+    setTeamA('');
+    setTeamB('');
+  };
   
   const removePlayer = (pid: string) => update(d => {
     d.players = d.players.filter(p => p.id !== pid);
-    d.queue = d.queue.filter(x => x !== pid);
+    d.queue = d.queue.filter(x => x !== pid && !(isTeam(x) && teamMembers(x).includes(pid)));
     delete d.prefs[pid];
     d.tables = d.tables.map(t => ({ ...t, a: t.a === pid ? undefined : t.a, b: t.b === pid ? undefined : t.b }));
   }, { t: Date.now(), who: me.id, type: 'remove-player', note: nameOf(pid) });
@@ -276,17 +332,22 @@ export default function LocalListPage() {
     d.prefs[pid] = pref; 
   }, { t: Date.now(), who: me.id, type: 'set-pref', note: `${nameOf(pid)} → ${pref}` });
   
-  const enqueuePid = (pid: string) => update(d => { 
-    if (!d.queue.includes(pid)) d.queue.push(pid); 
+  const enqueuePid = (pid: string) => update(d => {
+    if (!d.queue.includes(pid)) d.queue.push(pid);
   }, { t: Date.now(), who: me.id, type: 'queue', note: nameOf(pid) });
+
+  const enqueueTeam = (pidA: string, pidB: string) => update(d => {
+    const entry = makeTeamId(pidA, pidB);
+    if (!d.queue.includes(entry)) d.queue.push(entry);
+  }, { t: Date.now(), who: me.id, type: 'queue-team', note: `${nameOf(pidA)} + ${nameOf(pidB)}` });
   
-  const dequeuePid = (pid: string) => update(d => { 
-    d.queue = d.queue.filter(x => x !== pid); 
+  const dequeuePid = (pid: string) => update(d => {
+    d.queue = d.queue.filter(x => x !== pid && !(isTeam(x) && teamMembers(x).includes(pid)));
   }, { t: Date.now(), who: me.id, type: 'dequeue', note: nameOf(pid) });
 
   const leaveList = () => update(d => {
     d.players = d.players.filter(p => p.id !== me.id);
-    d.queue = d.queue.filter(x => x !== me.id);
+    d.queue = d.queue.filter(x => x !== me.id && !(isTeam(x) && teamMembers(x).includes(me.id)));
     d.tables = d.tables.map(t => ({ ...t, a: t.a === me.id ? undefined : t.a, b: t.b === me.id ? undefined : t.b }));
     delete d.prefs[me.id];
   }, { t: Date.now(), who: me.id, type: 'leave-list' });
@@ -332,7 +393,12 @@ export default function LocalListPage() {
       if (!t) return;
       if (t.a === loser) t.a = undefined;
       if (t.b === loser) t.b = undefined;
-      d.queue = d.queue.filter(x => x !== loser);
+      d.queue = d.queue.filter(x => {
+        if (x === loser) return false;
+        if (!isTeam(x)) return true;
+        if (isTeam(loser)) return !teamMembers(x).some(id => teamMembers(loser).includes(id));
+        return !teamMembers(x).includes(loser);
+      });
       if (shouldQueue && !d.queue.includes(loser)) d.queue.push(loser);
       excludeSeatPidRef.current = loser;
     }, { t: Date.now(), who: me.id, type: 'lost', note: playerName });
@@ -504,9 +570,30 @@ export default function LocalListPage() {
               </div>
             ))}
             <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-              <button style={btnGhostSm} onClick={()=>update(d=>{ if (d.tables.length<2) d.tables.push({label:d.tables[0]?.label==='9 foot'?'8 foot':'9 foot'}); })} disabled={busy||g.tables.length>=2 || !iHaveMod}>Add second table</button>
-              <button style={btnGhostSm} onClick={()=>update(d=>{ if (d.tables.length>1) d.tables=d.tables.slice(0,1); })} disabled={busy||g.tables.length<=1 || !iHaveMod}>Use one table</button>
+              <button
+                style={btnGhostSm}
+                onClick={()=>update(d=>{ if (d.tables.length<2) d.tables.push({label:d.tables[0]?.label==="9 foot"?'8 foot':'9 foot'}); })}
+                disabled={busy||g.tables.length>=2 || !iHaveMod}
+              >Add second table</button>
+              <button
+                style={btnGhostSm}
+                onClick={()=>update(d=>{ if (d.tables.length>1) d.tables=d.tables.slice(0,1); })}
+                disabled={busy||g.tables.length<=1 || !iHaveMod}
+              >Use one table</button>
             </div>
+            <label style={{display:'flex',alignItems:'center',gap:8,fontSize:14,fontWeight:600}}>
+              <input
+                type="checkbox"
+                checked={!!doublesEnabled}
+                onChange={(e)=>{
+                  const target = e.target as HTMLInputElement | null;
+                  const next = !!target?.checked;
+                  update(d=>{ d.doubles = next; });
+                }}
+                disabled={busy || !iHaveMod}
+              />
+              Enable doubles (teams of two)
+            </label>
           </div>
         )}
 
@@ -523,14 +610,20 @@ export default function LocalListPage() {
                   style={{minHeight:24,padding:'8px 10px',border:'1px dashed rgba(255,255,255,.25)',borderRadius:8,background:'rgba(56,189,248,.10)',display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}
                   title={supportsDnD ? 'Drag from queue or swap seats' : 'Use Queue controls'}
                 >
-                  <span>{nameOf(pid)}</span>
+                  <span style={{display:'flex',alignItems:'center',gap:8}}>
+                    <span style={dragHandleMini} aria-hidden>⋮</span>
+                    <span>{nameOf(pid)}</span>
+                  </span>
                   {pid && (iHaveMod || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
                 </div>
               );
             };
             return (
               <div key={i} style={{ background:'#0b3a66', borderRadius:12, padding:'12px 14px', border:'1px solid rgba(56,189,248,.35)'}}>
-                <div style={{ opacity:.9, fontSize:12, marginBottom:6 }}>{t.label==='9 foot'?'9-Foot Table':'8-Foot Table'} • Table {i+1}</div>
+                <div style={{ opacity:.9, fontSize:12, marginBottom:6, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+                  <span>{t.label==='9 foot'?'9-Foot Table':'8-Foot Table'} • Table {i+1}</span>
+                  {doublesEnabled && <span style={pillBadge}>Doubles</span>}
+                </div>
                 <div style={{ display:'grid', gap:8 }}>
                   <Seat side="a"/><div style={{opacity:.7,textAlign:'center'}}>vs</div><Seat side="b"/>
                 </div>
@@ -548,6 +641,29 @@ export default function LocalListPage() {
           )}
         </div>
 
+        {doublesEnabled && iHaveMod && players.length >= 2 && (
+          <div style={{display:'flex',flexWrap:'wrap',gap:8,alignItems:'center',marginBottom:10}}>
+            <div style={{opacity:.8,fontSize:13,display:'flex',alignItems:'center',gap:6}}>
+              <span style={dragHandleMini} aria-hidden>⋮</span>
+              Queue a doubles team:
+            </div>
+            <select value={teamA} onChange={(e)=>setTeamA(e.target.value)} style={select} disabled={busy}>
+              <option value="">Player A</option>
+              {players.map(p=>(<option key={`ta-${p.id}`} value={p.id}>{p.name}</option>))}
+            </select>
+            <select value={teamB} onChange={(e)=>setTeamB(e.target.value)} style={select} disabled={busy}>
+              <option value="">Player B</option>
+              {players.map(p=>(<option key={`tb-${p.id}`} value={p.id}>{p.name}</option>))}
+            </select>
+            <button
+              style={btnGhostSm}
+              onClick={addTeamToQueue}
+              disabled={busy || !teamA || !teamB || teamA===teamB}
+              title="Add two players as a team"
+            >Add doubles</button>
+          </div>
+        )}
+
         {queue.length===0 ? <div style={{opacity:.6,fontStyle:'italic'}}>Drop players here</div> : (
           <ol style={{margin:0,paddingLeft:18,display:'grid',gap:6}}
               onDragOver={supportsDnD ? onDragOver : undefined}
@@ -562,6 +678,7 @@ export default function LocalListPage() {
                     onDragOver={supportsDnD ? onDragOver : undefined}
                     onDrop={supportsDnD ? (e)=>handleDrop(e,{type:'queue',index:idx,pid}) : undefined}
                     style={queueItem}>
+                  <span style={dragHandle} aria-hidden>⋮⋮</span>
                   <span style={bubbleName} title={supportsDnD ? 'Drag to reorder' : 'Use arrows to reorder'}>
                     {idx+1}. {nameOf(pid)}
                   </span>
@@ -676,9 +793,10 @@ const bubbleName: React.CSSProperties = {
   padding: '6px 10px',
   borderRadius: 999,
   border: '1px dashed rgba(255,255,255,.35)',
-  background: 'rgba(255,255,255,.06)',
+  background: 'linear-gradient(120deg, rgba(255,255,255,.08), rgba(14,165,233,.08))',
   cursor: 'grab',
   userSelect: 'none',
+  boxShadow: '0 4px 12px rgba(0,0,0,0.22)',
 };
 const queueItem: React.CSSProperties = {
   cursor:'grab',
@@ -686,4 +804,28 @@ const queueItem: React.CSSProperties = {
   alignItems:'center',
   gap:10,
   justifyContent:'space-between'
+};
+const dragHandle: React.CSSProperties = {
+  display:'inline-flex',
+  alignItems:'center',
+  justifyContent:'center',
+  width:28,
+  height:28,
+  borderRadius:10,
+  background:'rgba(255,255,255,0.06)',
+  border:'1px solid rgba(255,255,255,0.15)',
+  fontWeight:700,
+  color:'rgba(255,255,255,0.65)',
+};
+const dragHandleMini: React.CSSProperties = {
+  display:'inline-flex',
+  alignItems:'center',
+  justifyContent:'center',
+  width:22,
+  height:22,
+  borderRadius:8,
+  background:'rgba(255,255,255,0.06)',
+  border:'1px solid rgba(255,255,255,0.12)',
+  color:'rgba(255,255,255,0.65)',
+  fontSize:12,
 };
