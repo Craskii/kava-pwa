@@ -685,7 +685,11 @@ export default function Page() {
                     <input
                       type="checkbox"
                       checked={!!doublesEnabled}
-                      onChange={(e)=>scheduleCommit(d=>{ d.doubles = e.currentTarget.checked; })}
+                      onChange={(e)=>{
+                        const target = e.target as HTMLInputElement | null;
+                        const next = !!target?.checked;
+                        scheduleCommit(d=>{ d.doubles = next; });
+                      }}
                       disabled={busy}
                     />
                     Enable doubles (teams of two)

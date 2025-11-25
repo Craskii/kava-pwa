@@ -585,7 +585,11 @@ export default function LocalListPage() {
               <input
                 type="checkbox"
                 checked={!!doublesEnabled}
-                onChange={(e)=>update(d=>{ d.doubles = e.currentTarget.checked; })}
+                onChange={(e)=>{
+                  const target = e.target as HTMLInputElement | null;
+                  const next = !!target?.checked;
+                  update(d=>{ d.doubles = next; });
+                }}
                 disabled={busy || !iHaveMod}
               />
               Enable doubles (teams of two)
