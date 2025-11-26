@@ -159,7 +159,16 @@ export default function Page() {
   const [err, setErr] = useState<string | null>(null);
   const [supportsDnD, setSupportsDnD] = useState<boolean>(true);
 
-  useEffect(() => { setSupportsDnD(true); }, []);
+  useEffect(() => {
+    const detectDnDSupport = () => {
+      if (typeof window === 'undefined') return true;
+      const touch = 'ontouchstart' in window || (navigator as any).maxTouchPoints > 0;
+      if (touch) return false;
+      const el = document.createElement('div');
+      return 'draggable' in el || ('ondragstart' in el && 'ondrop' in el);
+    };
+    setSupportsDnD(detectDnDSupport());
+  }, []);
 
   const me = useMemo<Player>(() => {
     try {

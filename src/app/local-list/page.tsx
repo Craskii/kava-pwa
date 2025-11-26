@@ -160,7 +160,14 @@ export default function LocalListPage() {
   const pageRootRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    setSupportsDnD(true);
+    const detectDnDSupport = () => {
+      if (typeof window === 'undefined') return true;
+      const touch = 'ontouchstart' in window || (navigator as any).maxTouchPoints > 0;
+      if (touch) return false;
+      const el = document.createElement('div');
+      return 'draggable' in el || ('ondragstart' in el && 'ondrop' in el);
+    };
+    setSupportsDnD(detectDnDSupport());
   }, []);
 
   const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
