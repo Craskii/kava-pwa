@@ -155,6 +155,7 @@ export default function LocalListPage() {
   const [nameField, setNameField] = useState('');
   const [showTableControls, setShowTableControls] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [showPlayers, setShowPlayers] = useState(false);
   const [supportsDnD, setSupportsDnD] = useState<boolean>(true);
   const [lostMessage, setLostMessage] = useState<string | null>(null);
   const pageRootRef = useRef<HTMLDivElement | null>(null);
@@ -841,57 +842,67 @@ export default function LocalListPage() {
       )}
 
       <section style={card}>
-        <h3 style={{marginTop:0}}>List (Players) — {players.length}</h3>
-        <div style={{opacity:.75,fontSize:13,marginBottom:8,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-          <span style={dragHandleMini} aria-hidden>⋮</span>
-          Drag a player onto a table side to seat them, or onto the queue to line them up.
-        </div>
-        {players.length===0 ? <div style={{opacity:.7}}>No players yet.</div> : (
-          <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
-            {players.map(p=>{
-              const pref = (prefs[p.id] ?? 'any') as Pref;
-              const canEditSelf = p.id===me.id;
-              const isCohost = (g.cohosts ?? []).includes(p.id);
-              const isSeated = seatedPids.has(p.id);
-              const status = isSeated ? 'table' : (inQueue(p.id) ? 'queue' : 'idle');
-              return (
-                <li
-                  key={p.id}
-                  style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}
-                  draggable={supportsDnD && iHaveMod}
-                  onDragStart={supportsDnD && iHaveMod ? (e)=>onDragStart(e,{type:'player',pid:p.id}) : undefined}
-                  onDragOver={supportsDnD ? onDragOver : undefined}
-                  onDrop={supportsDnD ? (e)=>handleDrop(e,{type:'queue',index:queue.length,pid:p.id}) : undefined}
-                >
-                  <span style={{display:'flex',alignItems:'center',gap:8}}>
-                    <span>{p.name}{isCohost ? <em style={{opacity:.6,marginLeft:8}}>(Cohost)</em> : null}</span>
-                    <span style={{fontSize:11,opacity:.65,padding:'3px 8px',borderRadius:999,border:'1px solid rgba(255,255,255,.18)'}}>
-                      {status}
-                    </span>
-                  </span>
-                  <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
-                    {!inQueue(p.id)
-                      ? (iHaveMod ? <button style={btnMini} onClick={()=>enqueuePid(p.id)} disabled={busy || isSeated}>Queue</button> : null)
-                      : (iHaveMod ? <button style={btnMini} onClick={()=>dequeuePid(p.id)} disabled={busy}>Dequeue</button> : null)}
-                    {(iHaveMod || canEditSelf) && (
-                      <div style={{display:'flex',gap:6}}>
-                        <button style={pref==='any'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'any')} disabled={busy}>Any</button>
-                        <button style={pref==='9 foot'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'9 foot')} disabled={busy}>9-ft</button>
-                        <button style={pref==='8 foot'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'8 foot')} disabled={busy}>8-ft</button>
+        <button type="button" style={sectionToggle} onClick={()=>setShowPlayers(v=>!v)}>
+          <h3 style={{margin:'0 0 0 0'}}>List (Players) — {players.length}</h3>
+          <span aria-hidden style={{fontSize:18}}>{showPlayers ? '▲' : '▼'}</span>
+          <span className="sr-only" style={{position:'absolute',width:1,height:1,padding:0,margin:-1,overflow:'hidden',clip:'rect(0,0,0,0)',whiteSpace:'nowrap',border:0}}>
+            {showPlayers ? 'Collapse player list' : 'Expand player list'}
+          </span>
+        </button>
+        {showPlayers && (
+          <>
+            <div style={{opacity:.75,fontSize:13,marginBottom:8,marginTop:6,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+              <span style={dragHandleMini} aria-hidden>⋮</span>
+              Drag a player onto a table side to seat them, or onto the queue to line them up.
+            </div>
+            {players.length===0 ? <div style={{opacity:.7}}>No players yet.</div> : (
+              <ul style={{ listStyle:'none', padding:0, margin:0, display:'grid', gap:8 }}>
+                {players.map(p=>{
+                  const pref = (prefs[p.id] ?? 'any') as Pref;
+                  const canEditSelf = p.id===me.id;
+                  const isCohost = (g.cohosts ?? []).includes(p.id);
+                  const isSeated = seatedPids.has(p.id);
+                  const status = isSeated ? 'table' : (inQueue(p.id) ? 'queue' : 'idle');
+                  return (
+                    <li
+                      key={p.id}
+                      style={{ display:'flex', justifyContent:'space-between', alignItems:'center', background:'#111', padding:'10px 12px', borderRadius:10 }}
+                      draggable={supportsDnD && iHaveMod}
+                      onDragStart={supportsDnD && iHaveMod ? (e)=>onDragStart(e,{type:'player',pid:p.id}) : undefined}
+                      onDragOver={supportsDnD ? onDragOver : undefined}
+                      onDrop={supportsDnD ? (e)=>handleDrop(e,{type:'queue',index:queue.length,pid:p.id}) : undefined}
+                    >
+                      <span style={{display:'flex',alignItems:'center',gap:8}}>
+                        <span>{p.name}{isCohost ? <em style={{opacity:.6,marginLeft:8}}>(Cohost)</em> : null}</span>
+                        <span style={{fontSize:11,opacity:.65,padding:'3px 8px',borderRadius:999,border:'1px solid rgba(255,255,255,.18)'}}>
+                          {status}
+                        </span>
+                      </span>
+                      <div style={{ display:'flex', gap:8, flexWrap:'wrap', alignItems:'center' }}>
+                        {!inQueue(p.id)
+                          ? (iHaveMod ? <button style={btnMini} onClick={()=>enqueuePid(p.id)} disabled={busy || isSeated}>Queue</button> : null)
+                          : (iHaveMod ? <button style={btnMini} onClick={()=>dequeuePid(p.id)} disabled={busy}>Dequeue</button> : null)}
+                        {(iHaveMod || canEditSelf) && (
+                          <div style={{display:'flex',gap:6}}>
+                            <button style={pref==='any'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'any')} disabled={busy}>Any</button>
+                            <button style={pref==='9 foot'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'9 foot')} disabled={busy}>9-ft</button>
+                            <button style={pref==='8 foot'?btnTinyActive:btnTiny} onClick={()=>setPrefFor(p.id,'8 foot')} disabled={busy}>8-ft</button>
+                          </div>
+                        )}
+                        {iHaveMod && p.id !== g.hostId && (
+                          <button style={btnMini} onClick={()=>toggleCohost(p.id)} disabled={busy}>
+                            {isCohost ? 'Remove cohost' : 'Make cohost'}
+                          </button>
+                        )}
+                        {(iHaveMod || canEditSelf) && <button style={btnMini} onClick={()=>renamePlayer(p.id)} disabled={busy}>Rename</button>}
+                        {iHaveMod && <button style={btnGhost} onClick={()=>removePlayer(p.id)} disabled={busy}>Remove</button>}
                       </div>
-                    )}
-                    {iHaveMod && p.id !== g.hostId && (
-                      <button style={btnMini} onClick={()=>toggleCohost(p.id)} disabled={busy}>
-                        {isCohost ? 'Remove cohost' : 'Make cohost'}
-                      </button>
-                    )}
-                    {(iHaveMod || canEditSelf) && <button style={btnMini} onClick={()=>renamePlayer(p.id)} disabled={busy}>Rename</button>}
-                    {iHaveMod && <button style={btnGhost} onClick={()=>removePlayer(p.id)} disabled={busy}>Remove</button>}
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </>
         )}
       </section>
       {confirmState && (
@@ -909,7 +920,7 @@ export default function LocalListPage() {
   );
 }
 
-const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui', WebkitTouchCallout:'none' };
+const wrap: React.CSSProperties = { minHeight:'100vh', background:'#0b0b0b', color:'#fff', padding:24, fontFamily:'system-ui', fontSize:17, lineHeight:1.5, WebkitTouchCallout:'none' };
 const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:14, padding:14, marginBottom:14 };
 const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
 const btnGhost: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer' };
@@ -921,7 +932,7 @@ const pillBadge: React.CSSProperties = { padding:'6px 10px', borderRadius:999, b
 const input: React.CSSProperties = { width:260, maxWidth:'90vw', padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff' };
 const nameInput: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)' };
 const select: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:8, padding:'6px 8px' };
-const messageBox: React.CSSProperties = { 
+const messageBox: React.CSSProperties = {
   background:'rgba(14,165,233,0.15)', 
   border:'1px solid rgba(14,165,233,0.35)', 
   borderRadius:12, 
@@ -946,6 +957,18 @@ const queueItem: React.CSSProperties = {
   alignItems:'center',
   gap:10,
   justifyContent:'space-between'
+};
+const sectionToggle: React.CSSProperties = {
+  width:'100%',
+  display:'flex',
+  alignItems:'center',
+  justifyContent:'space-between',
+  background:'transparent',
+  color:'inherit',
+  border:'none',
+  padding:0,
+  cursor:'pointer',
+  textAlign:'left'
 };
 const dragHandle: React.CSSProperties = {
   display:'inline-flex',
