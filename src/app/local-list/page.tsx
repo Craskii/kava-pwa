@@ -159,6 +159,11 @@ export default function LocalListPage() {
   const [supportsDnD, setSupportsDnD] = useState<boolean>(true);
   const [lostMessage, setLostMessage] = useState<string | null>(null);
   const pageRootRef = useRef<HTMLDivElement | null>(null);
+  const undoRef = useRef<ListGame[]>([]);
+  const redoRef = useRef<ListGame[]>([]);
+  const [, setHistoryTick] = useState(0);
+
+  const clone = (doc: ListGame) => JSON.parse(JSON.stringify(doc)) as ListGame;
 
   useEffect(() => {
     const detectDnDSupport = () => {
@@ -301,11 +306,18 @@ export default function LocalListPage() {
   function update(mut: (d: ListGame) => void, audit?: AuditEntry) {
     setBusy(true);
     setG(prev => {
-      const d: ListGame = JSON.parse(JSON.stringify(prev));
+      const snapshot = clone(prev);
+      undoRef.current = [...undoRef.current.slice(-19), snapshot];
+      redoRef.current = [];
+      setHistoryTick(v => v + 1);
+
+      const d: ListGame = clone(prev);
       d.v = (d.v || 0) + 1;
       mut(d);
       autoSeat(d);
-      if (audit) d.audit.push(audit);
+      if (audit) {
+        d.audit = [...(d.audit ?? []), audit].slice(-100);
+      }
       persist(d);
       return d;
     });
@@ -420,6 +432,22 @@ export default function LocalListPage() {
 
     const eliminated = new Set<string>([loser]);
 
+    const findOpponents = () => {
+      const t = g.tables.find(tt => seatKeys.some(sk => seatValue(tt, sk) === loser));
+      if (!t) return [] as string[];
+      const seatOfLoser = seatKeys.find(sk => seatValue(t, sk) === loser);
+      if (!seatOfLoser) return [] as string[];
+      const onLeft = seatOfLoser.startsWith('a');
+      const opponentSeats = doublesEnabled
+        ? (onLeft ? (['b1', 'b2'] as SeatKey[]) : (['a1', 'a2'] as SeatKey[]))
+        : (onLeft ? ['b'] as SeatKey[] : ['a'] as SeatKey[]);
+      return opponentSeats.map(sk => seatValue(t, sk)).filter(Boolean) as string[];
+    };
+    const winners = findOpponents();
+
+    const notePieces = [playerName];
+    if (winners.length) notePieces.push(`lost to ${winners.map(nameOf).join(' / ')}`);
+
     update(d => {
       const t = d.tables.find(tt => seatKeys.some(sk => seatValue(tt, sk) === loser));
       if (!t) return;
@@ -447,7 +475,7 @@ export default function LocalListPage() {
       }
 
       excludeSeatPidRef.current = loser;
-    }, { t: Date.now(), who: me.id, type: 'lost', note: playerName });
+    }, { t: Date.now(), who: me.id, type: 'lost', note: notePieces.join(' — ') });
   };
 
   const moveSeatBetweenTables = (tableIndex: number, seat: SeatKey, direction: -1 | 1) => update(d => {
@@ -462,6 +490,30 @@ export default function LocalListPage() {
     setSeatValue(from, seat, toVal);
     setSeatValue(to, seat, fromVal);
   }, { t: Date.now(), who: me.id, type: 'swap-table-seat', note: `Table ${tableIndex + 1} ↔ Table ${targetIndex + 1}` });
+
+  const undo = () => {
+    if (!undoRef.current.length) return;
+    setG(cur => {
+      const snapshot = undoRef.current.pop();
+      if (!snapshot) return cur;
+      redoRef.current = [...redoRef.current.slice(-19), clone(cur)];
+      setHistoryTick(v => v + 1);
+      persist(snapshot);
+      return clone(snapshot);
+    });
+  };
+
+  const redo = () => {
+    if (!redoRef.current.length) return;
+    setG(cur => {
+      const snapshot = redoRef.current.pop();
+      if (!snapshot) return cur;
+      undoRef.current = [...undoRef.current.slice(-19), clone(cur)];
+      setHistoryTick(v => v + 1);
+      persist(snapshot);
+      return clone(snapshot);
+    });
+  };
 
   type DragInfo =
     | { type: 'seat'; table: number; side: SeatKey; pid?: string }
@@ -583,6 +635,9 @@ export default function LocalListPage() {
             Mode: <b>Local List</b> • {g.players.length} {g.players.length === 1 ? 'player' : 'players'}
             <span style={{opacity:.6}}>•</span>
             <button style={btnGhostSm} onClick={()=>setShowHistory(v=>!v)}>{showHistory?'Hide':'Show'} history</button>
+            <span style={{opacity:.6}}>•</span>
+            <button style={btnGhostSm} onClick={undo} disabled={!undoRef.current.length}>⏪ Rewind</button>
+            <button style={btnGhostSm} onClick={redo} disabled={!redoRef.current.length}>⏩ Redo</button>
           </div>
         </div>
         <div style={{display:'grid',gap:6,justifyItems:'end'}}>

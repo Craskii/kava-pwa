@@ -14,6 +14,7 @@ type Env = { KAVA_TOURNAMENTS: KVNamespace };
 type Table = { a?: string; b?: string; label: "8 foot" | "9 foot" };
 type Player = { id: string; name: string };
 type Pref = "8 foot" | "9 foot" | "any";
+type AuditEntry = { t: number; who?: string; type: string; note?: string };
 
 type ListGame = {
   id: string;
@@ -28,6 +29,7 @@ type ListGame = {
   queue9: string[];
   prefs?: Record<string, Pref>;
   coHosts?: string[];
+  audit?: AuditEntry[];
 };
 
 const LKEY = (id: string) => `l:${id}`;
@@ -99,6 +101,15 @@ function coerceIn(doc: any): ListGame {
 
   const coHosts: string[] = Array.isArray(doc?.coHosts) ? doc.coHosts.map((s: any) => String(s)).filter(Boolean) : [];
 
+  const audit: AuditEntry[] = Array.isArray(doc?.audit)
+    ? (doc.audit as any[]).map((a: any) => ({
+        t: Number.isFinite(a?.t) ? Number(a.t) : Date.now(),
+        who: a?.who ? String(a.who) : undefined,
+        type: String(a?.type ?? "event"),
+        note: a?.note ? String(a.note) : undefined,
+      })).slice(-100)
+    : [];
+
   return {
     id: String(doc?.id ?? ""),
     name: String(doc?.name ?? "Untitled"),
@@ -112,13 +123,14 @@ function coerceIn(doc: any): ListGame {
     queue9,
     prefs,
     coHosts,
+    audit,
   } as ListGame;
 }
 
 function coerceOut(stored: any) {
   const x = coerceIn(stored);
   const queue = [...x.queue9, ...x.queue8];
-  return { ...x, queue, cohosts: (x.coHosts ?? []) };
+  return { ...x, queue, cohosts: (x.coHosts ?? []), audit: x.audit ?? [] };
 }
 
 function dropFromQueues(x: ListGame, pid?: string) {

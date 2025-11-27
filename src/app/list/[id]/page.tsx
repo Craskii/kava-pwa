@@ -196,6 +196,11 @@ export default function Page() {
   const lastSeatSig = useRef<string>("");
   const lastVersion = useRef<number>(0);
   const excludeSeatPidRef = useRef<string | null>(null);
+  const undoRef = useRef<ListGame[]>([]);
+  const redoRef = useRef<ListGame[]>([]);
+  const [, setHistoryTick] = useState(0);
+
+  const clone = (doc: ListGame) => JSON.parse(JSON.stringify(doc)) as ListGame;
 
   const commitQ = useRef<(() => Promise<void>)[]>([]);
   const batchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -488,15 +493,22 @@ export default function Page() {
     await job();
     if (commitQ.current.length) runNext();
   }
-  function scheduleCommit(mut: (draft: ListGame) => void) {
+  function scheduleCommit(mut: (draft: ListGame) => void, audit?: AuditEntry) {
     if (!g) return;
     if (!pendingDraft.current) {
-      pendingDraft.current = JSON.parse(JSON.stringify(g));
+      pendingDraft.current = clone(g);
+      undoRef.current = [...undoRef.current.slice(-19), clone(g)];
+      redoRef.current = [];
+      setHistoryTick(v => v + 1);
       pendingDraft.current.prefs ??= {};
       for (const p of pendingDraft.current.players) if (!pendingDraft.current.prefs[p.id]) pendingDraft.current.prefs[p.id] = "any";
       pendingDraft.current.v = (Number(pendingDraft.current.v) || 0) + 1;
     }
     mut(pendingDraft.current);
+    pendingDraft.current.audit ??= [...(pendingDraft.current.audit ?? g.audit ?? [])];
+    if (audit) {
+      pendingDraft.current.audit = [...(pendingDraft.current.audit ?? []), audit].slice(-100);
+    }
     (pendingDraft.current as any).coHosts = [...(pendingDraft.current.cohosts ?? [])];
     autoSeat(pendingDraft.current);
     setG(pendingDraft.current);
@@ -506,6 +518,35 @@ export default function Page() {
       flushPending();
     }, 200);
   }
+
+  const applySnapshot = (snapshot: ListGame) => {
+    pendingDraft.current = clone(snapshot);
+    pendingDraft.current.prefs ??= {};
+    for (const p of pendingDraft.current.players) if (!pendingDraft.current.prefs[p.id]) pendingDraft.current.prefs[p.id] = "any";
+    pendingDraft.current.v = (Number(pendingDraft.current.v) || 0) + 1;
+    pendingDraft.current.audit = [...(pendingDraft.current.audit ?? [])].slice(-100);
+    autoSeat(pendingDraft.current);
+    setG(pendingDraft.current);
+    flushPending();
+  };
+
+  const undo = () => {
+    if (!undoRef.current.length || !g) return;
+    const snapshot = undoRef.current.pop();
+    if (!snapshot) return;
+    redoRef.current = [...redoRef.current.slice(-19), clone(g)];
+    setHistoryTick(v => v + 1);
+    applySnapshot(snapshot);
+  };
+
+  const redo = () => {
+    if (!redoRef.current.length || !g) return;
+    const snapshot = redoRef.current.pop();
+    if (!snapshot) return;
+    undoRef.current = [...undoRef.current.slice(-19), clone(g)];
+    setHistoryTick(v => v + 1);
+    applySnapshot(snapshot);
+  };
 
   /* actions */
   const renameList = (nm: string) => { const v = nm.trim(); if (!v) return; scheduleCommit(d => { d.name = v; }); };
@@ -590,6 +631,23 @@ export default function Page() {
 
     const eliminated = new Set<string>([loser]);
 
+    const findOpponents = () => {
+      if (!g) return [] as string[];
+      const t = g.tables.find(tt => seatKeys.some(sk => seatValue(tt, sk) === loser));
+      if (!t) return [] as string[];
+      const seatOfLoser = seatKeys.find(sk => seatValue(t, sk) === loser);
+      if (!seatOfLoser) return [] as string[];
+      const onLeft = seatOfLoser.startsWith('a');
+      const opponentSeats = doublesEnabled
+        ? (onLeft ? (['b1', 'b2'] as SeatKey[]) : (['a1', 'a2'] as SeatKey[]))
+        : (onLeft ? ['b'] as SeatKey[] : ['a'] as SeatKey[]);
+      return opponentSeats.map(sk => seatValue(t, sk)).filter(Boolean) as string[];
+    };
+    const winners = findOpponents();
+
+    const notePieces = [playerName];
+    if (winners.length) notePieces.push(`lost to ${winners.map(nameOf).join(' / ')}`);
+
     scheduleCommit(d => {
       d.queue ??= [];
       const t = d.tables.find(tt => seatKeys.some(sk => seatValue(tt, sk) === loser));
@@ -618,7 +676,7 @@ export default function Page() {
       }
 
       excludeSeatPidRef.current = loser;
-    });
+    }, { t: Date.now(), who: me.id, type: 'lost', note: notePieces.join(' — ') });
   };
 
   const moveSeatBetweenTables = (tableIndex: number, seat: SeatKey, direction: -1 | 1) => scheduleCommit(d => {
@@ -672,6 +730,9 @@ export default function Page() {
                   Private code: <b>{g.code || "—"}</b> • {g.players.length} {g.players.length === 1 ? "player" : "players"}
                   <span style={{opacity:.6}}>•</span>
                   <button style={btnGhostSm} onClick={()=>setShowHistory(v=>!v)}>{showHistory?"Hide":"Show"} history</button>
+                  <span style={{opacity:.6}}>•</span>
+                  <button style={btnGhostSm} onClick={undo} disabled={!undoRef.current.length}>⏪ Rewind</button>
+                  <button style={btnGhostSm} onClick={redo} disabled={!redoRef.current.length}>⏩ Redo</button>
                 </div>
               </div>
               <div style={{display:"grid",gap:6,justifyItems:"end"}}>
