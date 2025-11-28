@@ -695,15 +695,16 @@ export default function Page() {
 
   const swapSeatWithQueue = (tableIndex: number, seat: SeatKey, queuePid: string) => scheduleCommit(d => {
     if (!d.tables) return;
+
+    clearPidFromTables(d, queuePid);
     const table = d.tables[tableIndex];
     if (!table) return;
 
     const incoming = queuePid;
     const current = seatValue(table, seat);
 
-    clearPidFromTables(d, incoming);
-    d.queue = (d.queue ?? []).filter(x => x !== incoming);
     setSeatValue(table, seat, incoming);
+    d.queue = (d.queue ?? []).filter(x => x !== incoming);
 
     if (current) {
       d.queue = (d.queue ?? []).filter(x => x !== current);
@@ -954,6 +955,12 @@ export default function Page() {
                   <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">Skip first</button>
                 )}
               </div>
+
+              {doublesEnabled && (
+                <p style={{margin:"4px 0 10px", fontSize:12, opacity:.8}}>
+                  Please make sure that the person in the table you are swapping with is in order of the queue.
+                </p>
+              )}
 
               {queue.length===0 ? <div style={{opacity:.6,fontStyle:"italic"}}>Drop players here</div> : (
                 <ol style={{margin:0,paddingLeft:18,display:"grid",gap:6}}
