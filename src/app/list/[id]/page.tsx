@@ -693,6 +693,14 @@ export default function Page() {
     setSeatValue(to, seat, fromVal);
   });
 
+  const confirmQueueSwap = () => {
+    if (typeof window === "undefined") return true;
+    const ok = window.confirm("Are you sure?");
+    if (!ok) return false;
+    window.alert("Please make sure that the person you swap with is in order of the queue");
+    return true;
+  };
+
   const swapSeatWithQueue = (tableIndex: number, seat: SeatKey, queuePid: string) => {
     const current = g?.tables?.[tableIndex] ? seatValue(g.tables[tableIndex], seat) : undefined;
     const auditNote = `${nameOf(queuePid)} swapped with ${current ? nameOf(current) : 'an empty seat'} at Table ${tableIndex + 1} ${seat}`;
@@ -894,7 +902,7 @@ export default function Page() {
                               <select
                                 aria-label="Swap with a queue player"
                                 defaultValue=""
-                                onChange={(e)=>{ const qp = e.currentTarget.value; if (!qp) return; swapSeatWithQueue(i, side, qp); e.currentTarget.value = ''; }}
+                                onChange={(e)=>{ const qp = e.currentTarget.value; if (!qp) return; if (!confirmQueueSwap()) { e.currentTarget.value = ''; return; } swapSeatWithQueue(i, side, qp); e.currentTarget.value = ''; }}
                                 style={selectSmall}
                                 disabled={busy}
                               >
