@@ -693,24 +693,29 @@ export default function Page() {
     setSeatValue(to, seat, fromVal);
   });
 
-  const swapSeatWithQueue = (tableIndex: number, seat: SeatKey, queuePid: string) => scheduleCommit(d => {
-    if (!d.tables) return;
+  const swapSeatWithQueue = (tableIndex: number, seat: SeatKey, queuePid: string) => {
+    const current = g?.tables?.[tableIndex] ? seatValue(g.tables[tableIndex], seat) : undefined;
+    const auditNote = `${nameOf(queuePid)} swapped with ${current ? nameOf(current) : 'an empty seat'} at Table ${tableIndex + 1} ${seat}`;
 
-    clearPidFromTables(d, queuePid);
-    const table = d.tables[tableIndex];
-    if (!table) return;
+    scheduleCommit(d => {
+      if (!d.tables) return;
 
-    const incoming = queuePid;
-    const current = seatValue(table, seat);
+      clearPidFromTables(d, queuePid);
+      const table = d.tables[tableIndex];
+      if (!table) return;
 
-    setSeatValue(table, seat, incoming);
-    d.queue = (d.queue ?? []).filter(x => x !== incoming);
+      const incoming = queuePid;
+      const seated = seatValue(table, seat);
 
-    if (current) {
-      d.queue = (d.queue ?? []).filter(x => x !== current);
-      d.queue.push(current);
-    }
-  }, { t: Date.now(), who: me.id, type: 'swap-queue-seat', note: `Table ${tableIndex + 1} ${seat}` });
+      setSeatValue(table, seat, incoming);
+      d.queue = (d.queue ?? []).filter(x => x !== incoming);
+
+      if (seated) {
+        d.queue = (d.queue ?? []).filter(x => x !== seated);
+        d.queue.push(seated);
+      }
+    }, { t: Date.now(), who: me.id, type: 'swap-queue-seat', note: auditNote });
+  };
 
   /* UI */
   return (
@@ -958,7 +963,7 @@ export default function Page() {
 
               {doublesEnabled && (
                 <p style={{margin:"4px 0 10px", fontSize:12, opacity:.8}}>
-                  Please make sure that the person in the table you are swapping with is in order of the queue.
+                  Please make sure that the person you swap with is in order of the queue.
                 </p>
               )}
 

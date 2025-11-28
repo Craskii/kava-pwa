@@ -491,22 +491,27 @@ export default function LocalListPage() {
     setSeatValue(to, seat, fromVal);
   }, { t: Date.now(), who: me.id, type: 'swap-table-seat', note: `Table ${tableIndex + 1} ↔ Table ${targetIndex + 1}` });
 
-  const swapSeatWithQueue = (tableIndex: number, seat: SeatKey, queuePid: string) => update(d => {
-    clearPidFromTables(d, queuePid);
-    const table = d.tables[tableIndex];
-    if (!table) return;
+  const swapSeatWithQueue = (tableIndex: number, seat: SeatKey, queuePid: string) => {
+    const current = g.tables[tableIndex] ? seatValue(g.tables[tableIndex], seat) : undefined;
+    const auditNote = `${nameOf(queuePid)} swapped with ${current ? nameOf(current) : 'an empty seat'} at Table ${tableIndex + 1} ${seat}`;
 
-    const incoming = queuePid;
-    const current = seatValue(table, seat);
+    update(d => {
+      clearPidFromTables(d, queuePid);
+      const table = d.tables[tableIndex];
+      if (!table) return;
 
-    setSeatValue(table, seat, incoming);
-    d.queue = d.queue.filter(x => x !== incoming);
+      const incoming = queuePid;
+      const seated = seatValue(table, seat);
 
-    if (current) {
-      d.queue = d.queue.filter(x => x !== current);
-      d.queue.push(current);
-    }
-  }, { t: Date.now(), who: me.id, type: 'swap-queue-seat', note: `Table ${tableIndex + 1} ${seat}` });
+      setSeatValue(table, seat, incoming);
+      d.queue = d.queue.filter(x => x !== incoming);
+
+      if (seated) {
+        d.queue = d.queue.filter(x => x !== seated);
+        d.queue.push(seated);
+      }
+    }, { t: Date.now(), who: me.id, type: 'swap-queue-seat', note: auditNote });
+  };
 
   const undo = () => {
     if (!undoRef.current.length) return;
@@ -866,7 +871,7 @@ export default function LocalListPage() {
 
         {doublesEnabled && (
           <p style={{margin:'4px 0 10px', fontSize:12, opacity:.8}}>
-            Please make sure that the person in the table you are swapping with is in order of the queue.
+            Please make sure that the person you swap with is in order of the queue.
           </p>
         )}
 
