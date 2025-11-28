@@ -693,6 +693,30 @@ export default function Page() {
     setSeatValue(to, seat, fromVal);
   });
 
+  const swapSeatWithQueue = (tableIndex: number, seat: SeatKey, queuePid: string) => {
+    const current = g?.tables?.[tableIndex] ? seatValue(g.tables[tableIndex], seat) : undefined;
+    const auditNote = `${nameOf(queuePid)} swapped with ${current ? nameOf(current) : 'an empty seat'} at Table ${tableIndex + 1} ${seat}`;
+
+    scheduleCommit(d => {
+      if (!d.tables) return;
+
+      clearPidFromTables(d, queuePid);
+      const table = d.tables[tableIndex];
+      if (!table) return;
+
+      const incoming = queuePid;
+      const seated = seatValue(table, seat);
+
+      setSeatValue(table, seat, incoming);
+      d.queue = (d.queue ?? []).filter(x => x !== incoming);
+
+      if (seated) {
+        d.queue = (d.queue ?? []).filter(x => x !== seated);
+        d.queue.push(seated);
+      }
+    }, { t: Date.now(), who: me.id, type: 'swap-queue-seat', note: auditNote });
+  };
+
   /* UI */
   return (
     <ErrorBoundary>
@@ -866,6 +890,18 @@ export default function Page() {
                                 {i < g.tables.length - 1 && <button style={btnTiny} onClick={()=>moveSeatBetweenTables(i, side, 1)} aria-label="Move to next table">→</button>}
                               </span>
                             )}
+                            {doublesEnabled && canSeat && queue.length > 0 && (
+                              <select
+                                aria-label="Swap with a queue player"
+                                defaultValue=""
+                                onChange={(e)=>{ const qp = e.currentTarget.value; if (!qp) return; swapSeatWithQueue(i, side, qp); e.currentTarget.value = ''; }}
+                                style={selectSmall}
+                                disabled={busy}
+                              >
+                                <option value="">Swap with queue…</option>
+                                {queue.map(qpid => <option key={qpid} value={qpid}>{nameOf(qpid)}</option>)}
+                              </select>
+                            )}
                             {(canSeat || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
                           </span>
                         )}
@@ -924,6 +960,12 @@ export default function Page() {
                   <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">Skip first</button>
                 )}
               </div>
+
+              {doublesEnabled && (
+                <p style={{margin:"4px 0 10px", fontSize:12, opacity:.8}}>
+                  Please make sure that the person you swap with is in order of the queue.
+                </p>
+              )}
 
               {queue.length===0 ? <div style={{opacity:.6,fontStyle:"italic"}}>Drop players here</div> : (
                 <ol style={{margin:0,paddingLeft:18,display:"grid",gap:6}}
@@ -1133,6 +1175,7 @@ const input: React.CSSProperties = {
 
 const nameInput: React.CSSProperties = { background:"#111", border:"1px solid #333", color:"#fff", borderRadius:10, padding:"8px 10px", width:"min(420px, 80vw)" };
 const select: React.CSSProperties = { background:"#111", border:"1px solid #333", color:"#fff", borderRadius:8, padding:"6px 8px" };
+const selectSmall: React.CSSProperties = { ...select, fontSize:12, padding:"4px 8px", minWidth:150 };
 
 const bubbleName: React.CSSProperties = {
   flex: "1 1 auto",
