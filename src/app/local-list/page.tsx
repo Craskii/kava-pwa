@@ -491,12 +491,12 @@ export default function LocalListPage() {
     setSeatValue(to, seat, fromVal);
   }, { t: Date.now(), who: me.id, type: 'swap-table-seat', note: `Table ${tableIndex + 1} ↔ Table ${targetIndex + 1}` });
 
-  const confirmQueueSwap = () => {
+  const confirmQueueSwap = async () => {
     if (typeof window === "undefined") return true;
-    const ok = window.confirm("Are you sure?");
+    const ok = await confirmYesNo("Are you sure?");
     if (!ok) return false;
-    window.alert("Please make sure that the person you swap with is in order of the queue");
-    return true;
+    const reminded = await confirmYesNo("Please make sure that the person you swap with is in order of the queue");
+    return reminded;
   };
 
   const swapSeatWithQueue = (tableIndex: number, seat: SeatKey, queuePid: string) => {
@@ -799,7 +799,7 @@ export default function LocalListPage() {
                           aria-label="Swap with a queue player"
                           defaultValue=""
                           onChange={(e)=>{
-                            const qp = e.currentTarget.value; if (!qp) return; if (!confirmQueueSwap()) { e.currentTarget.value = ''; return; } swapSeatWithQueue(i, side, qp); e.currentTarget.value = '';
+                            const qp = e.currentTarget.value; if (!qp) return; if (!(await confirmQueueSwap())) { e.currentTarget.value = ''; return; } swapSeatWithQueue(i, side, qp); e.currentTarget.value = '';
                           }}
                           style={selectSmall}
                           disabled={busy}
