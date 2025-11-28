@@ -798,7 +798,7 @@ export default function LocalListPage() {
                         <select
                           aria-label="Swap with a queue player"
                           defaultValue=""
-                          onChange={(e)=>{
+                          onChange={async (e)=>{
                             const qp = e.currentTarget.value; if (!qp) return; if (!(await confirmQueueSwap())) { e.currentTarget.value = ''; return; } swapSeatWithQueue(i, side, qp); e.currentTarget.value = '';
                           }}
                           style={selectSmall}
