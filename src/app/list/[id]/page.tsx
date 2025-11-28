@@ -693,6 +693,24 @@ export default function Page() {
     setSeatValue(to, seat, fromVal);
   });
 
+  const swapSeatWithQueue = (tableIndex: number, seat: SeatKey, queuePid: string) => scheduleCommit(d => {
+    if (!d.tables) return;
+    const table = d.tables[tableIndex];
+    if (!table) return;
+
+    const incoming = queuePid;
+    const current = seatValue(table, seat);
+
+    clearPidFromTables(d, incoming);
+    d.queue = (d.queue ?? []).filter(x => x !== incoming);
+    setSeatValue(table, seat, incoming);
+
+    if (current) {
+      d.queue = (d.queue ?? []).filter(x => x !== current);
+      d.queue.push(current);
+    }
+  }, { t: Date.now(), who: me.id, type: 'swap-queue-seat', note: `Table ${tableIndex + 1} ${seat}` });
+
   /* UI */
   return (
     <ErrorBoundary>
@@ -865,6 +883,18 @@ export default function Page() {
                                 {i > 0 && <button style={btnTiny} onClick={()=>moveSeatBetweenTables(i, side, -1)} aria-label="Move to previous table">←</button>}
                                 {i < g.tables.length - 1 && <button style={btnTiny} onClick={()=>moveSeatBetweenTables(i, side, 1)} aria-label="Move to next table">→</button>}
                               </span>
+                            )}
+                            {doublesEnabled && canSeat && queue.length > 0 && (
+                              <select
+                                aria-label="Swap with a queue player"
+                                defaultValue=""
+                                onChange={(e)=>{ const qp = e.currentTarget.value; if (!qp) return; swapSeatWithQueue(i, side, qp); e.currentTarget.value = ''; }}
+                                style={selectSmall}
+                                disabled={busy}
+                              >
+                                <option value="">Swap with queue…</option>
+                                {queue.map(qpid => <option key={qpid} value={qpid}>{nameOf(qpid)}</option>)}
+                              </select>
                             )}
                             {(canSeat || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
                           </span>
@@ -1133,6 +1163,7 @@ const input: React.CSSProperties = {
 
 const nameInput: React.CSSProperties = { background:"#111", border:"1px solid #333", color:"#fff", borderRadius:10, padding:"8px 10px", width:"min(420px, 80vw)" };
 const select: React.CSSProperties = { background:"#111", border:"1px solid #333", color:"#fff", borderRadius:8, padding:"6px 8px" };
+const selectSmall: React.CSSProperties = { ...select, fontSize:12, padding:"4px 8px", minWidth:150 };
 
 const bubbleName: React.CSSProperties = {
   flex: "1 1 auto",

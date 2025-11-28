@@ -491,6 +491,23 @@ export default function LocalListPage() {
     setSeatValue(to, seat, fromVal);
   }, { t: Date.now(), who: me.id, type: 'swap-table-seat', note: `Table ${tableIndex + 1} ↔ Table ${targetIndex + 1}` });
 
+  const swapSeatWithQueue = (tableIndex: number, seat: SeatKey, queuePid: string) => update(d => {
+    const table = d.tables[tableIndex];
+    if (!table) return;
+
+    const incoming = queuePid;
+    const current = seatValue(table, seat);
+
+    clearPidFromTables(d, incoming);
+    d.queue = d.queue.filter(x => x !== incoming);
+    setSeatValue(table, seat, incoming);
+
+    if (current) {
+      d.queue = d.queue.filter(x => x !== current);
+      d.queue.push(current);
+    }
+  }, { t: Date.now(), who: me.id, type: 'swap-queue-seat', note: `Table ${tableIndex + 1} ${seat}` });
+
   const undo = () => {
     if (!undoRef.current.length) return;
     setG(cur => {
@@ -764,6 +781,20 @@ export default function LocalListPage() {
                           {i < g.tables.length - 1 && <button style={btnTiny} onClick={()=>moveSeatBetweenTables(i, side, 1)} aria-label="Move to next table">→</button>}
                         </span>
                       )}
+                      {doublesEnabled && iHaveMod && queue.length > 0 && (
+                        <select
+                          aria-label="Swap with a queue player"
+                          defaultValue=""
+                          onChange={(e)=>{
+                            const qp = e.currentTarget.value; if (!qp) return; swapSeatWithQueue(i, side, qp); e.currentTarget.value = '';
+                          }}
+                          style={selectSmall}
+                          disabled={busy}
+                        >
+                          <option value="">Swap with queue…</option>
+                          {queue.map(qpid => <option key={qpid} value={qpid}>{nameOf(qpid)}</option>)}
+                        </select>
+                      )}
                       {(iHaveMod || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
                     </span>
                   )}
@@ -987,6 +1018,7 @@ const pillBadge: React.CSSProperties = { padding:'6px 10px', borderRadius:999, b
 const input: React.CSSProperties = { width:260, maxWidth:'90vw', padding:'10px 12px', borderRadius:10, border:'1px solid #333', background:'#111', color:'#fff' };
 const nameInput: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:10, padding:'8px 10px', width:'min(420px, 80vw)' };
 const select: React.CSSProperties = { background:'#111', border:'1px solid #333', color:'#fff', borderRadius:8, padding:'6px 8px' };
+const selectSmall: React.CSSProperties = { ...select, fontSize:12, padding:'4px 8px', minWidth:150 };
 const messageBox: React.CSSProperties = {
   background:'rgba(14,165,233,0.15)', 
   border:'1px solid rgba(14,165,233,0.35)', 
