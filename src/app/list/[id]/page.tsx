@@ -729,7 +729,7 @@ export default function Page() {
   return (
     <ErrorBoundary>
       <main ref={pageRootRef} style={wrap}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:12,flexWrap:"wrap"}}>
           <BackButton href="/" />
           <div style={{display:"flex",alignItems:"center",gap:8}}>
             <span style={pillBadge}>Live</span>
@@ -745,8 +745,8 @@ export default function Page() {
           </>
         ) : (
           <>
-            <header style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"center",marginTop:6}}>
-              <div>
+            <header style={{display:"flex",justifyContent:"space-between",gap:12,alignItems:"flex-start",flexWrap:"wrap",marginTop:6}}>
+              <div style={{flex:"1 1 260px", minWidth:0}}>
                 <h1 style={{ margin:"8px 0 4px" }}>
                   <input
                     id="list-name"
@@ -767,7 +767,7 @@ export default function Page() {
                   <button style={btnGhostSm} onClick={redo} disabled={!redoRef.current.length}>⏩ Redo</button>
                 </div>
               </div>
-              <div style={{display:"grid",gap:6,justifyItems:"end"}}>
+              <div style={{display:"grid",gap:6,justifyItems:"stretch",minWidth:"min(260px, 100%)"}}>
                 {!players.some(p => p.id === me.id) && (
                   <button style={btnGhost} onClick={addSelfToList} disabled={busy}>Add me as "{me.name}"</button>
                 )}
@@ -800,7 +800,7 @@ export default function Page() {
 
             {/* Tables */}
             <section style={card}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10}}>
                 <h3 style={{marginTop:0}}>Tables</h3>
                 {(me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) && (
                   <button style={btnGhostSm} onClick={()=>setShowTableControls(v=>!v)}>
@@ -871,7 +871,7 @@ export default function Page() {
                 </div>
               )}
 
-              <div style={{display:"grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px,1fr))", gap:12}}>
+              <div style={{display:"grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px,1fr))", gap:12}}>
                 {g.tables.map((t,i)=>{
                   const Seat = ({side,label}:{side:SeatKey;label:string})=>{
                     const pid = seatValue(t, side);
@@ -882,16 +882,16 @@ export default function Page() {
                         onDragStart={(e)=>pid && onDragStart(e,{type:"seat",table:i,side,pid})}
                         onDragOver={supportsDnD ? onDragOver : undefined}
                         onDrop={supportsDnD ? (e)=>handleDrop(e,{type:"seat",table:i,side,pid}) : undefined}
-                        style={{minHeight:36,padding:"12px 12px",border:"1px dashed rgba(255,255,255,.25)",borderRadius:10,background:doublesEnabled?"rgba(124,58,237,.16)":"rgba(56,189,248,.10)",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8, boxShadow:"inset 0 1px 0 rgba(255,255,255,.08)"}}
+                        style={{minHeight:36,padding:"12px 12px",border:"1px dashed rgba(255,255,255,.25)",borderRadius:10,background:doublesEnabled?"rgba(124,58,237,.16)":"rgba(56,189,248,.10)",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8, boxShadow:"inset 0 1px 0 rgba(255,255,255,.08)", flexWrap:"wrap"}}
                         title={supportsDnD ? "Drag from queue, players, or swap seats" : "Use Queue controls"}
                       >
-                        <span style={{display:'flex',alignItems:'center',gap:8}}>
+                        <span style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',minWidth:0,flex:'1 1 160px'}}>
                           <span style={dragHandleMini} aria-hidden>⋮</span>
                           <span style={{opacity:.7,fontSize:13,fontWeight:600}}>{label}</span>
-                          <span style={{fontSize:15}}>{nameOf(pid)}</span>
+                          <span style={{fontSize:15, wordBreak:'break-word'}}>{nameOf(pid)}</span>
                         </span>
                         {pid && (
-                          <span style={{display:'flex',gap:6,alignItems:'center'}}>
+                          <span style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',justifyContent:'flex-end'}}>
                             {g.tables.length > 1 && canSeat && (
                               <span style={{display:'flex',gap:4}}>
                                 {i > 0 && <button style={btnTiny} onClick={()=>moveSeatBetweenTables(i, side, -1)} aria-label="Move to previous table">←</button>}
@@ -962,7 +962,7 @@ export default function Page() {
 
             {/* Queue */}
             <section style={card}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                 <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
                 {(me.id === g.hostId || (g.cohosts ?? []).includes(me.id)) && queue.length >= 2 && (
                   <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">Skip first</button>
@@ -1001,7 +1001,7 @@ export default function Page() {
                           </div>
                         )}
 
-                        <div style={{display:"flex",gap:6}}>
+                        <div style={{display:"flex",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
                           {(me.id === g.hostId || (g.cohosts ?? []).includes(me.id) || canEditSelf) ? (
                             <>
                               <button style={pref==="any"?btnTinyActive:btnTiny} onClick={(e)=>{e.stopPropagation();setPrefFor(pid,"any");}} disabled={busy}>Any</button>
@@ -1194,13 +1194,17 @@ const bubbleName: React.CSSProperties = {
   cursor: "grab",
   userSelect: "none",
   boxShadow: "0 4px 12px rgba(0,0,0,0.22)",
+  minWidth: 0,
+  wordBreak: "break-word",
 };
 const queueItem: React.CSSProperties = {
   cursor:"grab",
   display:"flex",
-  alignItems:"center",
+  alignItems:"flex-start",
   gap:10,
-  justifyContent:"space-between"
+  justifyContent:"space-between",
+  flexWrap:"wrap",
+  rowGap:6,
 };
 const sectionToggle: React.CSSProperties = {
   width:"100%",
