@@ -1461,6 +1461,16 @@ export default function Lobby() {
                       const w = m.winner;
                       const iPlay = me && (teamHasPlayer(m.a, me?.id) || teamHasPlayer(m.b, me?.id));
                       const canReport = !canHost && iPlay && !w && t.status === 'active';
+                      const matchShellB: React.CSSProperties = {
+                        background: 'linear-gradient(135deg, #0f172a, #0b1223)',
+                        borderRadius: 12,
+                        padding: '12px',
+                        display: 'grid',
+                        gap: 8,
+                        border: w ? '1px solid rgba(34,197,94,0.55)' : '1px solid rgba(255,255,255,0.08)',
+                        boxShadow: w ? '0 10px 20px rgba(34,197,94,0.25)' : '0 10px 18px rgba(0,0,0,0.25)',
+                      };
+                      const advanceNoteB = rIdx === t.rounds.length - 1 ? 'Winner takes the title' : 'Winner advances to the next round';
 
                       type DragInfo = { type: 'seat'; round: number; match: number; side: 'a' | 'b'; teamId?: string };
                       const allowDrag = canHost && t.status !== 'completed';
