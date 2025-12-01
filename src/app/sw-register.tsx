@@ -2,7 +2,7 @@
 import { useEffect } from 'react';
 
 const SW_URL = '/sw.js';
-const SW_VERSION = 'v8'; // bump when you change alerts/SW
+const SW_VERSION = 'v9'; // bump when you change alerts/SW
 
 export default function SWRegister() {
   useEffect(() => {

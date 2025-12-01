@@ -159,6 +159,9 @@ export default function Page() {
   const [showPlayers, setShowPlayers] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [supportsDnD, setSupportsDnD] = useState<boolean>(true);
+  const [isVisible, setIsVisible] = useState<boolean>(
+    typeof document === 'undefined' ? true : document.visibilityState === 'visible'
+  );
 
   useEffect(() => {
     const detectDnDSupport = () => {
@@ -169,6 +172,17 @@ export default function Page() {
       return 'draggable' in el || ('ondragstart' in el && 'ondrop' in el);
     };
     setSupportsDnD(detectDnDSupport());
+  }, []);
+
+  useEffect(() => {
+    const onVis = () => setIsVisible(document.visibilityState === 'visible');
+    const onFocus = () => setIsVisible(true);
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('focus', onFocus);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('focus', onFocus);
+    };
   }, []);
 
   const me = useMemo<Player>(() => {
@@ -209,6 +223,8 @@ export default function Page() {
   const suppressRef = useRef(false);
   const watchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollRef = useRef<number | null>(null);
+  const pollDelayRef = useRef<number>(3000);
+  const pollOnceRef = useRef<() => Promise<void>>(async () => {});
   const pageRootRef = useRef<HTMLDivElement | null>(null);
 
   const seatChanged = (next: ListGame | null) => {
@@ -220,12 +236,10 @@ export default function Page() {
     return false;
   };
 
-  const sseEnabled = typeof document !== "undefined" && document.visibilityState === "visible";
-
   useRoomChannel({
     kind: "list",
     id,
-    enabled: sseEnabled,
+    enabled: isVisible,
     onState: (msg: any) => {
       if (!msg) return;
       const raw = msg?.t === "state" ? msg.data : msg;
@@ -258,23 +272,27 @@ export default function Page() {
     setErr(null);
     lastVersion.current = 0;
 
+    pollDelayRef.current = isVisible ? 3000 : 12000;
+
+    pollOnceRef.current = async () => {
+      try {
+        const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: "no-store" });
+        if (!res.ok) return;
+        const doc = coerceList(await res.json()); if (!doc) return;
+        const v = doc.v ?? 0;
+        if (v <= lastVersion.current) return;
+        lastVersion.current = v;
+        setErr(null);
+        setG(doc);
+        if (seatChanged(doc)) bumpAlerts();
+      } catch (e:any) {
+        debugLine(`[poll] ${e?.message || e}`);
+      }
+    };
+
     const startPoller = () => {
       if (pollRef.current) return;
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const res = await fetch(`/api/list/${encodeURIComponent(id)}?ts=${Date.now()}`, { cache: "no-store" });
-          if (!res.ok) return;
-          const doc = coerceList(await res.json()); if (!doc) return;
-          const v = doc.v ?? 0;
-          if (v <= lastVersion.current) return;
-          lastVersion.current = v;
-          setErr(null);
-          setG(doc);
-          if (seatChanged(doc)) bumpAlerts();
-        } catch (e:any) {
-          debugLine(`[poll] ${e?.message || e}`);
-        }
-      }, 3000);
+      pollRef.current = window.setInterval(() => { void pollOnceRef.current(); }, pollDelayRef.current);
     };
     const stopPoller = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
 
@@ -341,6 +359,14 @@ export default function Page() {
       stopPoller();
     };
   }, [id, me.id]);
+
+  useEffect(() => {
+    pollDelayRef.current = isVisible ? 3000 : 12000;
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = window.setInterval(() => { void pollOnceRef.current(); }, pollDelayRef.current);
+    }
+  }, [isVisible]);
 
   /* Disable Android long-press */
   useEffect(() => {

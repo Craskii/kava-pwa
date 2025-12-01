@@ -1,6 +1,7 @@
 export type AlertEvent = "UP_NEXT" | "MATCH_READY";
 
 const STORAGE_KEY = "alerts.enabled.v1";
+const ICON_PATH = "/icons/icon-192x192.png";
 
 export function getAlertsEnabled(): boolean {
   if (typeof window === "undefined") return false;
@@ -17,15 +18,46 @@ export async function ensureNotificationPermission(): Promise<NotificationPermis
   return await Notification.requestPermission();
 }
 
-export function showSystemNotification(title: string, body: string) {
-  if (typeof window === "undefined" || !("Notification" in window)) return;
-  if (Notification.permission !== "granted") return;
-  new Notification(title, {
+export async function showSystemNotification(
+  title: string,
+  body: string,
+  opts: Partial<NotificationOptions & { url?: string }> = {}
+): Promise<boolean> {
+  if (typeof window === "undefined" || !("Notification" in window)) return false;
+  if (Notification.permission !== "granted") return false;
+
+  const payload: NotificationOptions & { data?: any } = {
     body,
     requireInteraction: true,
     vibrate: [80, 40, 80],
-    icon: "/icons/icon-192x192.png",
-    badge: "/icons/icon-192x192.png",
+    icon: ICON_PATH,
+    badge: ICON_PATH,
     tag: "queue-alert",
-  });
+    renotify: true,
+    data: opts.url ? { url: opts.url } : undefined,
+    ...opts,
+  };
+
+  // Prefer the SW path so banners work when the PWA is backgrounded.
+  try {
+    if (navigator.serviceWorker) {
+      const reg = await navigator.serviceWorker.ready;
+      const active = reg?.active;
+      if (active) {
+        active.postMessage({ type: "SHOW_NOTIFICATION", payload: { title, body, ...payload } });
+        return true;
+      }
+      if (reg.showNotification) {
+        await reg.showNotification(title, payload);
+        return true;
+      }
+    }
+  } catch {}
+
+  try {
+    new Notification(title, payload);
+    return true;
+  } catch {}
+
+  return false;
 }

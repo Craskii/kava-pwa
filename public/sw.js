@@ -1,6 +1,6 @@
 // public/sw.js
 // Simple app-shell + network-first for HTML and APIs, cache-first for static assets.
-const CACHE_VERSION = 'v7'; // ← bump this number
+const CACHE_VERSION = 'v8'; // ← bump this number when cache strategy changes
 const VERSION = self.__BUILD__ || String(Date.now());
 const STATIC_CACHE = `static-${VERSION}`;
 const DYNAMIC_CACHE = `dynamic-${VERSION}`;
@@ -87,6 +87,66 @@ self.addEventListener("fetch", (event) => {
       } catch {
         const cached = await caches.match(req);
         return cached || new Response("Offline", { status: 503 });
+      }
+    })()
+  );
+});
+
+/**
+ * BACKGROUND NOTIFICATIONS (push + postMessage bridge)
+ * Allows the app to display system notifications even when the page is hidden.
+ */
+const DEFAULT_ICON = "/icons/icon-192x192.png";
+
+async function showSwNotification(payload) {
+  const { title, body, data, tag, requireInteraction, icon, badge } = payload || {};
+  if (!title || !body) return;
+
+  try {
+    await self.registration.showNotification(title, {
+      body,
+      tag: tag || "queue-alert",
+      requireInteraction: Boolean(requireInteraction),
+      renotify: true,
+      icon: icon || DEFAULT_ICON,
+      badge: badge || DEFAULT_ICON,
+      data: data || {},
+    });
+  } catch (err) {
+    // swallow to avoid breaking fetch handler
+  }
+}
+
+self.addEventListener("message", (event) => {
+  const msg = event.data || {};
+  if (msg?.type === "SHOW_NOTIFICATION") {
+    event.waitUntil(showSwNotification(msg.payload));
+  }
+});
+
+self.addEventListener("push", (event) => {
+  try {
+    const data = event.data?.json?.() ?? {};
+    event.waitUntil(showSwNotification(data));
+  } catch (err) {
+    // ignore malformed push payloads
+  }
+});
+
+self.addEventListener("notificationclick", (event) => {
+  const url = event.notification?.data?.url;
+  event.notification.close();
+
+  if (!url) return;
+
+  event.waitUntil(
+    (async () => {
+      const allClients = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      const existing = allClients.find((c) => c.url.startsWith(url));
+      if (existing) {
+        await existing.focus();
+      } else {
+        await self.clients.openWindow(url);
       }
     })()
   );

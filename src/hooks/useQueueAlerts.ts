@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { showSystemNotification } from '@/lib/notifications';
 
 type UseQueueAlertsOpts = {
   tournamentId?: string;
@@ -59,15 +60,14 @@ function showInAppBanner(text: string) {
   setTimeout(() => { document.getElementById(id)?.remove(); }, 6000);
 }
 
-function fireBannerAdvanced(status: any, text: string) {
-  try {
-    if ('Notification' in window && Notification.permission === 'granted') {
-      const title = status?.source === 'list' ? 'Queue update' : 'Match update';
-      new Notification(title, { body: text, tag: 'kava-alert', renotify: true });
-      return;
-    }
-  } catch {}
-  showInAppBanner(text);
+async function fireBannerAdvanced(status: any, text: string) {
+  const title = status?.source === 'list' ? 'Queue update' : 'Match update';
+  const shown = await showSystemNotification(title, text, {
+    tag: 'kava-alert',
+    renotify: true,
+    url: status?.url || status?.deepLink,
+  });
+  if (!shown) showInAppBanner(text);
 }
 
 function resolveMessage(msg: string | ((s:any)=>string) | undefined, status: any, fallback: string) {
@@ -136,69 +136,77 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
     try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); } catch { return null; }
   }, []);
   const userId = me?.id;
+  const inFlight = useRef(false);
+  const timerRef = useRef<number | null>(null);
 
   const manualCheck = useCallback(async () => {
-    if (!alertsEnabled() || !userId) return;
-    if (shouldSkipCheck()) return;
-
-    const status = await fetchStatus({ userId, tournamentId, listId });
-
-    const sigParts = [
-      status?.source ?? 'x',
-      status?.phase ?? 'idle',
-      String(status?.position ?? status?.queuePosition ?? ''),
-      String(getTableNumber(status) ?? ''),
-    ];
-    const nextSig = sigParts.join('|');
-
-    let prevSig = '';
-    try { prevSig = localStorage.getItem(LS_KEY_LAST_SIG) || ''; } catch {}
-    if (!nextSig || nextSig === prevSig) return;
-
-    try { localStorage.setItem(LS_KEY_LAST_SIG, nextSig); } catch {}
-    if (!acquireWindowLock()) return;
-
-    await Promise.resolve();
-    try { prevSig = localStorage.getItem(LS_KEY_LAST_SIG) || ''; } catch {}
-    if (prevSig !== nextSig) return;
-
+    if (inFlight.current) return;
+    inFlight.current = true;
     try {
-      const last = Number(localStorage.getItem(LS_KEY_LAST_FIRE) || 0);
-      const now = Date.now();
-      if (now - last < 1200) return;
-      localStorage.setItem(LS_KEY_LAST_FIRE, String(now));
-    } catch {}
+      if (!alertsEnabled() || !userId) return;
+      if (shouldSkipCheck()) return;
 
-    // (1) Seated / on table
-    if (isOnTable(status)) {
-      const tableNo = getTableNumber(status);
-      const fallback = tableNo ? `Your in table (#${tableNo})` : `Your in table`;
-      const msg = resolveMessage(opts.matchReadyMessage, status, fallback);
-      fireBannerAdvanced(status, msg);
-      return;
-    }
+      const status = await fetchStatus({ userId, tournamentId, listId });
 
-    // (2) Up next
-    if (status?.phase === 'up_next') {
-      if (status?.source === 'list' || !!listId) {
-        fireBannerAdvanced(status, 'your up next get ready!!');
-      } else {
-        const roundName =
-          status?.bracketRoundName ||
-          status?.roundName ||
-          (status?.roundNumber != null ? `Round ${status.roundNumber}` : 'this round');
-        fireBannerAdvanced(status, `your up now in ${roundName}!`);
+      const sigParts = [
+        status?.source ?? 'x',
+        status?.phase ?? 'idle',
+        String(status?.position ?? status?.queuePosition ?? ''),
+        String(getTableNumber(status) ?? ''),
+      ];
+      const nextSig = sigParts.join('|');
+
+      let prevSig = '';
+      try { prevSig = localStorage.getItem(LS_KEY_LAST_SIG) || ''; } catch {}
+      if (!nextSig || nextSig === prevSig) return;
+
+      try { localStorage.setItem(LS_KEY_LAST_SIG, nextSig); } catch {}
+      if (!acquireWindowLock()) return;
+
+      await Promise.resolve();
+      try { prevSig = localStorage.getItem(LS_KEY_LAST_SIG) || ''; } catch {}
+      if (prevSig !== nextSig) return;
+
+      try {
+        const last = Number(localStorage.getItem(LS_KEY_LAST_FIRE) || 0);
+        const now = Date.now();
+        if (now - last < 1200) return;
+        localStorage.setItem(LS_KEY_LAST_FIRE, String(now));
+      } catch {}
+
+      // (1) Seated / on table
+      if (isOnTable(status)) {
+        const tableNo = getTableNumber(status);
+        const fallback = tableNo ? `Your in table (#${tableNo})` : `Your in table`;
+        const msg = resolveMessage(opts.matchReadyMessage, status, fallback);
+        await fireBannerAdvanced(status, msg);
+        return;
       }
-      return;
-    }
 
-    // (3) Fallback: first in queue, no explicit phase
-    if (isFirstInQueue(status)) {
-      const isList = !!listId || status?.source === 'list';
-      const fallback = isList ? 'your up next get ready!!' : "You're up next — be ready!";
-      const msg = resolveMessage(opts.upNextMessage, status, fallback);
-      fireBannerAdvanced(status, msg);
-      return;
+      // (2) Up next
+      if (status?.phase === 'up_next') {
+        if (status?.source === 'list' || !!listId) {
+          await fireBannerAdvanced(status, 'your up next get ready!!');
+        } else {
+          const roundName =
+            status?.bracketRoundName ||
+            status?.roundName ||
+            (status?.roundNumber != null ? `Round ${status.roundNumber}` : 'this round');
+          await fireBannerAdvanced(status, `your up now in ${roundName}!`);
+        }
+        return;
+      }
+
+      // (3) Fallback: first in queue, no explicit phase
+      if (isFirstInQueue(status)) {
+        const isList = !!listId || status?.source === 'list';
+        const fallback = isList ? 'your up next get ready!!' : "You're up next — be ready!";
+        const msg = resolveMessage(opts.upNextMessage, status, fallback);
+        await fireBannerAdvanced(status, msg);
+        return;
+      }
+    } finally {
+      inFlight.current = false;
     }
   }, [userId, tournamentId, listId, opts.matchReadyMessage, opts.upNextMessage]);
 
@@ -211,9 +219,29 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
       }
     } catch {}
 
-    manualCheck();
+    const scheduleNext = (ms: number) => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(loop, ms);
+    };
 
-    const onVis = () => { if (document.visibilityState === 'visible') manualCheck(); };
+    const cadence = () => {
+      const visible = document.visibilityState === 'visible';
+      return visible ? 1800 : 6500;
+    };
+
+    const loop = async () => {
+      await manualCheck();
+      scheduleNext(cadence());
+    };
+
+    loop();
+
+    const onVis = () => {
+      if (document.visibilityState === 'visible') {
+        manualCheck();
+      }
+      scheduleNext(cadence());
+    };
     const onFocus = () => manualCheck();
     document.addEventListener('visibilitychange', onVis);
     window.addEventListener('focus', onFocus);
@@ -223,7 +251,7 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
     };
     window.addEventListener('storage', onStorage);
 
-    // Tournament: keep SSE
+    // Tournament: keep SSE to wake checks, but let cadence control fetch rate
     let es: EventSource | null = null;
     if (tournamentId) {
       try {
@@ -233,18 +261,13 @@ export function useQueueAlerts(opts: UseQueueAlertsOpts) {
       } catch {}
     }
 
-    // List: fast poll ONLY (remove SSE to avoid 404 on /api/list/:id/stream)
-    let int: any = null;
-    if (listId) {
-      int = setInterval(manualCheck, 800);
-    }
-
     return () => {
       document.removeEventListener('visibilitychange', onVis);
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('storage', onStorage);
       if (es) es.close();
-      if (int) clearInterval(int);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      inFlight.current = false;
     };
   }, [userId, tournamentId, listId, manualCheck]);
 

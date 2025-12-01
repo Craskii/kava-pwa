@@ -8,19 +8,20 @@ type Args = {
   id: string;
   onState: (data: any) => void;
   onError?: (err: unknown) => void;
+  enabled?: boolean;
 };
 
 /**
  * Poll-only channel (no SSE/WS).
- * Reads /api/<kind>/<id> every 2500ms with cache-busting.
+ * Reads /api/<kind>/<id> on a cadence, but pauses when disabled.
  */
-export function useRoomChannel({ kind, id, onState, onError }: Args) {
+export function useRoomChannel({ kind, id, onState, onError, enabled = true }: Args) {
   const lastV = useRef<number>(0);
   const timerRef = useRef<number | null>(null);
   const stopped = useRef<boolean>(false);
 
   useEffect(() => {
-    if (!id || !kind) return;
+    if (!id || !kind || !enabled) return;
     stopped.current = false;
     lastV.current = 0;
 
@@ -65,5 +66,5 @@ export function useRoomChannel({ kind, id, onState, onError }: Args) {
       timerRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, id]);
+  }, [kind, id, enabled]);
 }
