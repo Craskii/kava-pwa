@@ -45,7 +45,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="apple-touch-icon" href="/icons/icon-192.png" />
         <title>Kava</title>
       </head>
-      <body>{children}</body>
+      <body>
+        <ClientBoot>
+          <ClientErrorTrap />
+          <OneSignalBoot />
+          <AlertsGlobal />
+          <LaunchReminder />
+          {children}
+        </ClientBoot>
+      </body>
     </html>
   );
 }
