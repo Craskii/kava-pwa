@@ -158,6 +158,7 @@ export default function LocalListPage() {
   const [showPlayers, setShowPlayers] = useState(false);
   const [supportsDnD, setSupportsDnD] = useState<boolean>(true);
   const [lostMessage, setLostMessage] = useState<string | null>(null);
+  const lostMessageTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pageRootRef = useRef<HTMLDivElement | null>(null);
   const undoRef = useRef<ListGame[]>([]);
   const redoRef = useRef<ListGame[]>([]);
@@ -181,6 +182,12 @@ export default function LocalListPage() {
     if (debounce.current) clearTimeout(debounce.current);
     debounce.current = setTimeout(() => { saveLocal(doc); }, 120);
   };
+
+  useEffect(() => {
+    return () => {
+      if (lostMessageTimeoutRef.current) clearTimeout(lostMessageTimeoutRef.current);
+    };
+  }, []);
 
   const iAmHost = me.id === g.hostId;
   const iAmCohost = (g.cohosts ?? []).includes(me.id);
@@ -426,8 +433,9 @@ export default function LocalListPage() {
     const shouldQueue = await confirmYesNo('Put yourself back in the queue?');
 
     if (!shouldQueue) {
+      if (lostMessageTimeoutRef.current) clearTimeout(lostMessageTimeoutRef.current);
       setLostMessage(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
-      setTimeout(() => setLostMessage(null), 8000);
+      lostMessageTimeoutRef.current = setTimeout(() => setLostMessage(null), 8000);
     }
 
     const eliminated = new Set<string>([loser]);
@@ -642,12 +650,6 @@ export default function LocalListPage() {
         </div>
       </div>
 
-      {lostMessage && (
-        <div style={messageBox}>
-          ℹ️ {lostMessage}
-        </div>
-      )}
-
       <header style={{display:'flex',justifyContent:'space-between',gap:12,alignItems:'flex-start',flexWrap:'wrap',marginTop:6}}>
         <div style={{flex:'1 1 260px', minWidth:0}}>
           <h1 style={{ margin:'8px 0 4px' }}>
@@ -681,6 +683,12 @@ export default function LocalListPage() {
           )}
         </div>
       </header>
+
+      {lostMessage && (
+        <div style={messageBox}>
+          ℹ️ {lostMessage}
+        </div>
+      )}
 
       {showHistory && (
         <section style={card}>
