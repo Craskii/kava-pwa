@@ -158,6 +158,7 @@ export default function Page() {
   const [showHistory, setShowHistory] = useState(false);
   const [showPlayers, setShowPlayers] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [lostMessage, setLostMessage] = useState<string | null>(null);
   const [supportsDnD, setSupportsDnD] = useState<boolean>(true);
   const [isVisible, setIsVisible] = useState<boolean>(
     typeof document === 'undefined' ? true : document.visibilityState === 'visible'
@@ -182,6 +183,12 @@ export default function Page() {
     return () => {
       document.removeEventListener('visibilitychange', onVis);
       window.removeEventListener('focus', onFocus);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (lostMessageTimeoutRef.current) clearTimeout(lostMessageTimeoutRef.current);
     };
   }, []);
 
@@ -213,6 +220,7 @@ export default function Page() {
   const undoRef = useRef<ListGame[]>([]);
   const redoRef = useRef<ListGame[]>([]);
   const [, setHistoryTick] = useState(0);
+  const lostMessageTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clone = (doc: ListGame) => JSON.parse(JSON.stringify(doc)) as ListGame;
 
@@ -652,7 +660,9 @@ export default function Page() {
     const shouldQueue = await confirmYesNo('Put yourself back in the queue?');
 
     if (!shouldQueue) {
-      alert(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
+      if (lostMessageTimeoutRef.current) clearTimeout(lostMessageTimeoutRef.current);
+      setLostMessage(`${playerName}, find your name in the Players list below and click "Queue" to rejoin.`);
+      lostMessageTimeoutRef.current = setTimeout(() => setLostMessage(null), 8000);
     }
 
     const eliminated = new Set<string>([loser]);
@@ -804,6 +814,12 @@ export default function Page() {
                 )}
               </div>
             </header>
+
+            {lostMessage && (
+              <div style={messageBox}>
+                ℹ️ {lostMessage}
+              </div>
+            )}
 
             {showHistory ? (
               <section style={card}>
@@ -1210,6 +1226,15 @@ const input: React.CSSProperties = {
 const nameInput: React.CSSProperties = { background:"#111", border:"1px solid #333", color:"#fff", borderRadius:10, padding:"8px 10px", width:"min(420px, 80vw)" };
 const select: React.CSSProperties = { background:"#111", border:"1px solid #333", color:"#fff", borderRadius:8, padding:"6px 8px" };
 const selectSmall: React.CSSProperties = { ...select, fontSize:12, padding:"4px 8px", minWidth:150 };
+const messageBox: React.CSSProperties = {
+  background:"rgba(14,165,233,0.15)",
+  border:"1px solid rgba(14,165,233,0.35)",
+  borderRadius:12,
+  padding:"12px 14px",
+  marginTop:8,
+  fontSize:14,
+  fontWeight:600,
+};
 
 const bubbleName: React.CSSProperties = {
   flex: "1 1 auto",
