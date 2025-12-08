@@ -13,7 +13,7 @@ import DebugPanel, { debugLine } from "@/components/DebugPanel";
 
 /* ============ Types ============ */
 type TableLabel = "8 foot" | "9 foot";
-type Table = { a?: string; b?: string; a1?: string; a2?: string; b1?: string; b2?: string; label: TableLabel };
+type Table = { a?: string; b?: string; a1?: string; a2?: string; b1?: string; b2?: string; label: TableLabel; doubles?: boolean };
 type SeatKey = keyof Pick<Table, 'a' | 'b' | 'a1' | 'a2' | 'b1' | 'b2'>;
 const seatKeys = ['a', 'b', 'a1', 'a2', 'b1', 'b2'] as const satisfies SeatKey[];
 const seatsForMode = (doubles: boolean) => doubles ? (['a1', 'a2', 'b1', 'b2'] as const) : (['a', 'b'] as const);
@@ -64,6 +64,7 @@ function coerceList(raw: any): ListGame | null {
           a2: t?.a2 ? String(t.a2) : undefined,
           b1: t?.b1 ? String(t.b1) : (t?.b ? String(t.b) : undefined),
           b2: t?.b2 ? String(t.b2) : undefined,
+          doubles: typeof t?.doubles === 'boolean' ? !!t.doubles : undefined,
           label: t?.label === "9 foot" || t?.label === "8 foot" ? t.label : i === 1 ? "9 foot" : "8 foot",
         }))
       : [{ label: "8 foot" }, { label: "9 foot" }];
@@ -392,13 +393,35 @@ export default function Page() {
   const queue = g?.queue ?? [];
   const prefs = g?.prefs || {};
   const players = g?.players ?? [];
-  const doublesEnabled = g?.doubles ?? false;
-  const activeSeats = seatsForMode(doublesEnabled);
+  const globalDoublesEnabled = g?.doubles ?? false;
+  const isTableDoubles = (t: Table, fallback?: boolean) => t.doubles ?? fallback ?? globalDoublesEnabled;
+  const anyTableDoubles = g?.tables?.some?.((t) => isTableDoubles(t as Table)) ?? false;
+  const activeSeats = seatsForMode(globalDoublesEnabled);
   const seatValue = (t: Table, key: SeatKey) => (t as any)[key] as string | undefined;
   const setSeatValue = (t: Table, key: SeatKey, pid?: string) => {
     (t as any)[key] = pid;
     if (key === 'a1' || key === 'a') { t.a = pid; t.a1 = pid; }
     if (key === 'b1' || key === 'b') { t.b = pid; t.b1 = pid; }
+  };
+  const coerceTableMode = (table: Table, next: boolean, fallback?: boolean) => {
+    const tt = { ...table } as Table;
+    const prev = isTableDoubles(tt, fallback);
+    if (prev === next) return tt;
+
+    if (next) {
+      if (!tt.a1 && tt.a) tt.a1 = tt.a;
+      if (!tt.b1 && tt.b) tt.b1 = tt.b;
+    } else {
+      tt.a = tt.a1 || tt.a;
+      tt.b = tt.b1 || tt.b;
+      tt.a1 = tt.a;
+      tt.b1 = tt.b;
+      tt.a2 = undefined;
+      tt.b2 = undefined;
+    }
+
+    tt.doubles = next;
+    return tt;
   };
   const seatValues = (t: Table, doubles: boolean) => seatsForMode(doubles).map(k => seatValue(t, k));
   const clearPidFromTables = (d: ListGame, pid: string) => {
@@ -465,7 +488,6 @@ export default function Page() {
     };
 
     const fillFromPlayersIfNoQueue = false; // Require queue membership to auto-seat
-    const seatOrder = seatsForMode(next.doubles ?? false);
     const seatedSet = new Set<string>();
     for (const t of next.tables) {
       seatKeys.forEach(sk => {
@@ -492,6 +514,7 @@ export default function Page() {
     };
 
     next.tables.forEach((t) => {
+      const seatOrder = seatsForMode(isTableDoubles(t, next.doubles));
       seatOrder.forEach(sk => {
         if (!seatValue(t, sk)) setSeatValue(t, sk, takeFromQueue(t.label) ?? (fillFromPlayersIfNoQueue ? takeFromPlayers(t.label) : undefined));
       });
@@ -674,7 +697,7 @@ export default function Page() {
       const seatOfLoser = seatKeys.find(sk => seatValue(t, sk) === loser);
       if (!seatOfLoser) return [] as string[];
       const onLeft = seatOfLoser.startsWith('a');
-      const opponentSeats = doublesEnabled
+      const opponentSeats = isTableDoubles(t)
         ? (onLeft ? (['b1', 'b2'] as SeatKey[]) : (['a1', 'a2'] as SeatKey[]))
         : (onLeft ? ['b'] as SeatKey[] : ['a'] as SeatKey[]);
       return opponentSeats.map(sk => seatValue(t, sk)).filter(Boolean) as string[];
@@ -690,7 +713,7 @@ export default function Page() {
       if (!t) return;
 
       const seatOfLoser = seatKeys.find(sk => seatValue(t, sk) === loser);
-      if (d.doubles && seatOfLoser) {
+      if (isTableDoubles(t, d.doubles) && seatOfLoser) {
         const onLeft = seatOfLoser.startsWith('a');
         const teammates = onLeft ? (['a1', 'a2'] as SeatKey[]) : (['b1', 'b2'] as SeatKey[]);
         teammates.forEach(sk => {
@@ -883,38 +906,25 @@ export default function Page() {
                   <label style={{display:"flex",alignItems:"center",gap:8,fontSize:14,fontWeight:600}}>
                     <input
                       type="checkbox"
-                      checked={!!doublesEnabled}
+                      checked={!!globalDoublesEnabled}
                         onChange={(e)=>{
                           const target = e.target as HTMLInputElement | null;
                           const next = !!target?.checked;
                         scheduleCommit(d=>{
                           d.doubles = next;
-                          d.tables = d.tables.map(t => {
-                            const tt = { ...t } as Table;
-                            if (next) {
-                              if (!tt.a1 && tt.a) tt.a1 = tt.a;
-                              if (!tt.b1 && tt.b) tt.b1 = tt.b;
-                            } else {
-                              tt.a = tt.a1 || tt.a;
-                              tt.b = tt.b1 || tt.b;
-                              tt.a1 = tt.a;
-                              tt.b1 = tt.b;
-                              tt.a2 = undefined;
-                              tt.b2 = undefined;
-                            }
-                            return tt;
-                          });
+                          d.tables = d.tables.map(t => coerceTableMode(t, next, d.doubles));
                         });
                         }}
                         disabled={busy}
                       />
-                    Enable doubles (teams of two)
+                    Enable doubles for all tables (tables can still switch individually)
                   </label>
                 </div>
               )}
 
               <div style={{display:"grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px,1fr))", gap:12}}>
                 {g.tables.map((t,i)=>{
+                  const tableDoubles = isTableDoubles(t);
                   const Seat = ({side,label}:{side:SeatKey;label:string})=>{
                     const pid = seatValue(t, side);
                     const canSeat = (me.id === g.hostId || (g.cohosts ?? []).includes(me.id));
@@ -924,7 +934,7 @@ export default function Page() {
                         onDragStart={(e)=>pid && onDragStart(e,{type:"seat",table:i,side,pid})}
                         onDragOver={supportsDnD ? onDragOver : undefined}
                         onDrop={supportsDnD ? (e)=>handleDrop(e,{type:"seat",table:i,side,pid}) : undefined}
-                        style={{minHeight:36,padding:"12px 12px",border:"1px dashed rgba(255,255,255,.25)",borderRadius:10,background:doublesEnabled?"rgba(124,58,237,.16)":"rgba(56,189,248,.10)",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8, boxShadow:"inset 0 1px 0 rgba(255,255,255,.08)", flexWrap:"wrap"}}
+                        style={{minHeight:36,padding:"12px 12px",border:"1px dashed rgba(255,255,255,.25)",borderRadius:10,background:tableDoubles?"rgba(124,58,237,.16)":"rgba(56,189,248,.10)",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8, boxShadow:"inset 0 1px 0 rgba(255,255,255,.08)", flexWrap:"wrap"}}
                         title={supportsDnD ? "Drag from queue, players, or swap seats" : "Use Queue controls"}
                       >
                         <span style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',minWidth:0,flex:'1 1 160px'}}>
@@ -940,7 +950,7 @@ export default function Page() {
                                 {i < g.tables.length - 1 && <button style={btnTiny} onClick={()=>moveSeatBetweenTables(i, side, 1)} aria-label="Move to next table">→</button>}
                               </span>
                             )}
-                            {doublesEnabled && canSeat && queue.length > 0 && (
+                            {tableDoubles && canSeat && queue.length > 0 && (
                               <select
                                 aria-label="Swap with a queue player"
                                 defaultValue=""
@@ -959,13 +969,24 @@ export default function Page() {
                     );
                   };
                   return (
-                    <div key={i} style={{ background:doublesEnabled?"#432775":"#0b3a66", borderRadius:12, padding:"12px 14px", border:doublesEnabled?"1px solid rgba(168,85,247,.45)":"1px solid rgba(56,189,248,.35)", display:"grid", gap:10, fontSize:15, lineHeight:1.4 }}>
+                    <div key={i} style={{ background:tableDoubles?"#432775":"#0b3a66", borderRadius:12, padding:"12px 14px", border:tableDoubles?"1px solid rgba(168,85,247,.45)":"1px solid rgba(56,189,248,.35)", display:"grid", gap:10, fontSize:15, lineHeight:1.4 }}>
                       <div style={{ opacity:.9, fontSize:13, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", justifyContent:"space-between" }}>
                         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                           <span>{t.label==="9 foot"?"9-Foot Table":"8-Foot Table"} • Table {i+1}</span>
-                          {doublesEnabled && <span style={pillBadge}>Doubles</span>}
+                          {tableDoubles && <span style={pillBadge}>Doubles</span>}
                         </div>
                         <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                          <button
+                            aria-pressed={tableDoubles}
+                            aria-label={tableDoubles ? 'Switch table to singles' : 'Switch table to doubles'}
+                            onClick={() => scheduleCommit(d => { d.tables[i] = coerceTableMode(d.tables[i], !tableDoubles, d.doubles); }, { t: Date.now(), who: me.id, type: 'table-mode', note: `${tableDoubles ? 'Doubles' : 'Singles'} → ${!tableDoubles ? 'Doubles' : 'Singles'} @ Table ${i+1}` })}
+                            disabled={busy || !(me.id === g.hostId || (g.cohosts ?? []).includes(me.id))}
+                            style={{border:'1px solid rgba(255,255,255,.16)',background:'rgba(0,0,0,.15)',borderRadius:999,display:'flex',alignItems:'center',padding:'6px 10px',gap:8,color:'#fff',boxShadow:'inset 0 1px 0 rgba(255,255,255,.08)',position:'relative',overflow:'hidden',minWidth:110}}
+                          >
+                            <span style={{opacity:.75,fontSize:12,fontWeight:700}}>Singles</span>
+                            <span style={{opacity:.75,fontSize:12,fontWeight:700}}>Doubles</span>
+                            <span style={{position:'absolute',top:3,bottom:3,width:'48%',borderRadius:999,background:'linear-gradient(135deg, rgba(59,130,246,.75), rgba(236,72,153,.75))',transform:`translateX(${tableDoubles ? '52%' : '2%'})`,transition:'transform 150ms ease',boxShadow:'0 8px 18px rgba(0,0,0,.25)'}} />
+                          </button>
                           <button style={btnGhostSm} onClick={() => scheduleCommit(d => {
                             const tt = d.tables[i];
                             ([['a','b'],['a1','b1'],['a2','b2']] as [SeatKey,SeatKey][]).forEach(([l,r]) => {
@@ -979,13 +1000,13 @@ export default function Page() {
                       </div>
                 <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',alignItems:'stretch',gap:10}}>
                   <div style={{display:'grid',gap:8}}>
-                    <Seat side={doublesEnabled ? 'a1' : 'a'} label={doublesEnabled ? 'Left L1' : 'Player'}/>
-                    {doublesEnabled && <Seat side='a2' label='Left L2' />}
+                    <Seat side={tableDoubles ? 'a1' : 'a'} label={tableDoubles ? 'Left L1' : 'Player'}/>
+                    {tableDoubles && <Seat side='a2' label='Left L2' />}
                   </div>
                   <div style={{opacity:.7,textAlign:'center',fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16}}>vs</div>
                   <div style={{display:'grid',gap:8}}>
-                    <Seat side={doublesEnabled ? 'b1' : 'b'} label={doublesEnabled ? 'Right R1' : 'Player'}/>
-                    {doublesEnabled && <Seat side='b2' label='Right R2' />}
+                    <Seat side={tableDoubles ? 'b1' : 'b'} label={tableDoubles ? 'Right R1' : 'Player'}/>
+                    {tableDoubles && <Seat side='b2' label='Right R2' />}
                   </div>
                 </div>
               </div>
@@ -1011,7 +1032,7 @@ export default function Page() {
                 )}
               </div>
 
-              {doublesEnabled && (
+              {anyTableDoubles && (
                 <p style={{margin:"4px 0 10px", fontSize:12, opacity:.8}}>
                   Please make sure that the person you swap with is in order of the queue.
                 </p>
