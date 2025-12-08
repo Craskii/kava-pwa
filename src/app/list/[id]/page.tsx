@@ -981,11 +981,26 @@ export default function Page() {
                             aria-label={tableDoubles ? 'Switch table to singles' : 'Switch table to doubles'}
                             onClick={() => scheduleCommit(d => { d.tables[i] = coerceTableMode(d.tables[i], !tableDoubles, d.doubles); }, { t: Date.now(), who: me.id, type: 'table-mode', note: `${tableDoubles ? 'Doubles' : 'Singles'} → ${!tableDoubles ? 'Doubles' : 'Singles'} @ Table ${i+1}` })}
                             disabled={busy || !(me.id === g.hostId || (g.cohosts ?? []).includes(me.id))}
-                            style={{border:'1px solid rgba(255,255,255,.16)',background:'rgba(0,0,0,.15)',borderRadius:999,display:'flex',alignItems:'center',padding:'6px 10px',gap:8,color:'#fff',boxShadow:'inset 0 1px 0 rgba(255,255,255,.08)',position:'relative',overflow:'hidden',minWidth:110}}
+                            style={{border:'1px solid rgba(255,255,255,.16)',background:'rgba(0,0,0,.15)',borderRadius:999,display:'flex',alignItems:'center',padding:'6px 10px',gap:8,color:'#fff',boxShadow:'inset 0 1px 0 rgba(255,255,255,.08)',position:'relative',overflow:'hidden',minWidth:120,isolation:'isolate'}}
                           >
-                            <span style={{opacity:.75,fontSize:12,fontWeight:700}}>Singles</span>
-                            <span style={{opacity:.75,fontSize:12,fontWeight:700}}>Doubles</span>
-                            <span style={{position:'absolute',top:3,bottom:3,width:'48%',borderRadius:999,background:'linear-gradient(135deg, rgba(59,130,246,.75), rgba(236,72,153,.75))',transform:`translateX(${tableDoubles ? '52%' : '2%'})`,transition:'transform 150ms ease',boxShadow:'0 8px 18px rgba(0,0,0,.25)'}} />
+                            <span style={{opacity:.85,fontSize:12,fontWeight:700,position:'relative',zIndex:1}}>Singles</span>
+                            <span style={{opacity:.85,fontSize:12,fontWeight:700,position:'relative',zIndex:1}}>Doubles</span>
+                            <span
+                              style={{
+                                position:'absolute',
+                                top:3,
+                                bottom:3,
+                                left:3,
+                                width:'calc(50% - 6px)',
+                                borderRadius:999,
+                                background:'linear-gradient(135deg, rgba(59,130,246,.85), rgba(236,72,153,.85))',
+                                transform:`translateX(${tableDoubles ? '100%' : '0'})`,
+                                transition:'transform 160ms ease',
+                                boxShadow:'0 8px 18px rgba(0,0,0,.25)',
+                                pointerEvents:'none',
+                                zIndex:0,
+                              }}
+                            />
                           </button>
                           <button style={btnGhostSm} onClick={() => scheduleCommit(d => {
                             const tt = d.tables[i];
