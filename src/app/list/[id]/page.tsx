@@ -802,11 +802,12 @@ export default function Page() {
 
     scheduleCommit(d => {
       if (!d.tables) return;
-      const table = d.tables[tableIndex];
-      if (!table) return;
 
       if (target.type === 'queue') {
         clearPidFromTables(d, target.pid);
+
+        const table = d.tables[tableIndex];
+        if (!table) return;
 
         const incoming = target.pid;
         const seated = seatValue(table, seat);
@@ -821,8 +822,9 @@ export default function Page() {
         return;
       }
 
+      const table = d.tables[tableIndex];
       const targetTable = d.tables[target.tableIndex];
-      if (!targetTable) return;
+      if (!table || !targetTable) return;
 
       const incoming = seatValue(targetTable, target.seat);
       const seated = seatValue(table, seat);
@@ -976,7 +978,7 @@ export default function Page() {
                 </div>
               )}
 
-              <div style={{display:"grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap:12, alignItems:'stretch'}}>
+              <div style={{display:"grid", gridTemplateColumns: isCompactTableLayout ? '1fr' : "repeat(auto-fit, minmax(280px, 1fr))", gap:12, alignItems:'stretch'}}>
                 {g.tables.map((t,i)=>{
                   const tableDoubles = isTableDoubles(t);
                   const Seat = ({side,label}:{side:SeatKey;label:string})=>{
@@ -1007,7 +1009,7 @@ export default function Page() {
                             {canSeat && (() => {
                               const queueTargets = queue.map(pid => ({ value:`queue:${pid}`, label:`${nameOf(pid)} — Queue` }));
                               const seatTargets = (g?.tables ?? []).flatMap((table, tableIndex) =>
-                                seatKeys.map(sk => {
+                                seatsForMode(isTableDoubles(table)).map(sk => {
                                   if (tableIndex === i && sk === side) return null;
                                   const occupant = seatValue(table, sk);
                                   if (!occupant) return null;
