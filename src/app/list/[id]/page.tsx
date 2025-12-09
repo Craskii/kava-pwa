@@ -166,6 +166,12 @@ export default function Page() {
   );
   const [selectedQueuePid, setSelectedQueuePid] = useState<string | null>(null);
 
+  const queue = g?.queue ?? [];
+  const prefs = g?.prefs || {};
+  const players = g?.players ?? [];
+  const globalDoublesEnabled = g?.doubles ?? false;
+  const isTableDoubles = (t: Table, fallback?: boolean) => t.doubles ?? fallback ?? globalDoublesEnabled;
+
   useEffect(() => {
     const detectDnDSupport = () => {
       if (typeof window === 'undefined') return true;
@@ -391,11 +397,6 @@ export default function Page() {
     return () => { root.removeEventListener("contextmenu", prevent); };
   }, []);
 
-  const queue = g?.queue ?? [];
-  const prefs = g?.prefs || {};
-  const players = g?.players ?? [];
-  const globalDoublesEnabled = g?.doubles ?? false;
-  const isTableDoubles = (t: Table, fallback?: boolean) => t.doubles ?? fallback ?? globalDoublesEnabled;
   useEffect(() => {
     if (selectedQueuePid && !queue.includes(selectedQueuePid)) {
       setSelectedQueuePid(null);
