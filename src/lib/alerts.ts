@@ -18,6 +18,7 @@ function showBanner(body: string) {
 
 /** let any page tell the poller “check right now” */
 export function bumpAlerts() {
+  if (typeof window === 'undefined') return;
   try { window.dispatchEvent(new Event('alerts:bump')); } catch {}
 }
 
@@ -37,6 +38,9 @@ function chooseMessage(phase: string, opts: UseQueueAlertsOpts, status: any): st
 
 /** Singleton poller per-scope with burst mode for instant banners */
 export function useQueueAlerts(opts: UseQueueAlertsOpts = {}) {
+  // SSR/edge safety: this helper relies on browser globals.
+  if (typeof window === 'undefined') return;
+
   const key = JSON.stringify({ t: opts.tournamentId || null, l: opts.listId || null });
   // @ts-ignore
   if (!window.__alerts) window.__alerts = {};
