@@ -413,7 +413,15 @@ export default function Page() {
   }, [queue, selectedQueuePid]);
   const anyTableDoubles = g?.tables?.some?.((t) => isTableDoubles(t as Table)) ?? false;
   const activeSeats = seatsForMode(globalDoublesEnabled);
-  const seatValue = (t: Table, key: SeatKey) => (t as any)[key] as string | undefined;
+  const seatValue = (t: Table, key: SeatKey) => {
+    const raw = (t as any)[key] as string | undefined;
+    if (raw) return raw;
+    if (key === 'a') return (t as any).a1 as string | undefined;
+    if (key === 'a1') return (t as any).a as string | undefined;
+    if (key === 'b') return (t as any).b1 as string | undefined;
+    if (key === 'b1') return (t as any).b as string | undefined;
+    return raw;
+  };
   const setSeatValue = (t: Table, key: SeatKey, pid?: string) => {
     (t as any)[key] = pid;
     if (key === 'a1' || key === 'a') { t.a = pid; t.a1 = pid; }
