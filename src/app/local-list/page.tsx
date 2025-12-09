@@ -164,6 +164,7 @@ export default function LocalListPage() {
   const undoRef = useRef<ListGame[]>([]);
   const redoRef = useRef<ListGame[]>([]);
   const [, setHistoryTick] = useState(0);
+  const [selectedQueuePid, setSelectedQueuePid] = useState<string | null>(null);
 
   const clone = (doc: ListGame) => JSON.parse(JSON.stringify(doc)) as ListGame;
 
@@ -189,6 +190,12 @@ export default function LocalListPage() {
       if (lostMessageTimeoutRef.current) clearTimeout(lostMessageTimeoutRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (selectedQueuePid && !queue.includes(selectedQueuePid)) {
+      setSelectedQueuePid(null);
+    }
+  }, [queue, selectedQueuePid]);
 
   const iAmHost = me.id === g.hostId;
   const iAmCohost = (g.cohosts ?? []).includes(me.id);
@@ -428,7 +435,7 @@ export default function LocalListPage() {
     if (index <= 0 || index >= d.queue.length) return;
     const a = d.queue[index - 1]; d.queue[index - 1] = d.queue[index]; d.queue[index] = a;
   });
-  
+
   type ConfirmState = { message: string; resolve: (v: boolean) => void } | null;
   const [confirmState, setConfirmState] = useState<ConfirmState>(null);
   const confirmYesNo = (message: string) => new Promise<boolean>(resolve => setConfirmState({ message, resolve }));
@@ -437,6 +444,11 @@ export default function LocalListPage() {
     if (index < 0 || index >= d.queue.length - 1) return;
     const a = d.queue[index + 1]; d.queue[index + 1] = d.queue[index]; d.queue[index] = a;
   });
+
+  const moveToTop = (pid: string) => update(d => {
+    d.queue = d.queue.filter(x => x !== pid);
+    d.queue.unshift(pid);
+  }, { t: Date.now(), who: me.id, type: 'queue-move-top', note: nameOf(pid) });
   
   const skipFirst = () => update(d => {
     if (d.queue.length >= 2) { 
@@ -688,10 +700,15 @@ export default function LocalListPage() {
           <div style={{ opacity:.8, fontSize:14, display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
             Mode: <b>Local List</b> • {g.players.length} {g.players.length === 1 ? 'player' : 'players'}
             <span style={{opacity:.6}}>•</span>
-            <button style={btnGhostSm} onClick={()=>setShowHistory(v=>!v)}>{showHistory?'Hide':'Show'} history</button>
+            <button
+              style={showHistory ? btnHistoryActive : btnGhostSm}
+              onClick={()=>setShowHistory(v=>!v)}
+            >
+              {showHistory?'Hide':'Show'} history
+            </button>
             <span style={{opacity:.6}}>•</span>
-            <button style={btnGhostSm} onClick={undo} disabled={!undoRef.current.length}>⏪ Rewind</button>
-              <button style={btnGhostSm} onClick={redo} disabled={!redoRef.current.length}>⏩ Redo</button>
+            <button style={btnGhostSm} onClick={undo} disabled={!undoRef.current.length}>⏪ Undo</button>
+              <button style={btnGhostSm} onClick={redo} disabled={!redoRef.current.length}>⏩ Forward</button>
             </div>
         </div>
         <div style={{display:'grid',gap:6,justifyItems:'stretch',minWidth:'min(260px, 100%)'}}>
@@ -784,7 +801,7 @@ export default function LocalListPage() {
           </div>
         )}
 
-        <div style={{display:'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px,1fr))', gap:12}}>
+        <div style={{display:'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap:12, alignItems:'stretch'}}>
           {g.tables.map((t,i)=>{
             const tableDoubles = isTableDoubles(t);
             const Seat = ({side,label}:{side:SeatKey;label:string})=>{
@@ -915,11 +932,22 @@ export default function LocalListPage() {
       </section>
 
       <section style={card}>
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}}>
           <h3 style={{marginTop:0}}>Queue ({queue.length})</h3>
-          {iHaveMod && queue.length >= 2 && (
-            <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">Skip first</button>
-          )}
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+            {iHaveMod && selectedQueuePid && (
+              <button
+                style={btnGhostSm}
+                onClick={() => moveToTop(selectedQueuePid)}
+                disabled={busy}
+              >
+                Move selected to top
+              </button>
+            )}
+            {iHaveMod && queue.length >= 2 && (
+              <button style={btnGhostSm} onClick={skipFirst} disabled={busy} title="Move #1 below #2">Skip first</button>
+            )}
+          </div>
         </div>
 
         {anyTableDoubles && (
@@ -935,13 +963,15 @@ export default function LocalListPage() {
             {queue.map((pid,idx)=>{
               const pref = (prefs[pid] ?? 'any') as Pref;
               const canEditSelf = pid===me.id;
+              const isSelected = selectedQueuePid === pid;
               return (
                 <li key={`${pid}-${idx}`}
                     draggable={supportsDnD && iHaveMod}
                     onDragStart={supportsDnD && iHaveMod ? (e)=>onDragStart(e,{type:'queue',index:idx,pid}) : undefined}
                     onDragOver={supportsDnD ? onDragOver : undefined}
                     onDrop={supportsDnD ? (e)=>handleDrop(e,{type:'queue',index:idx,pid}) : undefined}
-                    style={queueItem}>
+                    onClick={()=>setSelectedQueuePid(p=>p===pid?null:pid)}
+                    style={{...queueItem, border:isSelected?'1px solid rgba(14,165,233,.7)':'1px solid transparent', borderRadius:10, padding:'6px 6px'}}>
                   <span style={dragHandle} aria-hidden>⋮⋮</span>
                   <span style={bubbleName} title={supportsDnD ? 'Drag to reorder' : 'Use arrows to reorder'}>
                     {idx+1}. {nameOf(pid)}
@@ -951,6 +981,7 @@ export default function LocalListPage() {
                     <div style={{display:'flex',gap:4,marginRight:6}}>
                       <button style={btnTiny} onClick={()=>moveUp(idx)} disabled={busy || idx===0} aria-label="Move up">▲</button>
                       <button style={btnTiny} onClick={()=>moveDown(idx)} disabled={busy || idx===queue.length-1} aria-label="Move down">▼</button>
+                      <button style={btnTiny} onClick={()=>moveToTop(pid)} disabled={busy || idx===0} aria-label="Move to top">⇧</button>
                     </div>
                   )}
 
@@ -1075,6 +1106,7 @@ const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:
 const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
 const btnGhost: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer' };
 const btnGhostSm: React.CSSProperties = { padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontWeight:600 };
+const btnHistoryActive: React.CSSProperties = { ...btnGhostSm, boxShadow:'0 0 0 2px rgba(14,165,233,0.45), 0 10px 30px rgba(14,165,233,0.15)', border:'1px solid rgba(14,165,233,0.8)', background:'rgba(14,165,233,0.15)' };
 const btnMini: React.CSSProperties = { padding:'6px 10px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontSize:12 };
 const btnTiny: React.CSSProperties = { padding:'4px 8px', borderRadius:8, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontSize:12, lineHeight:1 };
 const btnTinyActive: React.CSSProperties = { ...btnTiny, background:'#0ea5e9', border:'none' };
