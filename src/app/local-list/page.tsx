@@ -168,6 +168,9 @@ export default function LocalListPage() {
 
   const clone = (doc: ListGame) => JSON.parse(JSON.stringify(doc)) as ListGame;
 
+  // Derived values used throughout the component
+  const queue = g.queue ?? [];
+
   useEffect(() => {
     const detectDnDSupport = () => {
       if (typeof window === 'undefined') return true;
@@ -200,7 +203,6 @@ export default function LocalListPage() {
   const iAmHost = me.id === g.hostId;
   const iAmCohost = (g.cohosts ?? []).includes(me.id);
   const iHaveMod = iAmHost || iAmCohost;
-  const queue = g.queue ?? [];
   const players = g.players;
   const globalDoublesEnabled = g.doubles ?? false;
   const isTableDoubles = (t: Table, fallback?: boolean) => t.doubles ?? fallback ?? globalDoublesEnabled;
