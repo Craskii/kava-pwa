@@ -133,6 +133,7 @@ function isFirstInQueue(status: any): boolean {
 export function useQueueAlerts(opts: UseQueueAlertsOpts) {
   const { tournamentId, listId } = opts;
   const me = useMemo(() => {
+    if (typeof window === 'undefined') return null;
     try { return JSON.parse(localStorage.getItem('kava_me') || 'null'); } catch { return null; }
   }, []);
   const userId = me?.id;
