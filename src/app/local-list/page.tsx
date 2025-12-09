@@ -740,7 +740,7 @@ export default function LocalListPage() {
             Mode: <b>Local List</b> • {g.players.length} {g.players.length === 1 ? 'player' : 'players'}
             <span style={{opacity:.6}}>•</span>
             <button
-              style={showHistory ? btnHistoryActive : btnGhostSm}
+              style={showHistory ? btnHistoryActive : btnHistory}
               onClick={()=>setShowHistory(v=>!v)}
             >
               {showHistory?'Hide':'Show'} history
@@ -1170,8 +1170,15 @@ const card: React.CSSProperties = { background:'rgba(255,255,255,0.06)', border:
 const btn: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'none', background:'#0ea5e9', color:'#fff', fontWeight:700, cursor:'pointer' };
 const btnGhost: React.CSSProperties = { padding:'10px 14px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer' };
 const btnGhostSm: React.CSSProperties = { padding:'6px 10px', borderRadius:10, border:'1px solid rgba(255,255,255,0.25)', background:'transparent', color:'#fff', cursor:'pointer', fontWeight:600 };
-const btnHistoryActive: React.CSSProperties = {
+const btnHistory: React.CSSProperties = {
   ...btnGhostSm,
+  boxShadow: '0 0 0 1px rgba(234,179,8,0.3)',
+  border: '1px solid rgba(234,179,8,0.7)',
+  background: 'linear-gradient(135deg, rgba(250,204,21,0.12), rgba(251,191,36,0.1))',
+  color: '#fef3c7',
+};
+const btnHistoryActive: React.CSSProperties = {
+  ...btnHistory,
   boxShadow: '0 0 0 2px rgba(234,179,8,0.55), 0 10px 30px rgba(234,179,8,0.18)',
   border: '1px solid rgba(234,179,8,0.9)',
   background: 'linear-gradient(135deg, rgba(250,204,21,0.22), rgba(251,191,36,0.2))',
