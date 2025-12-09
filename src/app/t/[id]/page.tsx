@@ -369,16 +369,20 @@ export default function Lobby() {
     if (!me) localStorage.setItem('kava_me', JSON.stringify({ id: uid(), name: 'Player' }));
   }, [me]);
 
-  useQueueAlerts({
-    tournamentId: String(id),
-    upNextMessage: (s: any) => `your up now in ${s?.bracketRoundName || 'this round'}!`,
-    matchReadyMessage: (s: any) => {
-      const raw = s?.tableNumber ?? s?.table?.number ?? null;
-      const n = Number(raw);
-      const shown = Number.isFinite(n) ? (n === 0 || n === 1 ? n + 1 : n) : null;
-      return shown ? `Your in table (#${shown})` : 'Your in table';
-    },
-  });
+  // Run alert poller only on the client to avoid SSR/edge ReferenceErrors.
+  useEffect(() => {
+    if (!id) return;
+    useQueueAlerts({
+      tournamentId: String(id),
+      upNextMessage: (s: any) => `your up now in ${s?.bracketRoundName || 'this round'}!`,
+      matchReadyMessage: (s: any) => {
+        const raw = s?.tableNumber ?? s?.table?.number ?? null;
+        const n = Number(raw);
+        const shown = Number.isFinite(n) ? (n === 0 || n === 1 ? n + 1 : n) : null;
+        return shown ? `Your in table (#${shown})` : 'Your in table';
+      },
+    });
+  }, [id]);
 
   /* ---------- initial fetch (now captures x-t-version -> t.v) ---------- */
   useEffect(() => {
