@@ -161,6 +161,7 @@ export default function Page() {
   const [err, setErr] = useState<string | null>(null);
   const [lostMessage, setLostMessage] = useState<string | null>(null);
   const [supportsDnD, setSupportsDnD] = useState<boolean>(true);
+  const [isCompactTableLayout, setIsCompactTableLayout] = useState(false);
   const [isVisible, setIsVisible] = useState<boolean>(
     typeof document === 'undefined' ? true : document.visibilityState === 'visible'
   );
@@ -181,6 +182,14 @@ export default function Page() {
       return 'draggable' in el || ('ondragstart' in el && 'ondrop' in el);
     };
     setSupportsDnD(detectDnDSupport());
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleResize = () => setIsCompactTableLayout(window.innerWidth < 720);
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   useEffect(() => {
@@ -662,16 +671,22 @@ export default function Page() {
     });
   };
 
-  const moveUp = (index: number) => scheduleCommit(d => {
-    d.queue ??= [];
-    if (index <= 0 || index >= d.queue.length) return;
-    const a = d.queue[index - 1]; d.queue[index - 1] = d.queue[index]; d.queue[index] = a;
-  });
-  const moveDown = (index: number) => scheduleCommit(d => {
-    d.queue ??= [];
-    if (index < 0 || index >= d.queue.length - 1) return;
-    const a = d.queue[index + 1]; d.queue[index + 1] = d.queue[index]; d.queue[index] = a;
-  });
+  const moveUp = (index: number) => {
+    const pid = g?.queue?.[index];
+    if (!g || index <= 0 || index >= g.queue.length || !pid) return;
+    scheduleCommit(d => {
+      d.queue ??= [];
+      const a = d.queue[index - 1]; d.queue[index - 1] = d.queue[index]; d.queue[index] = a;
+    }, { t: Date.now(), who: me.id, type: 'queue-move-up', note: `${nameOf(pid)} to #${index}` });
+  };
+  const moveDown = (index: number) => {
+    const pid = g?.queue?.[index];
+    if (!g || index < 0 || index >= g.queue.length - 1 || !pid) return;
+    scheduleCommit(d => {
+      d.queue ??= [];
+      const a = d.queue[index + 1]; d.queue[index + 1] = d.queue[index]; d.queue[index] = a;
+    }, { t: Date.now(), who: me.id, type: 'queue-move-down', note: `${nameOf(pid)} to #${index + 2}` });
+  };
 
   const moveToTop = (pid: string) => scheduleCommit(d => {
     d.queue ??= [];
@@ -773,28 +788,49 @@ export default function Page() {
     return reminded;
   };
 
-  const swapSeatWithQueue = (tableIndex: number, seat: SeatKey, queuePid: string) => {
+  type SwapTarget = { type: 'queue'; pid: string } | { type: 'seat'; tableIndex: number; seat: SeatKey };
+
+  const swapSeat = (tableIndex: number, seat: SeatKey, target: SwapTarget) => {
     const current = g?.tables?.[tableIndex] ? seatValue(g.tables[tableIndex], seat) : undefined;
-    const auditNote = `${nameOf(queuePid)} swapped with ${current ? nameOf(current) : 'an empty seat'} at Table ${tableIndex + 1} ${seat}`;
+    const targetSeatPid = target.type === 'seat'
+      ? (g?.tables?.[target.tableIndex] ? seatValue(g.tables[target.tableIndex], target.seat) : undefined)
+      : undefined;
+
+    const auditNote = target.type === 'queue'
+      ? `${nameOf(target.pid)} swapped with ${current ? nameOf(current) : 'an empty seat'} at Table ${tableIndex + 1} ${seat}`
+      : `${nameOf(targetSeatPid)} @ Table ${target.tableIndex + 1} ${target.seat} swapped with ${current ? nameOf(current) : 'an empty seat'} @ Table ${tableIndex + 1} ${seat}`;
 
     scheduleCommit(d => {
       if (!d.tables) return;
-
-      clearPidFromTables(d, queuePid);
       const table = d.tables[tableIndex];
       if (!table) return;
 
-      const incoming = queuePid;
+      if (target.type === 'queue') {
+        clearPidFromTables(d, target.pid);
+
+        const incoming = target.pid;
+        const seated = seatValue(table, seat);
+
+        setSeatValue(table, seat, incoming);
+        d.queue = (d.queue ?? []).filter(x => x !== incoming);
+
+        if (seated) {
+          d.queue = (d.queue ?? []).filter(x => x !== seated);
+          d.queue.push(seated);
+        }
+        return;
+      }
+
+      const targetTable = d.tables[target.tableIndex];
+      if (!targetTable) return;
+
+      const incoming = seatValue(targetTable, target.seat);
       const seated = seatValue(table, seat);
+      if (!incoming) return;
 
       setSeatValue(table, seat, incoming);
-      d.queue = (d.queue ?? []).filter(x => x !== incoming);
-
-      if (seated) {
-        d.queue = (d.queue ?? []).filter(x => x !== seated);
-        d.queue.push(seated);
-      }
-    }, { t: Date.now(), who: me.id, type: 'swap-queue-seat', note: auditNote });
+      setSeatValue(targetTable, target.seat, seated);
+    }, { t: Date.now(), who: me.id, type: target.type === 'queue' ? 'swap-queue-seat' : 'swap-seat', note: auditNote });
   };
 
   /* UI */
@@ -955,7 +991,7 @@ export default function Page() {
                         style={{minHeight:36,padding:"12px 12px",border:"1px dashed rgba(255,255,255,.25)",borderRadius:10,background:tableDoubles?"rgba(124,58,237,.16)":"rgba(56,189,248,.10)",display:"flex",justifyContent:"space-between",alignItems:"center",gap:8, boxShadow:"inset 0 1px 0 rgba(255,255,255,.08)", flexWrap:"wrap"}}
                         title={supportsDnD ? "Drag from queue, players, or swap seats" : "Use Queue controls"}
                       >
-                        <span style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',minWidth:0,flex:'1 1 160px'}}>
+                        <span style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',minWidth:0,flex:'1 1 140px'}}>
                           <span style={dragHandleMini} aria-hidden>⋮</span>
                           <span style={{opacity:.7,fontSize:13,fontWeight:600}}>{label}</span>
                           <span style={{fontSize:15, wordBreak:'break-word'}}>{nameOf(pid)}</span>
@@ -968,18 +1004,45 @@ export default function Page() {
                                 {i < g.tables.length - 1 && <button style={btnTiny} onClick={()=>moveSeatBetweenTables(i, side, 1)} aria-label="Move to next table">→</button>}
                               </span>
                             )}
-                            {tableDoubles && canSeat && queue.length > 0 && (
-                              <select
-                                aria-label="Swap with a queue player"
-                                defaultValue=""
-                                onChange={async (e)=>{ const qp = e.currentTarget.value; if (!qp) return; if (!(await confirmQueueSwap())) { e.currentTarget.value = ''; return; } swapSeatWithQueue(i, side, qp); e.currentTarget.value = ''; }}
-                                style={selectSmall}
-                                disabled={busy}
-                              >
-                                <option value="">Swap with queue…</option>
-                                {queue.map(qpid => <option key={qpid} value={qpid}>{nameOf(qpid)}</option>)}
-                              </select>
-                            )}
+                            {canSeat && (() => {
+                              const queueTargets = queue.map(pid => ({ value:`queue:${pid}`, label:`${nameOf(pid)} — Queue` }));
+                              const seatTargets = (g?.tables ?? []).flatMap((table, tableIndex) =>
+                                seatKeys.map(sk => {
+                                  if (tableIndex === i && sk === side) return null;
+                                  const occupant = seatValue(table, sk);
+                                  if (!occupant) return null;
+                                  return { value:`seat:${tableIndex}:${sk}`, label:`${nameOf(occupant)} — Table ${tableIndex + 1} ${sk.toUpperCase()}` };
+                                }).filter(Boolean) as { value: string; label: string }[]
+                              );
+                              const options = [...queueTargets, ...seatTargets];
+                              if (options.length === 0) return null;
+                              return (
+                                <select
+                                  aria-label="Swap with another player"
+                                  defaultValue=""
+                                  onChange={async (e)=>{
+                                    const raw = e.currentTarget.value;
+                                    if (!raw) return;
+                                    const [kind, a, b] = raw.split(':');
+                                    if (kind === 'queue') {
+                                      const qp = a;
+                                      if (anyTableDoubles && !(await confirmQueueSwap())) { e.currentTarget.value = ''; return; }
+                                      swapSeat(i, side, { type:'queue', pid: qp });
+                                    } else if (kind === 'seat') {
+                                      const tIndex = Number(a);
+                                      const seatKey = b as SeatKey;
+                                      swapSeat(i, side, { type:'seat', tableIndex: tIndex, seat: seatKey });
+                                    }
+                                    e.currentTarget.value = '';
+                                  }}
+                                  style={selectSmall}
+                                  disabled={busy}
+                                >
+                                  <option value="">Swap with…</option>
+                                  {options.map(opt => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+                                </select>
+                              );
+                            })()}
                             {(canSeat || pid===me.id) && <button style={btnMini} onClick={()=>iLost(pid)} disabled={busy}>Lost</button>}
                           </span>
                         )}
@@ -1031,7 +1094,7 @@ export default function Page() {
                           })} disabled={busy || !(me.id === g.hostId || (g.cohosts ?? []).includes(me.id))}>Swap sides</button>
                         </div>
                       </div>
-                <div style={{display:'grid',gridTemplateColumns:'1fr auto 1fr',alignItems:'stretch',gap:10}}>
+                <div style={{display:'grid',gridTemplateColumns:isCompactTableLayout?'1fr':'minmax(0,1fr) auto minmax(0,1fr)',alignItems:'stretch',gap:isCompactTableLayout?8:10}}>
                   <div style={{display:'grid',gap:8}}>
                     <Seat side={tableDoubles ? 'a1' : 'a'} label={tableDoubles ? 'Left L1' : 'Player'}/>
                     {tableDoubles && <Seat side='a2' label='Left L2' />}
@@ -1280,7 +1343,13 @@ const card: React.CSSProperties = { background:"rgba(255,255,255,0.06)", border:
 const btn: React.CSSProperties = { padding:"10px 14px", borderRadius:10, border:"none", background:"#0ea5e9", color:"#fff", fontWeight:700, cursor:"pointer" };
 const btnGhost: React.CSSProperties = { padding:"10px 14px", borderRadius:10, border:"1px solid rgba(255,255,255,0.25)", background:"transparent", color:"#fff", cursor:"pointer" };
 const btnGhostSm: React.CSSProperties = { padding:"6px 10px", borderRadius:10, border:"1px solid rgba(255,255,255,0.25)", background:"transparent", color:"#fff", cursor:"pointer", fontWeight:600 };
-const btnHistoryActive: React.CSSProperties = { ...btnGhostSm, boxShadow:"0 0 0 2px rgba(14,165,233,0.45), 0 10px 30px rgba(14,165,233,0.15)", border:"1px solid rgba(14,165,233,0.8)", background:"rgba(14,165,233,0.15)" };
+const btnHistoryActive: React.CSSProperties = {
+  ...btnGhostSm,
+  boxShadow: "0 0 0 2px rgba(234,179,8,0.55), 0 10px 30px rgba(234,179,8,0.18)",
+  border: "1px solid rgba(234,179,8,0.9)",
+  background: "linear-gradient(135deg, rgba(250,204,21,0.22), rgba(251,191,36,0.2))",
+  color: "#fef9c3",
+};
 const btnMini: React.CSSProperties = { padding:"6px 10px", borderRadius:8, border:"1px solid rgba(255,255,255,0.25)", background:"transparent", color:"#fff", cursor:"pointer", fontSize:12 };
 const btnTiny: React.CSSProperties = { padding:"4px 8px", borderRadius:8, border:"1px solid rgba(255,255,255,0.25)", background:"transparent", color:"#fff", cursor:"pointer", fontSize:12, lineHeight:1 };
 const btnTinyActive: React.CSSProperties = { ...btnTiny, background:"#0ea5e9", border:"none" };
