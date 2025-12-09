@@ -10,9 +10,6 @@ const nextConfig: NextConfig = {
     // ✅ Skip TS type errors during the production build (Cloudflare Pages)
     ignoreBuildErrors: true,
   },
-  experimental: {
-    optimizePackageImports: [],
-  },
 };
 
 export default nextConfig;
