@@ -218,7 +218,15 @@ export default function LocalListPage() {
   const prefs = g.prefs || {};
   const anyTableDoubles = g.tables.some(t => isTableDoubles(t));
 
-  const seatValue = (t: Table, key: SeatKey) => (t as any)[key] as string | undefined;
+  const seatValue = (t: Table, key: SeatKey) => {
+    const raw = (t as any)[key] as string | undefined;
+    if (raw) return raw;
+    if (key === 'a') return (t as any).a1 as string | undefined;
+    if (key === 'a1') return (t as any).a as string | undefined;
+    if (key === 'b') return (t as any).b1 as string | undefined;
+    if (key === 'b1') return (t as any).b as string | undefined;
+    return raw;
+  };
   const setSeatValue = (t: Table, key: SeatKey, pid?: string) => {
     (t as any)[key] = pid;
     if (key === 'a1' || key === 'a') { t.a = pid; t.a1 = pid; }
@@ -840,7 +848,7 @@ export default function LocalListPage() {
           </div>
         )}
 
-        <div style={{display:'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap:12, alignItems:'stretch'}}>
+        <div style={{display:'grid', gridTemplateColumns: isCompactTableLayout ? '1fr' : 'repeat(auto-fit, minmax(280px, 1fr))', gap:12, alignItems:'stretch'}}>
           {g.tables.map((t,i)=>{
             const tableDoubles = isTableDoubles(t);
             const Seat = ({side,label}:{side:SeatKey;label:string})=>{
@@ -870,7 +878,7 @@ export default function LocalListPage() {
                       {iHaveMod && (() => {
                         const queueTargets = queue.map(pid => ({ value:`queue:${pid}`, label:`${nameOf(pid)} — Queue` }));
                         const seatTargets = g.tables.flatMap((table, tableIndex) =>
-                          seatKeys.map(sk => {
+                          seatsForMode(isTableDoubles(table)).map(sk => {
                             if (tableIndex === i && sk === side) return null;
                             const occupant = seatValue(table, sk);
                             if (!occupant) return null;
