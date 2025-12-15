@@ -1380,7 +1380,19 @@ const input: React.CSSProperties = {
 
 const nameInput: React.CSSProperties = { background:"#111", border:"1px solid #333", color:"#fff", borderRadius:10, padding:"8px 10px", width:"min(420px, 80vw)" };
 const select: React.CSSProperties = { background:"#111", border:"1px solid #333", color:"#fff", borderRadius:8, padding:"6px 8px" };
-const selectSmall: React.CSSProperties = { ...select, fontSize:12, padding:"4px 8px", minWidth:150 };
+const selectSmall: React.CSSProperties = {
+  ...select,
+  fontSize:12,
+  padding:"6px 10px",
+  minWidth:120,
+  maxWidth:170,
+  width:"fit-content",
+  whiteSpace:"nowrap",
+  textOverflow:"ellipsis",
+  overflow:"hidden",
+  background:"linear-gradient(135deg, rgba(56,189,248,0.25), rgba(14,165,233,0.35))",
+  border:"1px solid rgba(125,211,252,0.55)",
+};
 const messageBox: React.CSSProperties = {
   background:"rgba(14,165,233,0.15)",
   border:"1px solid rgba(14,165,233,0.35)",
