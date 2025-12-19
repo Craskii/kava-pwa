@@ -11,7 +11,12 @@ type KVNamespace = {
 };
 type Env = { KAVA_TOURNAMENTS: KVNamespace };
 
-type Table = { a?: string; b?: string; label: "8 foot" | "9 foot" };
+type Table = {
+  a?: string; b?: string;
+  a1?: string; a2?: string; b1?: string; b2?: string;
+  label: "8 foot" | "9 foot";
+  doubles?: boolean;
+};
 type Player = { id: string; name: string };
 type Pref = "8 foot" | "9 foot" | "any";
 type AuditEntry = { t: number; who?: string; type: string; note?: string };
@@ -30,6 +35,7 @@ type ListGame = {
   prefs?: Record<string, Pref>;
   coHosts?: string[];
   audit?: AuditEntry[];
+  doubles?: boolean;
 };
 
 const LKEY = (id: string) => `l:${id}`;
@@ -45,7 +51,8 @@ async function getV(env: Env, id: string): Promise<number> {
   } catch {
     return 0;  // ✅ Safe fallback
   }
-}async function setV(env: Env, id: string, v: number) {
+}
+async function setV(env: Env, id: string, v: number) {
   await env.KAVA_TOURNAMENTS.put(LVER(id), String(v));
 }
 async function readArr(env: Env, key: string): Promise<string[]> {
@@ -74,6 +81,11 @@ function coerceIn(doc: any): ListGame {
     ? doc.tables.map((t: any, i: number) => ({
         a: t?.a ? String(t.a) : undefined,
         b: t?.b ? String(t.b) : undefined,
+        a1: t?.a1 ? String(t.a1) : (t?.a ? String(t.a) : undefined),
+        a2: t?.a2 ? String(t.a2) : undefined,
+        b1: t?.b1 ? String(t.b1) : (t?.b ? String(t.b) : undefined),
+        b2: t?.b2 ? String(t.b2) : undefined,
+        doubles: typeof t?.doubles === "boolean" ? !!t.doubles : undefined,
         label: (t?.label === "9 foot" || t?.label === "8 foot") ? t.label : (i === 1 ? "9 foot" : "8 foot")
       }))
     : [{ label: "8 foot" }, { label: "9 foot" }];
@@ -124,6 +136,7 @@ function coerceIn(doc: any): ListGame {
     prefs,
     coHosts,
     audit,
+    doubles: !!doc?.doubles,
   } as ListGame;
 }
 
@@ -139,10 +152,38 @@ function dropFromQueues(x: ListGame, pid?: string) {
   x.queue9 = x.queue9.filter(id => id !== pid);
 }
 
+type SeatKey = keyof Pick<Table, "a" | "b" | "a1" | "a2" | "b1" | "b2">;
+const seatKeys: SeatKey[] = ["a", "b", "a1", "a2", "b1", "b2"];
+const seatsForMode = (t: Table, global?: boolean) =>
+  (typeof t?.doubles === "boolean" ? t.doubles : !!global)
+    ? (["a1", "a2", "b1", "b2"] as const)
+    : (["a", "b"] as const);
+
+function seatValue(t: Table, key: SeatKey) {
+  const raw = (t as any)[key] as string | undefined;
+  if (raw) return raw;
+  if (key === "a") return (t as any).a1 as string | undefined;
+  if (key === "a1") return (t as any).a as string | undefined;
+  if (key === "b") return (t as any).b1 as string | undefined;
+  if (key === "b1") return (t as any).b as string | undefined;
+  return raw;
+}
+
+function setSeatValue(t: Table, key: SeatKey, pid?: string) {
+  (t as any)[key] = pid;
+  if (key === "a" || key === "a1") { t.a = pid; t.a1 = pid; }
+  if (key === "b" || key === "b1") { t.b = pid; t.b1 = pid; }
+}
+
 function reconcileSeating(x: ListGame) {
   const seated = new Set<string>();
-  for (const t of x.tables) { if (t.a) seated.add(t.a); if (t.b) seated.add(t.b); }
-  
+  for (const t of x.tables) {
+    seatsForMode(t, x.doubles).forEach(sk => {
+      const v = seatValue(t, sk);
+      if (v) seated.add(v);
+    });
+  }
+
   const nextFrom = (label: "8 foot" | "9 foot") => {
     const src = label === "9 foot" ? x.queue9 : x.queue8;
     while (src.length) {
@@ -151,10 +192,17 @@ function reconcileSeating(x: ListGame) {
     }
     return undefined;
   };
-  
+
   for (const t of x.tables) {
-    if (!t.a) { const pid = nextFrom(t.label); if (pid) { t.a = pid; seated.add(pid); dropFromQueues(x, pid); } }
-    if (!t.b) { const pid = nextFrom(t.label); if (pid) { t.b = pid; seated.add(pid); dropFromQueues(x, pid); } }
+    const seats = seatsForMode(t, x.doubles);
+    for (const sk of seats) {
+      if (seatValue(t, sk)) continue;
+      const pid = nextFrom(t.label);
+      if (!pid) continue;
+      setSeatValue(t, sk, pid);
+      seated.add(pid);
+      dropFromQueues(x, pid);
+    }
   }
 }
 
