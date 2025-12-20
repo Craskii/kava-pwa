@@ -186,11 +186,19 @@ export default function Page() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const handleResize = () => setIsCompactTableLayout(window.innerWidth < 720);
+    const handleResize = () => {
+      const tables = g?.tables ?? [];
+      const hasDoublesTable = tables.some(t => isTableDoubles(t));
+      const minCardWidth = hasDoublesTable ? 360 : 320;
+      const availableWidth = Math.max(window.innerWidth - 48, 0); // account for wrap padding
+      const neededForTwoColumns = minCardWidth * 2 + 12; // card widths + grid gap
+      setIsCompactTableLayout(availableWidth < neededForTwoColumns);
+    };
+
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, []);
+  }, [g?.tables, globalDoublesEnabled]);
 
   useEffect(() => {
     const onVis = () => setIsVisible(document.visibilityState === 'visible');
@@ -412,6 +420,7 @@ export default function Page() {
     }
   }, [queue, selectedQueuePid]);
   const anyTableDoubles = g?.tables?.some?.((t) => isTableDoubles(t as Table)) ?? false;
+  const tableCardMinWidth = anyTableDoubles ? 360 : 320;
   const activeSeats = seatsForMode(globalDoublesEnabled);
   const seatValue = (t: Table, key: SeatKey) => {
     const raw = (t as any)[key] as string | undefined;
@@ -986,7 +995,7 @@ export default function Page() {
                 </div>
               )}
 
-              <div style={{display:"grid", gridTemplateColumns: isCompactTableLayout ? '1fr' : "repeat(auto-fit, minmax(280px, 1fr))", gap:12, alignItems:'stretch'}}>
+              <div style={{display:"grid", gridTemplateColumns: isCompactTableLayout ? '1fr' : `repeat(auto-fit, minmax(${tableCardMinWidth}px, 1fr))`, gap:12, alignItems:'stretch'}}>
                 {g.tables.map((t,i)=>{
                   const tableDoubles = isTableDoubles(t);
                   const Seat = ({side,label}:{side:SeatKey;label:string})=>{
@@ -1060,7 +1069,7 @@ export default function Page() {
                     );
                   };
                   return (
-                    <div key={i} style={{ background:tableDoubles?"#432775":"#0b3a66", borderRadius:12, padding:"12px 14px", border:tableDoubles?"1px solid rgba(168,85,247,.45)":"1px solid rgba(56,189,248,.35)", display:"grid", gap:10, fontSize:15, lineHeight:1.4 }}>
+                    <div key={i} style={{ background:tableDoubles?"#432775":"#0b3a66", borderRadius:12, padding:"12px 14px", border:tableDoubles?"1px solid rgba(168,85,247,.45)":"1px solid rgba(56,189,248,.35)", display:"grid", gap:10, fontSize:15, lineHeight:1.4, minWidth:0 }}>
                       <div style={{ opacity:.9, fontSize:13, display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", justifyContent:"space-between" }}>
                         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                           <span>{t.label==="9 foot"?"9-Foot Table":"8-Foot Table"} • Table {i+1}</span>
