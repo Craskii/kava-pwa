@@ -409,6 +409,11 @@ export default function LocalListPage() {
   
   const addPlayer = () => {
     const v = nameField.trim(); if (!v) return;
+    const normalized = v.toLowerCase();
+    if (players.some(p => p.name.trim().toLowerCase() === normalized)) {
+      alert('That name is already on the List check the List of Players and Queue again :)');
+      return;
+    }
     const p: Player = { id: uid(), name: v };
     setNameField('');
     update(d => {

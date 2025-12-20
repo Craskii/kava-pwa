@@ -644,7 +644,17 @@ export default function Page() {
   const addSelfToList = () => scheduleCommit(d => { ensureMe(d); });
   const joinQueue = () => scheduleCommit(d => { ensureMe(d); d.queue ??= []; if (!d.queue.includes(me.id)) d.queue.push(me.id); });
   const leaveQueue = () => scheduleCommit(d => { d.queue = (d.queue ?? []).filter(x => x !== me.id && !(isTeam(x) && teamMembers(x).includes(me.id))); });
-  const addPlayer = () => { const v = nameField.trim(); if (!v) return; setNameField(""); const p: Player = { id: uid(), name: v }; scheduleCommit(d => { d.players.push(p); d.prefs ??= {}; d.prefs[p.id] = "any"; d.queue ??= []; if (!d.queue.includes(p.id)) d.queue.push(p.id); }); };
+  const addPlayer = () => {
+    const v = nameField.trim(); if (!v) return;
+    const normalized = v.toLowerCase();
+    if (players.some(p => p.name.trim().toLowerCase() === normalized)) {
+      alert("That name is already on the List check the List of Players and Queue again :)");
+      return;
+    }
+    setNameField("");
+    const p: Player = { id: uid(), name: v };
+    scheduleCommit(d => { d.players.push(p); d.prefs ??= {}; d.prefs[p.id] = "any"; d.queue ??= []; if (!d.queue.includes(p.id)) d.queue.push(p.id); });
+  };
   const removePlayer = (pid: string) => scheduleCommit(d => { d.players = d.players.filter(p => p.id !== pid); d.queue = (d.queue ?? []).filter(x => x !== pid && !(isTeam(x) && teamMembers(x).includes(pid))); if (d.prefs) delete d.prefs[pid]; clearPidFromTables(d, pid); });
   const renamePlayer = (pid: string) => {
     const cur = players.find(p => p.id === pid)?.name || "";
